@@ -1,2 +1,2 @@
-# sh 脚本必须 LF：CRLF 下 \r 会吞换行导致 if/赋值等语法错误（实测），e2e 测试跑不起来
+# Shell scripts must use LF: with CRLF, \r consumes the newline and causes syntax errors in if statements, assignments, etc. (verified in practice), preventing the e2e tests from running
 tests/e2e/*.sh text eol=lf

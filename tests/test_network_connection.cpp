@@ -1,6 +1,6 @@
-// 连接/停止/竞态类测试：单次运行很难暴露问题，需要大量重复（如
-// ctest --repeat until-fail:2000）才能压出偶发的竞态与挂起。与纯数据结构的
-// 测试（test_network.cpp）分开存放，方便只对这类测试做高频重复：
+// Connection/stop/race tests: a single run rarely exposes problems; many repetitions (e.g.
+// ctest --repeat until-fail:2000) are needed to trigger intermittent races and hangs. Stored separately from pure data-structure
+// tests (test_network.cpp), making frequent repetition of only these tests convenient:
 //   ctest --repeat until-fail:2000 --timeout 120 -R "TestNetworkConnection"
 #include <gtest/gtest.h>
 
@@ -30,9 +30,9 @@ using namespace usbipdcpp;
 using namespace usbipdcpp::test;
 
 TEST(TestNetworkConnection,ServerCanRestartAfterStop) {
-    // stop() 必须关闭 acceptor 释放端口，否则再次 start() 时 bind 同一端口失败。
-    // 端口 0 由系统分配：第一次 start 后 ep 被更新为实际端口，第二次 start
-    // 重绑同一端口，验证端口确实释放（并行压测下端口 0 无探测竞争）
+    // stop() must close acceptor to release the port; otherwise bind to the same port fails on the next start().
+    // Port 0 allocated by system: first start updates ep to actual port; second start
+    // rebinds the same port to verify release (port 0 avoids probe races during parallel stress tests)
     asio::io_context io;
     asio::ip::tcp::endpoint ep(asio::ip::address_v4::loopback(), 0);
 
@@ -40,11 +40,11 @@ TEST(TestNetworkConnection,ServerCanRestartAfterStop) {
 
     for (int round = 0; round < 2; round++) {
         ASSERT_FALSE(server.start(ep));
-        // 端口 0 启动，实际监听端点（含系统分配的端口）用 endpoint() 查询
+        // Start on port 0; query actual listening endpoint (including system-allocated port) using endpoint()
         auto actual_ep = server.endpoint();
 
-        // acceptor 在 start() 内同步 bind，返回时监听已就绪，轮询仅为防御性
-        // 等待。超时给 4 秒：覆盖率插桩等慢速构建下服务器启动可能超过 1 秒
+        // acceptor binds synchronously within start(); listening is ready on return; polling is only a defensive
+        // wait. Allow 4 seconds: server startup can exceed 1 second in slow builds such as coverage-instrumented builds
         asio::ip::tcp::socket probe_sock(io);
         bool connected = false;
         for (int i = 0; i < 200; i++) {
@@ -59,7 +59,7 @@ TEST(TestNetworkConnection,ServerCanRestartAfterStop) {
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
         }
         ASSERT_TRUE(connected);
-        // 主动断开，让服务器侧的 session 快速退出
+        // Disconnect actively so server-side session exits promptly
         probe_sock.close();
 
         server.stop();
@@ -67,8 +67,8 @@ TEST(TestNetworkConnection,ServerCanRestartAfterStop) {
 }
 
 TEST(TestNetworkConnection,ServerCanStopWithoutConnection) {
-    // start() 后没有任何客户端连接就 stop()：挂在 accept 上的阻塞 accept 被
-    // 唤醒连接打断，网络线程要能干净退出，且可以再次 start()
+    // stop() after start() without any client connection: the blocking accept waiting in accept is
+    // interrupted by a wakeup connection; network thread must exit cleanly and permit another start()
     asio::io_context io;
     asio::ip::tcp::endpoint ep(asio::ip::address_v4::loopback(), 0);
 
@@ -76,18 +76,18 @@ TEST(TestNetworkConnection,ServerCanStopWithoutConnection) {
 
     for (int round = 0; round < 3; round++) {
         ASSERT_FALSE(server.start(ep));
-        // 不做任何连接，直接停止
+        // Stop directly without making any connection
         server.stop();
     }
 }
 
 // ---------------------------------------------------------------------------
-// start/stop 循环（合法用法）下的刁钻场景
+// Tricky scenarios in start/stop loops (valid usage)
 // ---------------------------------------------------------------------------
 
 TEST(TestNetworkConnection,ManyStartStopCycles) {
-    // 无客户端情况下 100 轮 start/stop：acceptor 每轮都要干净释放端口，
-    // 网络线程每轮都要干净退出，不能累积残留
+    // 100 start/stop rounds without clients: acceptor must release port cleanly every round,
+    // and network thread must exit cleanly every round, without accumulated leftovers
     asio::io_context io;
     asio::ip::tcp::endpoint ep(asio::ip::address_v4::loopback(), 0);
 
@@ -100,27 +100,27 @@ TEST(TestNetworkConnection,ManyStartStopCycles) {
 
 TEST(TestNetworkConnection,ServerCanRestartAfterAcceptError) {
 #ifdef _WIN32
-    // Windows 上无法通过占满 fd 制造 accept 错误（对应 WSAEMFILE 不可控），跳过
-    GTEST_SKIP() << "Windows 上无法通过占满 fd 制造 accept 错误";
+    // Cannot induce accept errors by exhausting fd on Windows (corresponding WSAEMFILE is uncontrollable); skip
+    GTEST_SKIP() << "Cannot induce accept errors by exhausting fd on Windows";
 #else
-    // 回归两个 bug：fd 耗尽时 accept_loop 走错误分支退出后——
-    // - 错误分支必须 close acceptor 释放监听端口（否则端口占用到 stop()）
-    // - stop() 必须能正常收尾（网络线程已死，join 立即返回、close 幂等），
-    //   且错误分支已 close 的 acceptor 能被下次 start() 重新 open/bind/listen
-    //   （acceptor 是长命成员，错误退出时已关，重新初始化无残留）
+    // Regression for two bugs after accept_loop exits through the error branch on fd exhaustion—
+    // - Error branch must close acceptor to release listening port (otherwise occupied until stop())
+    // - stop() must clean up normally (network thread already dead; join returns immediately; close idempotent),
+    //   and acceptor closed by the error branch must reopen/bind/listen on next start()
+    //   (acceptor is a long-lived member, closed on error exit; reinitialization leaves no leftovers)
     asio::io_context io;
     asio::ip::tcp::endpoint ep(asio::ip::address_v4::loopback(), 0);
 
     usbipdcpp::Server server;
     ASSERT_FALSE(server.start(ep));
-    // 端口 0 由系统分配，start 后查询实际端口供子进程 connect
+    // Port 0 allocated by system; query actual port after start for child-process connect
     const auto port = server.endpoint().port();
 
-    // RAII 包装占用的 fd：ASSERT 失败会直接 return 退出测试函数，vector<int>
-    // 析构不会 close fd，若中途失败未释放，后续所有测试都将在 fd 紧张的
-    // 状态下运行（socket 创建失败、accept 报 EMFILE），连环失败难以排查。
-    // move 必须把源置空：vector 扩容走 move，若两边都持 fd 会在析构时
-    // double close，可能关掉后续测试新开 socket 复用的 fd 号
+    // RAII-wrap occupied fd: ASSERT failure returns directly from test function; vector<int>
+    // destruction does not close fd; if a mid-test failure leaves them unreleased, all subsequent tests run with scarce fd
+    // (socket creation fails, accept reports EMFILE), producing cascading failures difficult to diagnose.
+    // move must empty the source: vector expansion uses move; if both sides hold fd, destruction causes
+    // double close, potentially closing a reused fd number of a newly opened socket in a later test
     struct ScopedFd {
         int fd = -1;
         ScopedFd() = default;
@@ -148,9 +148,9 @@ TEST(TestNetworkConnection,ServerCanRestartAfterAcceptError) {
         }
     };
 
-    // 占满进程 fd：占满后服务器的 accept4 将报 EMFILE。本进程不能再发起
-    // connect（WSL 实测 connect 也要分配 fd，占满时直接 EMFILE），因此用 fork
-    // 的子进程发起连接：子进程关闭继承的 fd 后限额恢复，connect 不受影响
+    // Exhaust process fd: server accept4 then reports EMFILE. This process cannot initiate another
+    // connect (WSL tests show connect also allocates fd and immediately yields EMFILE when exhausted), so a forked
+    // child initiates the connection: closing inherited fd restores child capacity, leaving connect unaffected
     std::vector<ScopedFd> occupied_fds;
     for (int i = 0; i < 65536; i++) {
         int fd = ::open("/dev/null", O_RDONLY);
@@ -164,11 +164,11 @@ TEST(TestNetworkConnection,ServerCanRestartAfterAcceptError) {
     pid_t pid = fork();
     ASSERT_GE(pid, 0);
     if (pid == 0) {
-        // 子进程：关闭从父进程继承的所有 fd（stdin/out/err 之外），恢复自己的
-        // fd 限额，否则 connect 同样 EMFILE。closefrom 在 macOS 默认 feature
-        // 宏下不声明、close_range 是 Linux 专属，统一用可移植的循环。
-        // 只做原始 socket 操作，不碰 asio 和 gtest（fork 后这些库的锁状态
-        // 不安全），结果通过退出码回传
+        // Child process: close all fd inherited from parent (except stdin/out/err), restoring its
+        // fd capacity; otherwise connect also gives EMFILE. closefrom is undeclared under macOS default feature
+        // macros and close_range is Linux-only; consistently use a portable loop.
+        // Use only raw socket operations, avoiding asio and gtest (their lock states after fork
+        // are unsafe); return result through exit code
         long max_fd = sysconf(_SC_OPEN_MAX);
         for (long fd = 3; fd < max_fd; ++fd) {
             ::close(static_cast<int>(fd));
@@ -186,19 +186,19 @@ TEST(TestNetworkConnection,ServerCanRestartAfterAcceptError) {
     }
     int status = 0;
     ASSERT_GE(waitpid(pid, &status, 0), 0);
-    ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0) << "子进程 connect 失败";
+    ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0) << "Child-process connect failed";
 
-    // 保持 fd 占满一段确定时间再释放：子进程 connect 返回后、本进程释放 fd
-    // 之前，服务器必须已经执行 accept4（fd 仍满 → EMFILE）。若先释放 fd，
-    // 服务器 accept4 可能成功（不 EMFILE），端口一直监听导致下面的轮询超时
-    // （高频重复实测复现）
+    // Keep fd exhausted for a definite duration before release: after child connect returns and before this process releases fd,
+    // server must already have executed accept4 (fd still exhausted → EMFILE). Releasing fd first
+    // may let accept4 succeed (no EMFILE); continued port listening then causes polling below to time out
+    // (reproduced through frequent repetition)
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    // 正常路径提前释放（异常路径由 ScopedFd 析构兜底），保证后续测试不受影响
+    // Release early on normal path (ScopedFd destructor covers exceptions), keeping subsequent tests unaffected
     occupied_fds.clear();
 
-    // 轮询等待服务器释放监听端口：错误分支 close acceptor 后端口立即可绑定，
-    // 可绑定 = 网络线程已退出（同时验证错误分支确实 close 了端口）
+    // Poll until server releases listening port: after error branch closes acceptor, port immediately becomes bindable,
+    // bindable = network thread exited (also verifies error branch actually closed port)
     bool port_released = false;
     for (int i = 0; i < 200; i++) {
         asio::ip::tcp::acceptor probe(io);
@@ -214,12 +214,12 @@ TEST(TestNetworkConnection,ServerCanRestartAfterAcceptError) {
     }
     ASSERT_TRUE(port_released);
 
-    // stop→start 后必须恢复正常：此时网络线程已因错误退出，stop() 的 join
-    // 立即返回、close 幂等；acceptor 已被错误分支关闭，start() 重新初始化
+    // stop→start must restore normal operation: network thread already exited on error; stop() join
+    // returns immediately, close idempotent; error branch closed acceptor; start() reinitializes it
     server.stop();
     ASSERT_FALSE(server.start(ep));
 
-    // 新客户端连接 + devlist 请求得到正常回复 = accept 循环活着
+    // New client connection + normal devlist response = accept loop alive
     asio::ip::tcp::socket client2(io);
     ASSERT_TRUE(connect_with_retry(client2, server.endpoint()));
     usbipdcpp::error_code send_ec;
@@ -235,9 +235,9 @@ TEST(TestNetworkConnection,ServerCanRestartAfterAcceptError) {
 }
 
 TEST(TestNetworkConnection,StopWithSilentClient) {
-    // 客户端连接后不发任何数据静默挂着（session 挂在 parse_op 的阻塞读上），
-    // 此时 stop()：immediately_stop 要打断挂起的读，session 干净退出。
-    // 与导入设备后的传输态打断（ServerCanStopWithImportedDevice）互补
+    // Client connects but sends nothing, remaining silently connected (session blocked reading in parse_op),
+    // then stop(): immediately_stop must interrupt pending read; session exits cleanly.
+    // Complements interruption in transfer state after device import (ServerCanStopWithImportedDevice)
     asio::io_context io;
     asio::ip::tcp::endpoint ep(asio::ip::address_v4::loopback(), 0);
 
@@ -246,14 +246,14 @@ TEST(TestNetworkConnection,StopWithSilentClient) {
     asio::ip::tcp::socket client(io);
     ASSERT_TRUE(connect_with_retry(client, server.endpoint()));
 
-    server.stop(); // 客户端还静默挂着，直接 stop
+    server.stop(); // Client still silently connected; stop directly
 
     client.close();
 }
 
 TEST(TestNetworkConnection,StopWithMultipleClients) {
-    // 多个客户端同时挂着（多个 session 同时被打断），stop() 要并发打断并
-    // join 所有 session 线程，任何一个都不能卡住
+    // Multiple clients silently connected (multiple sessions interrupted together); stop() must interrupt concurrently and
+    // join all session threads, with none hanging
     asio::io_context io;
     asio::ip::tcp::endpoint ep(asio::ip::address_v4::loopback(), 0);
 
@@ -266,7 +266,7 @@ TEST(TestNetworkConnection,StopWithMultipleClients) {
         ASSERT_TRUE(connect_with_retry(clients.back(), server.endpoint()));
     }
 
-    server.stop(); // 10 个 session 同时被打断
+    server.stop(); // 10 sessions interrupted together
 
     for (auto &client: clients) {
         client.close();
@@ -274,8 +274,8 @@ TEST(TestNetworkConnection,StopWithMultipleClients) {
 }
 
 TEST(TestNetworkConnection,DisconnectRightAfterDevlistRequest) {
-    // 客户端发出 devlist 请求后不等回复立即断开：服务器可能正在收集设备
-    // 列表或写回复时发现连接已断，session 要干净退出，不崩
+    // Client sends devlist request and disconnects immediately without awaiting reply: server may discover disconnection while collecting device
+    // list or writing reply; session must exit cleanly without crashing
     asio::io_context io;
     asio::ip::tcp::endpoint ep(asio::ip::address_v4::loopback(), 0);
 
@@ -289,10 +289,10 @@ TEST(TestNetworkConnection,DisconnectRightAfterDevlistRequest) {
         asio::write(client, asio::buffer(UsbIpCommand::OpReqDevlist{}.to_bytes()), send_ec);
         ASSERT_FALSE(send_ec);
         if (i % 2 == 0) {
-            rst_disconnect(client); // 不读回复直接 RST
+            rst_disconnect(client); // RST directly without reading reply
         }
         else {
-            client.close(); // 不读回复直接 FIN
+            client.close(); // FIN directly without reading reply
         }
     }
     ASSERT_TRUE(wait_sessions_gone(server));
@@ -300,17 +300,17 @@ TEST(TestNetworkConnection,DisconnectRightAfterDevlistRequest) {
 }
 
 TEST(TestNetworkConnection,StopDuringClientConnectRace) {
-    // stop() 与客户端并发连接竞争：客户端线程反复尝试连接（server 停止期间
-    // 连接会失败），主线程反复 start/stop。stop 时可能恰有连接刚被 accept、
-    // session 刚创建，任何一轮都不能崩或卡死
+    // stop() competes with concurrent client connection: client thread repeatedly attempts connection (fails while server
+    // is stopped); main thread repeatedly starts/stops. A connection may just have been accepted at stop,
+    // with session just created; no round may crash or hang
     asio::io_context io;
     asio::ip::tcp::endpoint ep(asio::ip::address_v4::loopback(), 0);
 
     usbipdcpp::Server server;
     std::atomic_bool stop_flag = false;
-    // 实际端口（端口 0 启动，由系统分配）在 start 返回后用 endpoint() 查询，
-    // 经原子变量传给客户端线程；直接让客户端线程读 ep/endpoint() 会与
-    // start 期间的回写并发（TSan 实测命中）
+    // Query actual port (started on system-allocated port 0) using endpoint() after start returns,
+    // passing it to client thread via atomic variable; directly reading ep/endpoint() on client thread races with
+    // writeback during start (observed under TSan)
     std::atomic<std::uint16_t> target_port = 0;
 
     std::thread client_thread([&]() {
@@ -321,7 +321,7 @@ TEST(TestNetworkConnection,StopDuringClientConnectRace) {
                 std::error_code ec;
                 client.connect(asio::ip::tcp::endpoint(asio::ip::address_v4::loopback(), port), ec);
                 if (!ec) {
-                    client.close(); // 连上就断，模拟短暂的连接
+                    client.close(); // Disconnect immediately after connection, simulating a short-lived connection
                 }
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -341,8 +341,8 @@ TEST(TestNetworkConnection,StopDuringClientConnectRace) {
 }
 
 TEST(TestNetworkConnection,ManyQuickConnections) {
-    // 客户端以各种方式快速连接并断开：优雅断开（FIN）、RST 重置、发垃圾
-    // 数据后断开。服务器要全部处理干净（session 各自退出），之后 stop() 正常
+    // Clients rapidly connect and disconnect in various ways: graceful disconnection (FIN), RST reset, sending garbage
+    // then disconnecting. Server must clean up everything (each session exits), then stop() normally
     asio::io_context io;
     asio::ip::tcp::endpoint ep(asio::ip::address_v4::loopback(), 0);
 
@@ -354,13 +354,13 @@ TEST(TestNetworkConnection,ManyQuickConnections) {
         ASSERT_TRUE(connect_with_retry(client, server.endpoint()));
         switch (i % 3) {
             case 0:
-                client.close(); // 优雅断开（FIN）
+                client.close(); // Graceful disconnection (FIN)
                 break;
             case 1:
-                rst_disconnect(client); // 异常掉线（RST）
+                rst_disconnect(client); // Abnormal disconnection (RST)
                 break;
             case 2: {
-                // 发一段垃圾数据再断开：服务器要么解析失败，要么读中断
+                // Send garbage data, then disconnect: server either fails parsing or has its read interrupted
                 const std::array<std::uint8_t, 8> garbage = {0xFF, 0xFF, 0x01, 0x00, 0x00, 0x00, 0x00, 0x01};
                 asio::write(client, asio::buffer(garbage));
                 client.close();

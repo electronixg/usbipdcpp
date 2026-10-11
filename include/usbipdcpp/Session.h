@@ -23,68 +23,68 @@ class Server;
 class AbstDeviceHandler;
 
 /**
- * @brief 一个连接创建一个 Session，生命周期自管：session 线程持有 shared_ptr
- * 快照（run() 获取 self），线程 return 时最后一个引用释放即自析构（析构前
- * 调 server.remove_session(id) 让 Server 移除自身 weak_ptr 记录，析构体末尾
- * 调 server.notify_session_destroyed() 通知 Server 回收完成）。Server 的会话
- * 列表是 weak_ptr 不持有，stop() 释放快照引用后等待全部会话自析构完成，
- * 保证 Server 存活期间无 Session 线程残留。
- * socket 自持本会话的 io_context（见成员声明顺序），连接的生命周期完全由
- * 本会话自己管理，不依赖 Server 的 io_context。
- * 请确保 Session 存活的时候 Server 未被析构，不然是未定义行为。
+ * @brief A connection creates a Session, and the life cycle is self-managed: the session thread holds shared_ptr
+ * snapshot (run() obtains self), when thread returns, the last reference is released and is self-destructed (before destruction
+ * call server.remove_session(id) before destruction to remove its weak_ptr record from Server; at the end of the destructor,
+ * calls server.notify_session_destroyed() to notify the Server that recycling is completed). Server session
+ * list consists of nonowning weak_ptr entries; after stop() releases snapshot references, it waits for all sessions to finish self-destruction,
+ * ensures that no Session thread remains during the survival of the Server.
+ * socket holds the io_context of this session (see member declaration sequence). The life cycle of the connection is completely determined by
+ * This session is managed by itself and does not depend on the Server's io_context.
+ * Please ensure that the Server is not destroyed while the Session is alive, otherwise it will be undefined behavior.
  */
 class USBIPDCPP_API Session final : public std::enable_shared_from_this<Session> {
     friend class Server;
 
 public:
     /**
-     * @brief 由 Server 创建。id 由 Server 分配（原子递增，永不重复），会话
-     *        收尾时用它从 Server 的会话表中移除自身
+     * @brief Created by Server. id is assigned by Server (atomic increment, never repeated), session
+     *        Use it to remove itself from the Server's session table at the end
      */
     Session(Server &server, std::uint64_t id);
     Session(const Session &) = delete;
     Session(Session &&) = delete;
 
     /**
-     * @brief 该函数异步，不阻塞。把响应包入队 write_buffer 并唤醒 sender 线程，
-     *        实际网络写入由 sender 线程完成。内部加锁，任意线程安全。
-     * 请确保每个urb都需要提交返回的包
+     * @brief This function is asynchronous and does not block. Enqueue the response packet write_buffer and wake up the sender thread,
+     *        The actual network writing is completed by the sender thread. Internally locked, safe from any thread.
+     * Ensure that a response packet is submitted for every URB
      * @param unlink
      */
     void submit_ret_unlink(UsbIpResponse::UsbIpRetUnlink &&unlink);
 
     /**
-     * @brief 传输应答接口（虚拟设备侧 Handler/通道/调度器用）：内部实现
-     * SessionResponder 转发到本类的 submit_ret_submit / submit_ret_unlink。
-     * 虚拟设备侧不直接依赖 Session，经此接口提交应答（测试可替换）
+     * @brief transfer response interface (for virtual device side Handler/channel/scheduler): internal implementation
+     * SessionResponder forwards to submit_ret_submit / submit_ret_unlink of this class.
+     * The virtual device side does not directly rely on Session and submits responses through this interface (replaceable for testing)
      */
     TransferResponder *responder() { return &responder_; }
 
     /**
-     * @brief 该函数异步，不阻塞。把响应包入队 write_buffer 并唤醒 sender 线程，
-     *        实际网络写入由 sender 线程完成。内部加锁，任意线程安全。
-     * 请确保每个urb都需要提交返回的包
+     * @brief This function is asynchronous and does not block. Enqueue the response packet write_buffer and wake up the sender thread,
+     *        The actual network writing is completed by the sender thread. Internally locked, safe from any thread.
+     * Ensure that a response packet is submitted for every URB
      * @param submit
      */
     void submit_ret_submit(UsbIpResponse::UsbIpRetSubmit &&submit);
 
     /**
-     * @brief 只入队 write_buffer，不唤醒 sender。
-     * 用于需要连续入队多条响应再统一唤醒的场景。
+     * @brief Only enqueue write_buffer without waking up the sender.
+     * is used in scenarios where multiple responses need to be queued continuously and then woken up in a unified manner.
      */
     void enqueue_ret_unlink(UsbIpResponse::UsbIpRetUnlink &&unlink);
     void enqueue_ret_submit(UsbIpResponse::UsbIpRetSubmit &&submit);
 
     /**
-     * @brief 唤醒 sender 线程，不塞任何数据。
-     * 与 enqueue_ret_* 配合使用：先连续 enqueue，最后调一次 wakeup_sender。
+     * @brief wakes up the sender thread without stuffing any data.
+     * Use with enqueue_ret_*: enqueue multiple items first, then call wakeup_sender once at the end.
      */
     void wakeup_sender();
 
     /**
-     * @brief 置停止标志位，shutdown + cancel 打断挂起的阻塞读，并唤醒 sender 线程。
-     * 仅供 Server 停止流程、AbstDeviceHandler::trigger_session_stop 和语言绑定调用。
-     * 内部不会关闭线程，只会通知线程关闭
+     * @brief sets the stop flag, shutdown + cancel interrupts the pending blocking read, and wakes up the sender thread.
+     * is only available for Server stop process, AbstDeviceHandler::trigger_session_stop and language binding calls.
+     * will not close the thread internally, but will only notify the thread to close
      */
     void immediately_stop();
 
@@ -94,9 +94,9 @@ public:
 
 private:
     /**
-     * @brief 传输应答适配器：把 TransferResponder 接口全部转发到 Session 的
-     * 对应实现（Session 自身不继承接口，设备侧只经 responder() 拿到的本对象
-     * 提交，不直接依赖 Session）
+     * @brief transfer response adapter: forward all TransferResponder interfaces to Session
+     * corresponding implementation (Session itself does not inherit the interface, the device side only obtains this object through responder()
+     * submission, does not directly rely on Session)
      */
     class SessionResponder : public TransferResponder {
     public:
@@ -130,16 +130,16 @@ private:
         Session &session_;
     };
 
-    // 传输应答适配器实例（成员初始化器里绑定本 Session）
+    // transfer response adapter instance (this Session is bound in the member initializer)
     SessionResponder responder_{*this};
 
     /**
-     * @brief 新建Session时由Server调用
+     * @brief Called by Server when creating a new Session
      */
     void run();
 
-    // 双缓冲队列：生产者写入 write_buffer，消费者读取 read_buffer
-    // 交换时短暂加锁，大幅减少锁竞争
+    // double buffer queue: producer writes write_buffer, consumer reads read_buffer
+    // locks briefly during exchange, greatly reducing lock competition.
     std::deque<UsbIpResponse::RetVariant> write_buffer;
     std::deque<UsbIpResponse::RetVariant> read_buffer;
     mutable std::mutex swap_mutex;
@@ -149,8 +149,8 @@ private:
     void parse_op();
 
     /**
-     * @brief 不停地传输urb
-     * @param transferring_ec 传输urb途中的ec
+     * @brief Continuously transfer URBs
+     * @param transferring_ec Error code encountered while transferring URBs
      */
     void transfer_loop(usbipdcpp::error_code &transferring_ec);
     void receiver(usbipdcpp::error_code &receiver_ec);
@@ -159,43 +159,43 @@ private:
 
     std::atomic_bool should_immediately_stop = false;
 
-    //是否在传输ret_submit的阶段
+    //Is  in the stage of transferring ret_submit?
     std::atomic_bool cmd_transferring = false;
 
-    //传输过程中不允许为空，传输过程中禁止任何写入。不允许在非网络线程读，除非加锁
+    //is not allowed to be empty during the transfer process, and any writing is prohibited during the transfer process. Reading from non-network threads is not allowed unless locked
     std::optional<std::string> current_import_device_id = std::nullopt;
-    //传输过程中不允许为空，传输过程中禁止任何写入。不允许在非网络线程读，除非加锁
+    //is not allowed to be empty during the transfer process, and any writing is prohibited during the transfer process. Reading from non-network threads is not allowed unless locked
     std::shared_ptr<UsbDevice> current_import_device = nullptr;
-    //直接持有 handler，避免通过 device 中转
+    //holds the handler directly to avoid transfer through device
     std::shared_ptr<AbstDeviceHandler> current_handler = nullptr;
-    //上面变量的值的锁
+    //Lock on the value of the above variable
     std::shared_mutex current_import_device_data_mutex;
 
     Server &server;
-    // 会话 id：由 Server 分配（原子递增，永不重复），收尾时用它从 Server
-    // 的会话表中移除自身
+    // Session id: assigned by Server (atomic increment, never repeated), used during teardown to remove itself from Server's
+    // removes itself from the session table
     std::uint64_t id;
-    // 本会话自持的处理上下文，声明在 socket 之前：析构时 socket 先析构
-    // （上下文还活着），随后 io_context 才销毁，顺序安全。socket 自持上下文
-    // 后连接的生命周期完全由本会话自己管理，不依赖 Server 的 io_context——
-    // accept 由 Server 的协程式 async_accept 直接接受进本 socket，不存在
-    // 跨 io_context 转移
+    // The self-sustained processing context of this session is declared before the socket: when destructed, the socket is destructed first.
+    // (the context is still alive), and then io_context is destroyed, the order is safe. socket self-sustaining context
+    // The life cycle of the connection after  is completely managed by this session itself and does not depend on the Server's io_context——
+    // Server's coroutine async_accept accepts the connection directly into this socket; there is no
+    // transfer across io_context
     asio::io_context io_context;
-    // 关联自持上下文，由 accept_loop 接受连接
+    // associated self-sustaining context, accepted by accept_loop
     asio::ip::tcp::socket socket{io_context};
-    // 保护 socket 的关闭类操作：会话收尾的 close 与 immediately_stop 的
-    // cancel/shutdown 分属不同线程，close 与 cancel 并发会破坏 asio 内部
-    // 状态（未定义行为），必须互斥。读写的 send/receive 不经此锁（asio
-    // 文档允许与 shutdown 并发）
+    // protects the socket close operation: close at the end of the session and immediately_stop
+    // cancel/shutdown belong to different threads, and the concurrency of close and cancel will destroy the internals of asio
+    // state (undefined behavior), must be mutually exclusive. Read and write send/receive do not pass this lock (asio
+    // document allows concurrency with shutdown)
     std::mutex socket_mutex;
 
 
-    // 主线程句柄不在成员中：run() 用局部句柄就地 detach——线程收尾不再
-    // 触碰自身句柄，避免与 run() 的赋值并发访问 std::thread 对象。子线程
-    // （sender）是 transfer_loop 的局部变量，创建/join/析构全在本线程内，
-    // 无需成员句柄
-    // sender 线程已退出标记：transfer_loop 收尾用它做限时等待（sender 可能
-    // 卡在挂起的写，超时后 close 强制打断，见 transfer_loop）
+    // The main thread handle is not a member: run() detaches a local handle immediately; thread teardown no longer
+    // touches its own handle, avoiding concurrent access to std::thread during run()'s assignment. The child thread
+    // (sender) is a local variable of transfer_loop. The creation/join/destruction are all within this thread.
+    // No member handle required
+    // Flag indicating the sender thread has exited: transfer_loop uses it for a timed teardown wait (sender may
+    // is stuck in pending writing, and close is forced to interrupt after timeout, see transfer_loop)
     std::atomic_bool sender_done = false;
 };
 }

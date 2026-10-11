@@ -12,31 +12,31 @@ int main(int argc, char **argv) {
     auto port = result["port"].as<std::uint16_t>();
     auto count = result["count"].as<int>();
 
-    // 设置日志级别
+    // Set log level
     spdlog::set_level(spdlog::level::debug);
 
     SPDLOG_INFO("Starting multi-device USB/IP server");
 
-    // 创建字符串池
+    // Create a string pool
     usbipdcpp::StringPool string_pool;
 
-    // 创建虚拟设备
+    // Create virtual device
     auto devices = DeviceFactory::create_devices(count, string_pool);
 
-    // 创建服务器
+    // Create server
     usbipdcpp::Server server;
 
-    // 将所有设备添加到服务器
+    // Add all devices to the server
     for (auto &device: devices) {
         server.add_device(std::move(device));
     }
 
-    // 设置监听端点
+    // Set listening endpoint
     asio::ip::tcp::endpoint endpoint{asio::ip::tcp::v4(), port};
 
-    // 启动服务器
+    // Start the server
     if (auto ec = server.start(endpoint); ec) {
-        SPDLOG_ERROR("服务器启动失败：{}", ec.message());
+        SPDLOG_ERROR("Server startup failed: {}", ec.message());
         return 1;
     }
 
@@ -45,7 +45,7 @@ int main(int argc, char **argv) {
     SPDLOG_INFO("Use 'usbip attach -r localhost --tcp-port {} -b 1-X' to attach a device", port);
     SPDLOG_INFO("Running... (Ctrl+C / SIGTERM / Enter to stop)");
 
-    // 打印所有绑定的设备
+    // Print all bound devices
     server.print_bound_devices();
 
     wait_for_exit();

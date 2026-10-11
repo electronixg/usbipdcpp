@@ -1,13 +1,13 @@
-# 多平台 CMake 编译 + 测试
-# 触发：push/PR 到 main，也可手动 workflow_dispatch
-# 矩阵：Linux(gcc) 8 种 × macOS(clang) 8 种 × Windows(msvc) 4 种选项排列
+# Multiplatform CMake build + tests
+# Trigger: push/PR to main, or manual workflow_dispatch
+# Matrix: Linux(gcc) 8 × macOS(clang) 8 × Windows(msvc) 4 option combinations
 
 name: CMake on multiple platforms
 
 on:
   push:
     branches: [ "main" ]
-    # 文档等非代码文件的改动不触发编译
+    # Changes to non-code files such as documentation do not trigger a build
     paths-ignore:
       - '**/*.md'
       - 'LICENSE'
@@ -31,7 +31,7 @@ jobs:
 
       matrix:
         include:
-          # ======== Linux (gcc) : VIRTUAL_DEVICE × LIBUSB × SHARED 全排列 (8) ========
+          # ======== Linux (gcc): all VIRTUAL_DEVICE × LIBUSB × SHARED combinations (8) ========
           - { name: linux-gcc  vdev+libusb+shared, os: ubuntu-24.04, cpp: g++,    vdev: ON,  libusb: ON,  shared: ON }
           - { name: linux-gcc  vdev+libusb static,  os: ubuntu-24.04, cpp: g++,    vdev: ON,  libusb: ON,  shared: OFF }
           - { name: linux-gcc  vdev shared,         os: ubuntu-24.04, cpp: g++,    vdev: ON,  libusb: OFF, shared: ON }
@@ -40,7 +40,7 @@ jobs:
           - { name: linux-gcc  libusb static,       os: ubuntu-24.04, cpp: g++,    vdev: OFF, libusb: ON,  shared: OFF }
           - { name: linux-gcc  shared only,         os: ubuntu-24.04, cpp: g++,    vdev: OFF, libusb: OFF, shared: ON }
           - { name: linux-gcc  static only,         os: ubuntu-24.04, cpp: g++,    vdev: OFF, libusb: OFF, shared: OFF }
-          # ======== macOS (clang) : VIRTUAL_DEVICE × LIBUSB × SHARED 全排列 (8) ========
+          # ======== macOS (clang): all VIRTUAL_DEVICE × LIBUSB × SHARED combinations (8) ========
           - { name: macos-clang  vdev+libusb+shared, os: macos-latest, cpp: clang++, vdev: ON,  libusb: ON,  shared: ON }
           - { name: macos-clang  vdev+libusb static,  os: macos-latest, cpp: clang++, vdev: ON,  libusb: ON,  shared: OFF }
           - { name: macos-clang  vdev shared,         os: macos-latest, cpp: clang++, vdev: ON,  libusb: OFF, shared: ON }
@@ -49,7 +49,7 @@ jobs:
           - { name: macos-clang  libusb static,       os: macos-latest, cpp: clang++, vdev: OFF, libusb: ON,  shared: OFF }
           - { name: macos-clang  shared only,         os: macos-latest, cpp: clang++, vdev: OFF, libusb: OFF, shared: ON }
           - { name: macos-clang  static only,         os: macos-latest, cpp: clang++, vdev: OFF, libusb: OFF, shared: OFF }
-          # ======== Windows (msvc) : VIRTUAL_DEVICE × SHARED (libusb 不开，runner 无 libusb) (4) ========
+          # ======== Windows (msvc): VIRTUAL_DEVICE × SHARED (libusb is not enabled, runner does not have libusb) (4) ========
           - { name: win-msvc  vdev+shared,          os: windows-latest, cpp: cl,    vdev: ON,  libusb: OFF, shared: ON }
           - { name: win-msvc  vdev static,          os: windows-latest, cpp: cl,    vdev: ON,  libusb: OFF, shared: OFF }
           - { name: win-msvc  shared only,          os: windows-latest, cpp: cl,    vdev: OFF, libusb: OFF, shared: ON }
@@ -58,7 +58,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # ======== 依赖 ========
+      # ======== Dependencies ========
 
       - name: Install dependencies (Linux)
         if: runner.os == 'Linux'
@@ -79,7 +79,7 @@ jobs:
         run: |
           brew install asio spdlog libusb cxxopts googletest miniaudio
 
-      # ======== CMake 配置 ========
+      # ======== CMake configuration ========
 
       - name: Configure CMake (Linux)
         if: runner.os == 'Linux'
@@ -125,16 +125,16 @@ jobs:
             -DUSBIPDCPP_BUILD_SHARED_LIBS=${{ matrix.shared }} \
             -S ${{ github.workspace }}
 
-      # ======== 编译 + 测试 ========
+      # ======== Compile + Test ========
 
-      # ubuntu-24.04 runner 只有 2 核且内存小：2 并发编译时 miniaudio/fmt 等
-      # 大头文件同时展开，内存峰值超限被内核 OOM 杀 cc1plus（实测 g++: fatal
-      # error: Killed，内存紧张连带 runner 服务被杀 exit 143），Linux 限 1 并发
+      # ubuntu-24.04 runner has only 2 cores and little memory: with 2 concurrent compilations, large headers such as miniaudio/fmt
+      # expand simultaneously, exceeding the peak memory limit; the kernel OOM killer kills cc1plus (observed g++: fatal
+      # error: Killed; memory pressure also kills the runner service, exit 143); limit Linux to 1 concurrent compilation
       - name: Build (Linux)
         if: runner.os == 'Linux'
         run: cmake --build build --config Release --parallel 1
 
-      # Windows/macOS 编译器内存占用低，不限制（用满 runner 核数）
+      # Windows/macOS compilers use less memory; do not limit parallelism (use all runner cores)
       - name: Build
         if: runner.os != 'Linux'
         run: cmake --build build --config Release --parallel
@@ -143,23 +143,23 @@ jobs:
         working-directory: build
         run: ctest --build-config Release --output-on-failure
 
-      # ======== 高频稳定性测试 ========
-      # 线程竞争、停止流程等偶发 bug 单次运行无法暴露（本地曾出现第 1303 次
-      # 循环才挂起的竞态），因此对曾出过 bug 的生命周期路径重复跑 50 轮直到失败。
-      # TestNetworkConnection 是连接/停止/竞态类测试（独立文件，与纯数据结构
-      # 测试分开），其中 StopDuringClientConnectRace 是唯一在 stop 时刻有连接
-      # 涌入的测试，直接覆盖 acceptor close 与 accept 的竞态（本次 CI 崩溃的
-      # 根因），虽在 Windows 上单次约 2 秒（线程/socket 开销），但保留。
-      # 注意必须 shell: bash：行尾 \ 续行是 bash 语法，Windows runner 默认
-      # pwsh 会把它当字面参数，导致 -R 过滤丢失、全部测试重复 50 轮（曾
-      # 造成 Windows job 跑 50 分钟）
+      # ======== Frequently repeated stability tests ========
+      # Intermittent bugs in thread races, stop sequences, etc. cannot be exposed by a single run (a local race once hung only on the 1303rd
+      # iteration), so repeat lifecycle paths with previous bugs for 50 rounds, stopping on failure.
+      # TestNetworkConnection contains connection/stop/race tests (separate file from pure data-structure
+      # tests); StopDuringClientConnectRace is the only test with incoming connections
+      # at stop time, directly covering the race between acceptor close and accept (root cause of this CI
+      # crash). Retain it despite taking about 2 seconds per run on Windows (thread/socket overhead).
+      # Must use shell: bash: trailing \ for line continuation is bash syntax; the Windows runner's default
+      # pwsh treats it as a literal argument, losing the -R filter and repeating all tests for 50 rounds (once
+      # made the Windows job run for 50 minutes)
       - name: Stress test (TestNetworkConnection)
         shell: bash
         working-directory: build
         run: |
-          # tee 保持实时日志输出；失败时在 runner 上就地符号化崩溃栈
-          # （二进制还在，tools/addr2line_crash.sh 解析日志里的偏移），
-          # 否则地址离开 runner 后永远无法解析
+          # tee retains live log output; on failure, symbolize crash stack directly on runner
+          # (binaries still available; tools/addr2line_crash.sh parses offsets in logs),
+          # otherwise addresses can never be resolved after leaving runner
           set +e
           ctest --build-config Release --repeat until-fail:50 --timeout 120 --output-on-failure \
             -R "TestNetworkConnection\.(ServerCanRestartAfterStop|ManyQuickConnections|StopWithMultipleClients|StopDuringClientConnectRace)" \
@@ -167,7 +167,7 @@ jobs:
           status=${PIPESTATUS[0]}
           set -e
           if [ $status -ne 0 ]; then
-              echo "=== 符号化崩溃栈 ==="
+              echo "=== Symbolizing the crash stack ==="
               bash ${{ github.workspace }}/tools/addr2line_crash.sh /tmp/stress.log || true
               exit $status
           fi
@@ -184,20 +184,20 @@ jobs:
           status=${PIPESTATUS[0]}
           set -e
           if [ $status -ne 0 ]; then
-              echo "=== 符号化崩溃栈 ==="
+              echo "=== Symbolizing the crash stack ==="
               bash ${{ github.workspace }}/tools/addr2line_crash.sh /tmp/stress_vdev.log || true
               exit $status
           fi
 
-  # Termux (Android) 编译验证。
-  # Termux rootfs 无 glibc，actions 的 node 程序（含 actions/checkout）无法在容器内运行，
-  # 因此 checkout 在 host 执行，构建挂载进 termux-docker 镜像进行。
-  # 镜像 entrypoint 自动从 root 切到容器用户(1000)（pkg 拒绝 root）；
-  # workspace 挂载属主是 host 的 runner(1001)，容器用户不可写，
-  # 构建目录放容器 HOME，workspace 仅作只读源码。
-  # cxxopts 不在 Termux 仓库，按 README 指南手动安装（其测试依赖 Android 系统库
-  # liblog 而镜像无 Android 运行时，需禁用）；miniaudio 也没有，
-  # mock_audio 的 --audio 选项（AudioFileSource）自动禁用。
+  # Termux (Android) compilation verification.
+  # Termux rootfs has no glibc; actions' node programs (including actions/checkout) cannot run inside container,
+  # so checkout runs on host; mount source into termux-docker image for building.
+  # Image entrypoint switches automatically from root to container user (1000) (pkg rejects root);
+  # mounted workspace belongs to host runner (1001), so container user cannot write it;
+  # place build directory in container HOME; workspace supplies read-only source only.
+  # cxxopts is absent from Termux repository; install manually following README (its tests depend on Android system library
+  # liblog, but image has no Android runtime, so disable tests); miniaudio is also absent,
+  # automatically disabling mock_audio's --audio option (AudioFileSource).
   termux-build:
     runs-on: ubuntu-latest
     steps:
@@ -209,10 +209,10 @@ jobs:
           #!/bin/bash
           set -e
           pkg update -y
-          # 点名安装 libc++：Termux 里 libc++ 的头文件由 ndk-sysroot 提供、运行时库
-          # 由 libc++ 包提供，仓库升了 ndk-sysroot 却没带 libc++ 时两者会错位（曾出现
-          # ndk-sysroot 30 配 libc++ 29，链接期报 std::__ndk1::__hash_memory 未定义）；
-          # 点名安装可让它与 ndk-sysroot 保持同一版本
+          # Explicitly install libc++: Termux libc++ headers come from ndk-sysroot, runtime library
+          # from libc++ package; upgrading ndk-sysroot without libc++ makes versions mismatch (once
+          # ndk-sysroot 30 paired with libc++ 29 caused undefined std::__ndk1::__hash_memory at link time);
+          # explicit installation keeps it at same version as ndk-sysroot
           pkg install -y bash git clang cmake ninja pkg-config libasio libspdlog googletest libusb libc++
           git clone --depth 1 https://github.com/jarro2783/cxxopts.git ~/cxxopts
           cd ~/cxxopts

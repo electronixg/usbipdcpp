@@ -25,10 +25,10 @@ void LibusbTransferLM::destroy(libusb_transfer *p) {
 void LibusbTransferReset::reset(libusb_transfer &t) {
     t.actual_length = 0;
     t.status = LIBUSB_TRANSFER_COMPLETED;
-    // num_iso_packets 只被 libusb_fill_iso_transfer 设置，池只回收非等时
-    // 传输（free_transfer_handle 按 num_iso_packets==0 判回池），复用对象
-    // 本应恒为 0；显式清零把该不变式局部化，防止未来池策略变化（如等时
-    // 也入池）时残留值被非等时路径误读
+    // num_iso_packets is set only by libusb_fill_iso_transfer, and the pool reclaims only non-isochronous
+    // transfers (free_transfer_handle returns to the pool when num_iso_packets==0), so reused objects
+    // should always have 0. Explicitly clearing it makes this invariant local, preventing a remaining value from being misread by a non-isochronous path
+    // if the pool policy changes in the future (e.g. allowing isochronous transfers into the pool)
     t.num_iso_packets = 0;
 }
 
@@ -51,8 +51,8 @@ void *LibusbTransferOperator::alloc_transfer_handle(std::size_t buffer_length, i
         if (!trx) [[unlikely]] {
             return nullptr;
         }
-        // libusb_alloc_transfer 不会设置公开的 num_iso_packets 字段（文档 io.c L443 明确说明），
-        // 必须用户自行赋值，否则 recv_transfer_data 中描述符读取循环读到垃圾值导致协议错位。
+        // libusb_alloc_transfer does not set the public num_iso_packets field (explicitly documented in io.c L443);
+        // the user must assign it, or the descriptor read loop in recv_transfer_data reads garbage and misaligns the protocol.
         trx->num_iso_packets = num_iso_packets;
     }
 
@@ -93,14 +93,14 @@ std::size_t LibusbTransferOperator::get_actual_length(void *handle) {
 
 bool LibusbTransferOperator::transfer_is_in(void *handle) {
     auto *trx = static_cast<libusb_transfer *>(handle);
-    // 方向以 libusb 提交时的端点为准（与 send_transfer_data 内部判断同源）
+    // Direction follows the endpoint used for libusb submission (the same basis as send_transfer_data's internal check)
     return (trx->endpoint & LIBUSB_ENDPOINT_IN) != 0;
 }
 
 UsbIpIsoPacketDescriptor LibusbTransferOperator::get_iso_descriptor(void *handle, int index) {
     auto *trx = static_cast<libusb_transfer *>(handle);
     auto &iso = trx->iso_packet_desc[index];
-    // libusb 的 iso 包在 buffer 中连续存放，offset = 前面所有包的 length 累加
+    // libusb iso packets occupy consecutive buffer positions; offset = sum of all preceding packet lengths
     unsigned offset = 0;
     for (int i = 0; i < index; i++) {
         offset += trx->iso_packet_desc[i].length;
@@ -127,12 +127,12 @@ void LibusbTransferOperator::send_transfer_data(void *handle, asio::ip::tcp::soc
     if (trx->type == LIBUSB_TRANSFER_TYPE_ISOCHRONOUS && trx->num_iso_packets > 0) {
         SmallVector<asio::const_buffer, 130> buffers;
         SmallVector<decltype(UsbIpIsoPacketDescriptor{}.to_bytes()), 130> desc_bytes;
-        // offset: buffer 中的包槽位偏移（pkt.length 步长），同时用于数据读取和描述符 offset 字段。
-        //   槽位大小由客户端 CMD_SUBMIT 的描述符 length 决定，必须按 pkt.length 步进而非 actual_length，
-        //   否则 vhci 会把包 N 的数据错误地写入包 N-1 的槽位中。
-        // length 已由协议层按方向算好（transfer_is_in 查询，OUT 恒传 0，
-        // 见 RetSubmit/CmdSubmit 的 to_socket），这里只按 length > 0 决定
-        // 是否发数据，不再自行判断方向
+        // offset: packet-slot offset in buffer (pkt.length stride), used both for data reads and the descriptor offset field.
+        //   Slot size is determined by descriptor length in the client's CMD_SUBMIT; advance by pkt.length rather than actual_length,
+        //   otherwise vhci incorrectly writes packet N's data into packet N-1's slot.
+        // length was already calculated by the protocol layer according to direction (transfer_is_in query; OUT always passes 0;
+        // see RetSubmit/CmdSubmit to_socket). Here only length > 0 determines
+        // whether to send data; do not determine direction independently again
         bool need_to_send_buffer = (length > 0);
         std::uint32_t offset = 0;
         for (int i = 0; i < trx->num_iso_packets; i++) {
@@ -163,11 +163,11 @@ void LibusbTransferOperator::recv_transfer_data(void *handle, asio::ip::tcp::soc
                                                 std::error_code &ec) {
     auto *trx = static_cast<libusb_transfer *>(handle);
     if (length > 0) {
-        // 控制传输 buffer 前 8 字节留给 setup 包，由后续 receive_urb 填入；
-        // 此处从偏移 8 开始读取数据阶段内容。
-        // trx->type 此时尚未设置，不能用来判断传输类型；
-        // 改用 trx->length 判断：alloc 时控制传输多加了 LIBUSB_CONTROL_SETUP_SIZE，
-        // 因此 trx->length > length 说明 buffer 包含 setup 前缀
+        // The first 8 bytes of the control-transfer buffer are reserved for the setup packet, filled later by receive_urb;
+        // read data-stage content starting at offset 8 here.
+        // trx->type is not set yet, so it cannot determine the transfer type;
+        // use trx->length instead: allocation adds LIBUSB_CONTROL_SETUP_SIZE for control transfers,
+        // so trx->length > length indicates the buffer includes the setup prefix
         bool is_control = (static_cast<std::size_t>(trx->length) > length);
         auto *buf = trx->buffer + (is_control ? LIBUSB_CONTROL_SETUP_SIZE : 0);
         asio::read(sock, asio::buffer(buf, length), ec);
@@ -175,36 +175,36 @@ void LibusbTransferOperator::recv_transfer_data(void *handle, asio::ip::tcp::soc
             return;
     }
 
-    // 校验并读取 ISO 描述符：length/actual_length 是客户端可控字段，必须验证
-    // 才能写入 libusb transfer——libusb 按 length 从缓冲区读写数据，length
-    // 总和超过缓冲区大小（trx->length，ISO 传输不含 setup 前缀）会越界读写
-    // （堆溢出），actual_length 超过 length 则包数据溢出。不合法拒绝整个
-    // 命令（调用方 ec 非空时抛异常断开连接）
+    // Validate and read ISO descriptors: length/actual_length are client-controlled fields and must be checked
+    // before writing them into a libusb transfer. libusb reads/writes buffer data according to length; a sum of lengths
+    // exceeding the buffer size (trx->length; ISO transfers have no setup prefix) causes out-of-bounds reads/writes
+    // (heap overflow), while actual_length exceeding length overflows packet data. Reject the entire invalid
+    // command (the caller throws and disconnects when ec is nonempty)
     std::uint64_t total_length = 0;
     for (int i = 0; i < trx->num_iso_packets; i++) {
         UsbIpIsoPacketDescriptor iso_desc{};
         iso_desc.from_socket(sock);
-        // 校验写成 total_length + length > trx->length：若写成
-        // length > trx->length - total_length，total_length 超过
-        // trx->length 时无符号减法会下溢成巨大值、校验失效（前序校验
-        // 保证 total_length 恒 ≤ trx->length，实际不会触发，但可读性差）
+        // Write the check as total_length + length > trx->length: with
+        // length > trx->length - total_length, if total_length exceeds
+        // trx->length, unsigned subtraction underflows to a huge value and invalidates the check (preceding checks
+        // ensure total_length is always <= trx->length, so this cannot actually occur, but readability is poor)
         if (iso_desc.actual_length > iso_desc.length ||
             total_length + iso_desc.length > static_cast<std::uint64_t>(trx->length)) [[unlikely]] {
-            SPDLOG_ERROR("ISO 描述符非法：包 {} length={} actual_length={}（剩余缓冲 {}）",
+            SPDLOG_ERROR("Invalid ISO descriptor: packet {} length={} actual_length={} (remaining buffer {})",
                          i, iso_desc.length, iso_desc.actual_length,
                          static_cast<std::uint64_t>(trx->length) - total_length);
             ec = std::make_error_code(std::errc::invalid_argument);
             return;
         }
         total_length += iso_desc.length;
-        // 客户端描述符里的 offset 被丢弃（set_iso_descriptor 不写它）：libusb
-        // 的 iso_packet_desc 没有 offset 字段（buffer 布局隐式连续），发送端
-        // 的 offset 由 send_transfer_data 按 pkt.length 累加自行计算，恶意或
-        // 错误的 offset 无法影响服务器的数据定位。协议线格式数据本来就是
-        // 紧凑的：客户端（Linux vhci）发送 ISO 数据时按描述符 offset 从本地
-        // URB buffer 紧凑复制进 PDU（内核 usbip_common.c 的
-        // usbip_alloc_iso_desc_pdu：memcpy 目标逐个 length 连续累加），
-        // 不存在带间隙的线上布局
+        // The client descriptor's offset is discarded (set_iso_descriptor does not write it): libusb's
+        // iso_packet_desc has no offset field (buffer layout is implicitly contiguous), and the sender
+        // calculates offset itself by accumulating pkt.length in send_transfer_data, so malicious or
+        // incorrect offsets cannot affect server data positioning. Protocol wire-format data is inherently
+        // compact: the client (Linux vhci), when sending ISO data, compactly copies from its local
+        // URB buffer into the PDU according to descriptor offsets (kernel usbip_common.c's
+        // usbip_alloc_iso_desc_pdu: memcpy destinations advance contiguously by each length),
+        // so there is no on-wire layout with gaps
         set_iso_descriptor(handle, i, iso_desc);
     }
 }

@@ -17,9 +17,9 @@ void MockCdcAcmCommunicationInterfaceHandler::on_set_line_coding(const LineCodin
 void MockCdcAcmCommunicationInterfaceHandler::on_set_control_line_state(const ControlSignalState &state) {
     SPDLOG_INFO("Control line state: DTR={}, RTS={}", state.dtr, state.rts);
 
-    // 当 DTR 变为高时，发送 DCD 和 DSR 信号
+    // Send DCD and DSR signals when DTR goes high
     if (state.dtr && get_data_handler()) {
-        // 发送状态通知：DCD 和 DSR 有效
+        // Send status notification: DCD and DSR valid
         send_serial_state_notification(static_cast<std::uint16_t>(CdcAcmSerialState::DCD) |
                                        static_cast<std::uint16_t>(CdcAcmSerialState::DSR));
     }
@@ -44,12 +44,12 @@ void MockCdcAcmDataInterfaceHandler::on_disconnection(error_code &ec) {
 
 bool MockCdcAcmDataInterfaceHandler::on_data_received(data_type &&data) {
     if (should_immediately_stop) {
-        // 停止状态不处理：返回 false 且不移动 data（契约），请求挂起后随断连清掉
+        // Do not process in the stopped state: return false without moving data (the contract); the request remains pending and is cleared on disconnection.
         return false;
     }
 
-    // 回显：把主机数据原样塞给 IN 方向，阻塞发送确保不丢（生成的数据经
-    // in_channel 等主机 IN 请求取走）
+    // echo: Send the host data to the IN direction as it is, blocking the transmission to ensure that it is not lost (the generated data is
+    // buffered in in_channel, waiting for the host's IN request to consume it)
     SPDLOG_DEBUG("Echo {} bytes", data.size());
     send_data_blocking(std::move(data));
     return true;

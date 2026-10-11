@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# 把崩溃日志里的地址栈符号化为 文件:行号。
+# Symbolize the address stack in a crash log as file:line number.
 #
-# 用法：
+# Usage:
 #   cat crash.log | tools/addr2line_crash.sh
 #   tools/addr2line_crash.sh crash.log
 #
-# 支持两种帧格式（测试的 crash handler 打印的 backtrace）：
-#   [/path/module(+0x1d0ef) [0x...]      ← 无符号：偏移相对模块，直接 addr2line
-#   [/path/module(symbol+0x20) [0x...]   ← 有符号：偏移相对符号，用 nm 转绝对 VMA
+# Supports two frame formats (the backtrace printed by the tests' crash handler):
+#   [/path/module(+0x1d0ef) [0x...]      <- Without symbols: offset is relative to the module; use addr2line directly
+#   [/path/module(symbol+0x20) [0x...]   <- With symbols: offset is relative to the symbol; use nm to convert to an absolute VMA
 #
-# 模块路径从日志里解析（runner 和本地都能用），只要模块二进制还在
-# 输入日志对应的机器上即可。
+# Parse module paths from the log (works on runners and locally), provided the module binaries are still on
+# the machine that produced the input log.
 
 set -u
 
 log_file="${1:-/dev/stdin}"
 
-# 已解析过的模块行缓存，避免同一地址重复查
+# Cache already parsed module lines to avoid repeated lookups of the same address
 declare -A seen
 
 resolve() {
@@ -26,19 +26,19 @@ resolve() {
     inner=$(echo "$frame" | sed -E 's/^[^(]*\(([^)]*)\).*/\1/')
 
     [ "$inner" = "nil" ] && return 0
-    [ -f "$module" ] || { echo "  模块不存在: $module"; return 1; }
+    [ -f "$module" ] || { echo "  Module does not exist: $module"; return 1; }
 
     if [[ "$inner" == +0x* ]]; then
-        # 无符号：+偏移 相对模块，addr2line 直接用
-        addr2line -f -C -e "$module" "0x${inner#+}" 2>/dev/null || echo "  addr2line 失败"
+        # Without symbols: +offset is relative to the module; use it directly with addr2line
+        addr2line -f -C -e "$module" "0x${inner#+}" 2>/dev/null || echo "  addr2line failed"
         return
     fi
 
-    # 有符号：inner = symbol+0x偏移，用 nm 找符号 VMA 再算绝对地址
+    # With symbols: inner = symbol+0xoffset; use nm to find the symbol VMA, then calculate the absolute address
     local sym="${inner%%+*}"
     local off="${inner#*+}"
-    # nm 的导出符号带版本后缀（如 pthread_detach@@GLIBC_2.34），按裸名匹配；
-    # 地址补 0x 前缀（nm 输出无前缀，bash 算术里前导零会被当八进制）
+    # Exported symbols from nm have version suffixes (such as pthread_detach@@GLIBC_2.34); match by the undecorated name;
+    # Add the 0x address prefix (nm outputs no prefix; bash arithmetic treats leading zeros as octal)
     local sym_addr
     sym_addr=$(nm -D "$module" 2>/dev/null | awk -v s="$sym" '
         index($3, s) == 1 && substr($3, length(s) + 1, 2) == "@@" { print "0x" $1; exit }')
@@ -46,15 +46,15 @@ resolve() {
         sym_addr=$(nm "$module" 2>/dev/null | awk -v s="$sym" '$3 == s { print "0x" $1; exit }')
     fi
     if [ -z "$sym_addr" ]; then
-        echo "  找不到符号: $sym"
+        echo "  Symbol not found: $sym"
         return 1
     fi
     local abs_addr
     abs_addr=$(printf "0x%x" "$((sym_addr + off))")
-    addr2line -f -C -e "$module" "$abs_addr" 2>/dev/null || echo "  addr2line 失败"
+    addr2line -f -C -e "$module" "$abs_addr" 2>/dev/null || echo "  addr2line failed"
 }
 
-# 逐行匹配帧；帧格式：  [n] /path/module(...) [0x...] 或  [n] (nil)
+# Match frames line by line; frame format:  [n] /path/module(...) [0x...] or  [n] (nil)
 while IFS= read -r line; do
     frame=$(echo "$line" | grep -oE '\[[0-9]+\][[:space:]]*[^[:space:]]+\([^)]*\)' | sed -E 's/^\[[0-9]+\][[:space:]]*//')
     [ -n "$frame" ] || continue

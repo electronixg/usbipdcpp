@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# e2e 总脚本：挨个运行 tests/e2e/ 下每个设备测试脚本，失败不中断（看全貌），
-# 全部跑完后按失败数退出非 0。每个脚本内部自己清理服务器/设备
+# Top-level e2e script: run each device test script under tests/e2e/ in turn; continue after failures (see full picture),
+# then exit nonzero according to failure count. Each script cleans its own server/device
 set -u
 
 E2E_DIR="$(cd "$(dirname "$0")" && pwd)"
 FAILED=""
 
-# 依次跑 test_*.sh（shell 排序即执行顺序）
+# Run test_*.sh sequentially (shell sort determines execution order)
 for t in "$E2E_DIR"/test_*.sh; do
     [ -e "$t" ] || continue
     name=$(basename "$t" .sh)

@@ -7,7 +7,7 @@
 using namespace usbipdcpp;
 using namespace usbipdcpp::test;
 
-// 用于测试的 mock DeviceHandler
+// Mock DeviceHandler for testing
 class MockDeviceHandlerForTest : public AbstDeviceHandler {
 public:
     explicit MockDeviceHandlerForTest(UsbDevice &device) : AbstDeviceHandler(device) {
@@ -26,7 +26,7 @@ public:
     }
 };
 
-// 创建测试用的 UsbDevice
+// Create test UsbDevice
 inline UsbDevice create_test_device() {
     return UsbDevice{.path = "/test",
                      .busid = "1-1",
@@ -62,7 +62,7 @@ TEST(TestUsbIpRetSubmit, CreateOkWithNoIso) {
     EXPECT_EQ(ret.status, 0);
     EXPECT_EQ(ret.actual_length, trx->actual_length);
     EXPECT_TRUE(ret.transfer);
-    // TransferHandle 析构时自动释放
+    // TransferHandle releases automatically on destruction
 }
 
 TEST(TestUsbIpRetSubmit, CreateOkWithoutData) {
@@ -88,7 +88,7 @@ TEST(TestUsbIpRetSubmit, CreateEpipeNoIso) {
 
     EXPECT_EQ(ret.header.seqnum, 0xABCD);
     EXPECT_EQ(ret.status, static_cast<std::uint32_t>(UrbStatusType::StatusEPIPE));
-    // TransferHandle 析构时自动释放
+    // TransferHandle releases automatically on destruction
 }
 
 TEST(TestUsbIpRetSubmit, CreateEpipeWithoutData) {
@@ -110,7 +110,7 @@ TEST(TestUsbIpRetUnlink, ToBytes) {
     auto ret = UsbIpResponse::UsbIpRetUnlink::create_ret_unlink_success(0x1234);
     auto bytes = ret.to_bytes();
 
-    // 检查基本大小（header + status + padding）
+    // Check basic size (header + status + padding)
     EXPECT_GT(bytes.size(), 0);
 }
 
@@ -200,10 +200,10 @@ TEST(TestOpRepDevlist, EmptyDeviceList) {
     EXPECT_TRUE(ret.devices.empty());
 }
 
-// ============== 极端情况测试 ==============
+// ============== Edge-case tests ==============
 
 TEST(TestUsbIpRetSubmit, LargeData) {
-    // 大数据量
+    // Large data volume
     auto test_device = create_test_device();
     MockDeviceHandlerForTest mock_handler(test_device);
 
@@ -216,7 +216,7 @@ TEST(TestUsbIpRetSubmit, LargeData) {
             0x1234, static_cast<std::uint32_t>(trx->actual_length), std::move(handle));
 
     EXPECT_EQ(ret.actual_length, trx->actual_length);
-    // TransferHandle 析构时自动释放
+    // TransferHandle releases automatically on destruction
 }
 
 TEST(TestUsbIpRetSubmit, ZeroLengthData) {
@@ -227,7 +227,7 @@ TEST(TestUsbIpRetSubmit, ZeroLengthData) {
 }
 
 TEST(TestUsbIpRetSubmit, WithIsoPacketDescriptors) {
-    // 带等时包描述符
+    // With isochronous packet descriptors
     auto test_device = create_test_device();
     MockDeviceHandlerForTest mock_handler(test_device);
 
@@ -243,21 +243,21 @@ TEST(TestUsbIpRetSubmit, WithIsoPacketDescriptors) {
     auto ret = UsbIpResponse::UsbIpRetSubmit::create_ret_submit(0x1234, 0, 1536, 0, 2, std::move(handle));
 
     EXPECT_EQ(ret.number_of_packets, 2);
-    // TransferHandle 析构时自动释放
+    // TransferHandle releases automatically on destruction
 }
 
 TEST(TestUsbIpRetSubmit, VariousErrorStatus) {
-    // 测试各种错误状态
+    // Test various error statuses
     auto ret_epipe = UsbIpResponse::UsbIpRetSubmit::create_ret_submit_epipe_without_data(0x1234, 0);
     EXPECT_EQ(ret_epipe.status, static_cast<std::uint32_t>(UrbStatusType::StatusEPIPE));
 
-    // create_ret_submit 直接接受 errno 并存储，内部不转换
+    // create_ret_submit accepts errno directly and stores it, without internal conversion
     auto ret_enoent = UsbIpResponse::UsbIpRetSubmit::create_ret_submit(0x1234, ENOENT, 0, 0, 0, TransferHandle());
     EXPECT_EQ(ret_enoent.status, static_cast<std::uint32_t>(ENOENT));
 }
 
 TEST(TestUsbIpRetUnlink, UnlinkError) {
-    // create_ret_unlink 直接接受 errno 并存储，内部不转换
+    // create_ret_unlink accepts errno directly and stores it, without internal conversion
     auto ret = UsbIpResponse::UsbIpRetUnlink::create_ret_unlink(0x1234, EPIPE);
     EXPECT_EQ(ret.status, static_cast<std::uint32_t>(EPIPE));
 }
@@ -306,7 +306,7 @@ TEST(TestOpRepImport, DeviceWithMultipleInterfaces) {
 TEST(TestOpRepDevlist, ManyDevices) {
     std::vector<std::shared_ptr<UsbDevice>> devices;
 
-    // 创建多个设备
+    // Create multiple devices
     for (int i = 0; i < 10; ++i) {
         devices.push_back(std::make_shared<UsbDevice>(UsbDevice{.path = "/test/device" + std::to_string(i),
                                                                 .busid = "1-" + std::to_string(i + 1),

@@ -12,10 +12,10 @@ import usbipdcpp
 
 
 def main():
-    # 创建字符串池
+    # Create a string pool
     string_pool = usbipdcpp.StringPool()
 
-    # 创建设备（先添加接口，再在接口上创建 handler）
+    # Create device (add interface first, then create handler on interface)
     device = usbipdcpp.UsbDevice()
     device.path = "/usbipdcpp/absolute_mouse"
     device.busid = "1-1"
@@ -33,13 +33,13 @@ def main():
     device.ep0_in = usbipdcpp.UsbEndpoint.get_ep0_in(UsbSpeed.Full)
     device.ep0_out = usbipdcpp.UsbEndpoint.get_ep0_out(UsbSpeed.Full)
 
-    # 创建 HID 鼠标接口
+    # Create HID mouse interface
     interface = usbipdcpp.UsbInterface()
     interface.interface_class = usbipdcpp.ClassCode.HID
     interface.interface_subclass = 0x01
     interface.interface_protocol = 0x02  # Mouse
 
-    # 添加中断端点
+    # Add interrupt endpoint
     endpoint = usbipdcpp.UsbEndpoint()
     endpoint.address = 0x81  # IN endpoint
     endpoint.attributes = 0x03  # Interrupt
@@ -47,15 +47,15 @@ def main():
     endpoint.interval = 1
     interface.add_endpoint(endpoint)
 
-    # 接口加入设备
+    # interface joins the device
     device.add_interface(interface)
 
-    # 在设备内的接口上创建 handler（确保 handler 引用的是 vector 内的接口）
+    # Create a handler on the interface in the device (make sure the handler refers to the interface in the vector)
     iface_in_device = device.get_interface(0)
     mouse = usbipdcpp.AbsoluteMouseHandler(iface_in_device, string_pool, 1920, 1080)
     iface_in_device.set_handler(mouse)
 
-    # 设置设备 handler 并初始化接口
+    # Set the device handler and initialize the interface
     device_handler = usbipdcpp.SimpleVirtualDeviceHandler(device, string_pool)
     device_handler.change_string_manufacturer("Usbipdcpp Python")
     device_handler.change_string_product("Absolute Mouse (Python)")
@@ -63,7 +63,7 @@ def main():
     device.set_handler(device_handler)
     device_handler.setup_interface_handlers()
 
-    # 启动服务器
+    # Start the server
     server = usbipdcpp.Server()
     server.add_device(device)
     server.start("0.0.0.0", 54327)
@@ -97,9 +97,9 @@ def main():
             cmd = parts[0]
             if cmd == "p":
                 state = mouse.get_button_state()
-                print(f"按钮: L={state.left_button} R={state.right_button} "
+                print(f"button: L={state.left_button} R={state.right_button} "
                       f"M={state.middle_button} W={state.wheel}")
-                print(f"屏幕: {mouse.get_screen_width()}x{mouse.get_screen_height()}")
+                print(f"Screen: {mouse.get_screen_width()}x{mouse.get_screen_height()}")
             elif cmd == "pos" and len(parts) >= 3:
                 x, y = int(parts[1]), int(parts[2])
                 mouse.set_position(x, y)

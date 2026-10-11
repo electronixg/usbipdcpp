@@ -1,6 +1,6 @@
-// mock_webcam（UVC 摄像头 + UAC 麦克风复合设备）装配层测试：两个功能 helper
-// 顺序装配到同一 UsbDevice 的布局正确性（接口号、IAD 归属、端点唯一性、handler
-// 类型）。各 handler 的行为已由 test_uvc_handler / test_uac_speaker_stream 覆盖
+// mock_webcam (UVC camera + UAC microphone composite device) assembly layer test: two function helpers
+// Layout correctness of sequential assembly to the same UsbDevice (interface number, IAD ownership, endpoint uniqueness, handler
+// type). The behavior of each handler has been covered by test_uvc_handler / test_uac_speaker_stream
 
 #include <gtest/gtest.h>
 
@@ -19,15 +19,15 @@ using namespace usbipdcpp;
 
 namespace {
 
-// 与 mock_webcam_main 相同的装配流程：UVC(VC/VS) 接口 0-1 + UAC 麦克风(AC/AS) 接口 2-3
+// has the same assembly process as mock_webcam_main: UVC(VC/VS) interface 0-1 + UAC microphone (AC/AS) interface 2-3
 struct WebcamTestEnv {
     StringPool pool;
     std::shared_ptr<UsbDevice> device;
 
     WebcamTestEnv() {
-        // 端点布局照抄 mock_webcam_main：UVC VS 用 0x81、UAC AS 用 0x83
-        // （0x81 已被 UVC VS 占用，端点号设备内唯一，对齐内核 g_webcam 的
-        // uvc ep1 + uac ep2/3 分配）
+        // endpoint layout copied mock_webcam_main: UVC VS uses 0x81, UAC AS uses 0x83
+        // (0x81 is already used by UVC VS; endpoint numbers are unique within the device, matching kernel g_webcam
+        // uvc ep1 + uac ep2/3 distribution)
         std::vector<UsbInterface> interfaces = {
                 UsbInterface{.interface_class = 0x0E, .interface_subclass = 0x01, .interface_protocol = 0x01,
                              .endpoints = {{UsbEndpoint{.address = 0x87, .attributes = 0x03,
@@ -52,7 +52,7 @@ struct WebcamTestEnv {
                 .vendor_id = 0x1234,
                 .product_id = 0x5685,
                 .device_bcd = 0x0100,
-                .device_class = 0xEF, // Miscellaneous (IAD)：复合设备必须
+                .device_class = 0xEF, // Miscellaneous (IAD): required for a composite device
                 .device_subclass = 0x02,
                 .device_protocol = 0x01,
                 .configuration_value = 1,
@@ -62,9 +62,9 @@ struct WebcamTestEnv {
                 .ep0_out = UsbEndpoint::get_ep0_out(UsbSpeed::High),
         });
         device->assign_interface_numbers();
-        // 装配顺序同 mock_webcam_main：先 UVC 后 UAC（UAC 打开设备级调度器，
-        // UVC 等时 URB 不走调度器，互不影响，见 UvcDeviceHelper::setup 注释）。
-        // 构造函数里不能用 ASSERT（非 void 返回），装配失败用 EXPECT 报出
+        // The assembly sequence of  is the same as that of mock_webcam_main: UVC first and then UAC (UAC opens the device-level scheduler,
+        // UVC isochronous URB does not go through the scheduler and does not affect each other, see UvcDeviceHelper::setup comment).
+        // ASSERT cannot be used in the constructor (non-void return), and assembly failure is reported with EXPECT
         auto ec_uvc = UvcDeviceHelper::setup(device, 0, pool, std::make_unique<ColorBarSource>(320, 240, 15));
         EXPECT_EQ(ec_uvc, std::error_code());
         auto ec_uac = UacDeviceHelper::setup_microphone(device, 2, pool,
@@ -84,10 +84,10 @@ TEST(WebcamDevice, InterfacesNumberedInOrder) {
 
 TEST(WebcamDevice, FunctionGroupIadsDeclared) {
     WebcamTestEnv env;
-    // IAD 由各功能组首个接口声明：UVC 组 = VC（接口 0，UvcDeviceHelper 挂），
-    // UAC 组 = AC（接口 2，UacDeviceHelper 挂）。复合设备（0xEF）里 usbccgp
-    // 只按 IAD 归并接口组，UAC 组没有 IAD 时 AC/AS 被拆开，usbaudio.sys
-    // 启动失败（Windows 实测 CM_PROB_FAILED_START），故 helper 必须对称声明
+    // The first interface in each function group declares its IAD: UVC group = VC (interface 0, attached by UvcDeviceHelper),
+    // UAC group = AC (interface 2, attached by UacDeviceHelper). For a composite device (0xEF), usbccgp
+    // The interface group is merged only by IAD. When the UAC group does not have IAD, the AC/AS is disassembled. usbaudio.sys
+    // fails to start (CM_PROB_FAILED_START observed on Windows), so both helpers must declare IADs symmetrically
     ASSERT_TRUE(env.device->interfaces[0].interface_association_descriptor.has_value());
     auto uvc_iad = *env.device->interfaces[0].interface_association_descriptor;
     EXPECT_EQ(uvc_iad.bInterfaceCount, 2);
@@ -98,23 +98,23 @@ TEST(WebcamDevice, FunctionGroupIadsDeclared) {
     auto uac_iad = *env.device->interfaces[2].interface_association_descriptor;
     EXPECT_EQ(uac_iad.bInterfaceCount, 2);
     EXPECT_EQ(uac_iad.bFunctionClass, 0x01); // CC_AUDIO
-    EXPECT_EQ(uac_iad.bFunctionSubClass, 0); // 音频无 collection 子类概念
+    EXPECT_EQ(uac_iad.bFunctionSubClass, 0); // Audio has no collection subclass concept
     EXPECT_EQ(uac_iad.iFunction,
               env.device->interfaces[2].handler->get_string_interface_value());
-    // 组内非首接口不声明 IAD
+    // The non-first interface in the group does not declare IAD
     EXPECT_FALSE(env.device->interfaces[1].interface_association_descriptor.has_value());
     EXPECT_FALSE(env.device->interfaces[3].interface_association_descriptor.has_value());
 }
 
 TEST(WebcamDevice, EndpointAddressesUnique) {
     WebcamTestEnv env;
-    // 端点号设备内唯一：UAC AS 用 0x83 避开 UVC VS 的 0x81（组合设备的
-    // 经典错误——单设备各自正常，复合后端点冲突）
+    // Endpoint numbers must be unique within the device: UAC AS uses 0x83 to avoid UVC VS 0x81 (a classic composite-device
+    // error: individual devices work correctly, but their endpoints conflict when combined)
     std::set<std::uint8_t> seen;
     for (auto &intf: env.device->interfaces) {
         for (auto &alt_eps: intf.endpoints) {
             for (auto &ep: alt_eps) {
-                EXPECT_TRUE(seen.insert(ep.address).second) << "重复端点地址 0x" << std::hex
+                EXPECT_TRUE(seen.insert(ep.address).second) << "Duplicate endpoint address 0x" << std::hex
                                                             << static_cast<int>(ep.address);
             }
         }
@@ -131,8 +131,8 @@ TEST(WebcamDevice, HandlerTypesCorrect) {
 
 TEST(WebcamDevice, DeviceClassIsIadProtocol) {
     WebcamTestEnv env;
-    // bDeviceClass=0xEF/0x02/0x01（IAD 协议）：Windows usbccgp 按 IAD 拆分
-    // 功能组，UVC/UAC 各自绑定类驱动（同 mock_uvc）
+    // bDeviceClass=0xEF/0x02/0x01 (IAD protocol): Windows usbccgp split by IAD
+    // function group, UVC/UAC respective binding class driver (same as mock_uvc)
     EXPECT_EQ(env.device->device_class, 0xEF);
     EXPECT_EQ(env.device->device_subclass, 0x02);
     EXPECT_EQ(env.device->device_protocol, 0x01);

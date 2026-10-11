@@ -1,6 +1,6 @@
-// 纯数据结构/协议序列化测试：单次运行即可确定对错。
-// 连接/停止/竞态类测试（需要大量重复才能暴露问题）已拆到
-// test_network_stress.cpp，高频重复时直接 -R "TestNetworkStress"
+// Pure data-structure/protocol serialization tests: a single run determines correctness.
+// Connection/stop/race tests (requiring many repetitions to expose problems) separated into
+// test_network_stress.cpp; use -R "TestNetworkStress" directly for frequent repetition
 #include <gtest/gtest.h>
 
 #include <array>

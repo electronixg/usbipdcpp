@@ -8,26 +8,26 @@
 
 namespace usbipdcpp {
 
-/// 音频文件音源（基于 miniaudio，支持 WAV/MP3/FLAC/OGG Vorbis 等）。
-/// mock_audio 示例私有类（2024-08 从虚拟设备库搬入），依赖 miniaudio（单头文件库，
-/// 随 vcpkg 的 miniaudio 包安装；stb_vorbis.c 也在其 include 目录）。
-/// 解码为 16 位 PCM 流式输出；支持采样率切换，重采样由 miniaudio 完成。
-/// 播到文件末尾后循环播放（可通过 loop 关闭，关闭后输出静音）。
-/// 初始化失败（文件打不开/格式不支持/采样率列表非法）不抛异常：
-/// 打错误日志后进入降级状态，返回合法默认格式（同 FfmpegSource 的做法），
-/// get_chunk 恒返回 false（调用方填静音），设备仍可正常枚举。
+/// audio file source (based on miniaudio, supports WAV/MP3/FLAC/OGG Vorbis, etc.).
+/// mock_audio example private class (2024-08 moved from the virtual device library), depends on miniaudio (single header file library,
+/// is installed with the miniaudio package of vcpkg; stb_vorbis.c is also in its include directory).
+/// Decoded to 16 bit PCM streaming output; supports sampling rate switching, resampling is completed by miniaudio.
+/// Loops at the end of the file (can be disabled with loop, and the output will be muted after closing).
+/// Initialization failed (the file cannot be opened / the format is not supported / the sampling rate list is illegal) and no exception is thrown:
+/// After logging the error log, enter the downgraded state and return to the legal default format (same as FfmpegSource).
+/// get_chunk always returns false (the caller fills in mute), and the device can still be enumerated normally.
 class AudioFileSource : public AudioSource {
 public:
-    /// @param path 音频文件路径（WAV/MP3/FLAC/OGG Vorbis）
-    /// @param sample_rates 支持的采样率列表（Hz，任意正值，含非 8kHz 整数倍如 44100，
-    ///                     由等时传输残差算法处理）。为空时仅支持文件原生采样率；
-    ///                     非空时首个为初始采样率，列表内任意采样率由 miniaudio 重采样实现。
-    /// @param loop 播到末尾后是否循环（默认循环）
+    /// @param path audio file path (WAV/MP3/FLAC/OGG Vorbis)
+    /// @param sample_rates Supported sampling rate list (Hz, any positive value, including non-8kHz integer multiples such as 44100,
+    ///                     processed by isochronous transfer residual algorithm). When empty, only the file's native sampling rate is supported;
+    ///                     When it is not empty, the first one is the initial sampling rate. Any sampling rate in the list is implemented by miniaudio resampling.
+    /// @param loop Whether to loop after playing to the end (default loop)
     explicit AudioFileSource(std::string path, std::vector<std::uint32_t> sample_rates = {}, bool loop = true);
     ~AudioFileSource() override;
 
-    // 持有 decoder 原始指针，禁止拷贝（浅拷贝会双释放）；同时也避免 dllexport 类
-    // 在 Windows 下被强制实体化隐式拷贝构造，导致无 miniaudio 构建链接失败
+    // holds the decoder original pointer and prohibits copying (shallow copy will double release); it also avoids the dllexport class
+    // from having its implicit copy constructor forcibly instantiated on Windows, which would cause linking to fail in builds without miniaudio.
     AudioFileSource(const AudioFileSource &) = delete;
     AudioFileSource &operator=(const AudioFileSource &) = delete;
 
@@ -37,7 +37,7 @@ public:
     bool get_chunk(AudioChunk &chunk) override;
 
 private:
-    /// 按当前协商格式（重新）初始化解码器。失败返回 false
+    /// (Re)initialize the decoder according to the current negotiated format. Return false on failure
     bool open_decoder();
 
     std::string path;
@@ -47,13 +47,13 @@ private:
     std::uint16_t file_channels = 1;
     std::uint32_t file_sample_rate = 48000;
 
-    std::uint16_t channels = 1; // 当前协商声道数（等于 file_channels）
-    std::uint32_t sample_rate = 48000; // 当前协商采样率
-    bool init_ok = false; // 初始化成功标志，失败时降级为合法默认格式
-    bool finished = false; // 非循环模式下已播完
+    std::uint16_t channels = 1; // Current negotiated channel number (equal to file_channels)
+    std::uint32_t sample_rate = 48000; // Current negotiated sampling rate
+    bool init_ok = false; // initialization success flag, downgraded to legal default format in case of failure
+    bool finished = false; // has finished playing in non-loop mode
 
-    void *decoder = nullptr; // ma_decoder*，头文件不暴露 miniaudio
-    std::vector<std::uint8_t> chunk_buffer; // get_chunk 输出缓冲区（1ms 数据）
+    void *decoder = nullptr; // ma_decoder*; do not expose miniaudio in this header
+    std::vector<std::uint8_t> chunk_buffer; // get_chunk output buffer (1ms data)
 };
 
 } // namespace usbipdcpp

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-# cdc_acm 回显测试子脚本：一个 fd 完成 termios 设置 + 写 + 读回。
-# 用法：cdc_acm_test.py <串口设备> <要写的字符串>，成功输出读回内容（无换行）。
-# 注意：必须 O_RDWR 打开（open 即挂起读请求）；sh 里先写（tee）后开读（dd）
-# 两个进程时序不可控，实测读端开晚时收不到回显。
+# cdc_acm echo test helper: one fd for termios setup + write + readback.
+# Usage: cdc_acm_test.py <serial-device> <string-to-write>; on success, output readback content (no newline).
+# Note: must open O_RDWR (open submits a pending read); writing first (tee), then opening reader (dd) in sh
+# uses two processes with uncontrollable timing; tests showed no echo when reader opened late.
 import os
 import sys
 import termios
@@ -12,15 +12,15 @@ dev = sys.argv[1]
 msg = sys.argv[2].encode()
 
 fd = None
-# 设备刚枚举出来驱动可能未就绪，重试打开 + 设置 termios
+# Driver may not be ready immediately after enumeration; retry open + termios setup
 for _ in range(10):
     try:
         fd = os.open(dev, os.O_RDWR | os.O_NOCTTY)
         a = termios.tcgetattr(fd)
-        a[0] &= ~(termios.ICRNL | termios.IXON)            # 输入转换/软流控
-        a[1] &= ~termios.ONLCR                             # 输出 NL->CRNL
-        a[2] &= ~termios.CRTSCTS                           # 硬件流控
-        a[3] &= ~(termios.ECHO | termios.ICANON | termios.ISIG)  # echo/规范模式
+        a[0] &= ~(termios.ICRNL | termios.IXON)            # Input conversion/software flow control
+        a[1] &= ~termios.ONLCR                             # Output NL->CRNL
+        a[2] &= ~termios.CRTSCTS                           # Hardware flow control
+        a[3] &= ~(termios.ECHO | termios.ICANON | termios.ISIG)  # echo/canonical mode
         a[6][termios.VMIN] = 1
         a[6][termios.VTIME] = 0
         termios.tcsetattr(fd, termios.TCSANOW, a)
@@ -34,7 +34,7 @@ if fd is None:
     sys.exit(2)
 
 os.write(fd, msg)
-time.sleep(1)  # 等 mock 回显回到 tty 读缓冲
+time.sleep(1)  # Wait for mock echo to reach tty read buffer
 os.set_blocking(fd, False)
 buf = b""
 deadline = time.time() + 3

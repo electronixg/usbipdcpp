@@ -13,19 +13,19 @@
 
 namespace usbipdcpp {
 /**
- * @brief HID 设备接口处理器基类
+ * @brief HID device interface handler base class
  *
- * 提供中断传输的默认实现，用户只需实现报告描述符和控制请求处理。
+ * provides the default implementation of interrupt transfer. Users only need to implement the report descriptor and control request processing.
  */
 class USBIPDCPP_API HidVirtualInterfaceHandler : public VirtualInterfaceHandler {
 public:
     HidVirtualInterfaceHandler(UsbInterface &handle_interface, StringPool &string_pool) :
         VirtualInterfaceHandler(handle_interface, string_pool) {
-        // 报告堆积上限：主机长期不读中断 IN 时防止内存无限增长（超限丢最旧）
+        // Report queue limit: prevents unlimited memory growth when the host does not read interrupt IN for a long time (discard oldest when exceeding the limit)
         input_channel.set_max_pending_messages(MAX_PENDING_INPUT_REPORTS);
     }
 
-    // ========== 内部实现（子类无需关心） ==========
+    // ========== Internal implementation (subclasses do not need to care) ==========
 
     void handle_non_standard_request_type_control_urb(std::uint32_t seqnum, const UsbEndpoint &ep,
                                                       std::uint32_t transfer_flags,
@@ -34,10 +34,10 @@ public:
                                                       std::error_code &ec) override;
 
     /**
-     * @brief 处理中断传输（默认实现）
+     * @brief handles interrupt transfer (default implementation)
      *
-     * 中断 IN：主机请求输入报告，调用 on_input_report_requested() 获取数据
-     * 中断 OUT：主机发送输出报告，调用 on_output_report_received()
+     * Interrupt IN: The host requests input report and calls on_input_report_requested() to obtain data
+     * interrupt OUT: The host sends an output report and calls on_output_report_received()
      */
     void handle_interrupt_transfer(std::uint32_t seqnum, const UsbEndpoint &ep, std::uint32_t transfer_flags,
                                    std::uint32_t transfer_buffer_length, TransferHandle transfer,
@@ -54,61 +54,61 @@ public:
 
     [[nodiscard]] data_type get_class_specific_descriptor() override;
 
-    // ========== 子类必须实现的虚函数 ==========
+    // ========== Virtual functions that subclasses must implement ==========
 
     /**
-     * @brief 获取 HID 报告描述符
-     * @return 报告描述符数据
+     * @brief Get HID report descriptor
+     * @return report descriptor data
      */
     virtual data_type get_report_descriptor() = 0;
 
     /**
-     * @brief 获取 HID 报告描述符大小
-     * @return 描述符长度（字节）
+     * @brief Get HID report descriptor size
+     * @return descriptor length (bytes)
      */
     virtual std::uint16_t get_report_descriptor_size() = 0;
 
-    // ========== 发送数据 API ==========
+    // ========== Send data API ==========
 
     /**
-     * @brief 发送输入报告（零拷贝）
+     * @brief Send input report (zero copy)
      *
-     * 如果有队列中的请求，立即响应第一个；否则存储数据等待下一个请求。
+     * If there are requests in the queue, respond to the first one immediately; otherwise, store the data and wait for the next request.
      *
-     * @param data 报告数据（可以使用栈上的 std::array + asio::buffer）
+     * @param data report data (you can use std::array + asio::buffer on the stack)
      */
     void send_input_report(asio::const_buffer data);
 
-    // ========== 子类可选重写的回调 ==========
+    // ========== Optional overridden callback for subclasses ==========
 
     /**
-     * @brief 主机请求输入报告时回调
+     * @brief Callback when the host requests input report
      *
-     * @warning 每次主机轮询中断端点时都会调用此函数。在函数内部
-     *          因没有获取任何锁可以直接调用send_input_report等函数。
-     *          如果每次调用都调用send_input_report()，主机会立即取走数据并再次轮询，
-     *          这会导致 CPU 占用非常高。非特殊情况请不要在这个函数中
-     *          每次都调用 send_input_report()。
+     * @warning This function is called every time the host polls the interrupt endpoint. inside the function
+     *          can directly call functions such as send_input_report because it does not acquire any lock.
+     *          If send_input_report() is called every time, the host will immediately take the data and poll again,
+     *          This causes very high CPU usage. Unless specifically required, do not
+     *          call send_input_report() on every invocation of this function.
      *
-     * @param length 主机请求的数据长度
+     * @param length The data length requested by the host
      */
     virtual void on_input_report_requested(std::uint16_t length);
 
     /**
-     * @brief 收到输出报告时回调
+     * @brief Callback when receiving the output report
      *
-     * @param data 输出报告数据
+     * @param data output report data
      */
     virtual void on_output_report_received(asio::const_buffer data);
 
-    // ========== HID 类特定请求（子类可选重写） ==========
+    // ========== HID class specific request (optional override for subclasses) ==========
 
     /**
-     * @brief 获取当前协议（Boot/Report），形式响应对齐内核 f_hid.c：
-     *        内核 GET_PROTOCOL 返回 protocol 值（configfs 初始 0），
-     *        即使设备不支持切换也照常应答。子类实现协议切换时重写返回实际值
+     * @brief Get the current protocol (Boot/Report); the nominal response follows kernel f_hid.c:
+     *        kernel GET_PROTOCOL returns protocol value (configfs initial 0),
+     *        Answers as usual even if the device does not support switching. Subclasses can override and return the actual value when implementing protocol switching.
      * @param p_status
-     * @return 协议值（0=Boot，1=Report）
+     * @return protocol value (0=Boot, 1=Report)
      */
     virtual std::uint8_t request_get_protocol(std::uint32_t *p_status) {
         *p_status = static_cast<std::uint32_t>(UrbStatusType::StatusOK);
@@ -116,10 +116,10 @@ public:
     };
 
     /**
-     * @brief 设置协议，对齐内核 f_hid.c：仅 Boot 子类接口（bInterfaceSubClass=1）
-     *        接受 SET_PROTOCOL（wValue ≤ 1），其余 stall。协议值仅内部记录，
-     *        本项目默认不做 Boot 报告切换，接受即可；子类可重写
-     * @param type wValue（0=Boot 协议，1=Report 协议）
+     * @brief Set the protocol and align the kernel f_hid.c: Only Boot subclass interface (bInterfaceSubClass=1)
+     *        accepts SET_PROTOCOL (wValue ≤ 1); others stall. The protocol value is only recorded internally;
+     *        This project does not perform Boot report switching by default, just accept it; subclasses can be rewritten
+     * @param type wValue (0=Boot protocol, 1=Report protocol)
      * @param p_status
      */
     virtual void request_set_protocol(std::uint16_t type, std::uint32_t *p_status) {
@@ -138,8 +138,8 @@ public:
                                     const data_type &data, std::uint32_t *p_status);
 
     /**
-     * @brief 获取空闲节流值，形式响应对齐内核 f_hid.c：GET_IDLE 返回
-     *        idle 值（初始 0），设备默认不做 idle 节流；子类可重写
+     * @brief Get the idle throttling value; the nominal response follows kernel f_hid.c: GET_IDLE returns
+     *        idle value (initial 0), the device does not do idle throttling by default; subclasses can be rewritten
      */
     virtual data_type request_get_idle(std::uint8_t type, std::uint8_t report_id, std::uint16_t length,
                                        std::uint32_t *p_status) {
@@ -148,14 +148,14 @@ public:
     };
 
     /**
-     * @brief 设置空闲节流值，对齐内核 f_hid.c：无条件接受 SET_IDLE
-     *        （idle 只是设备侧节流参数，本项目默认不做节流，接受即可）
+     * @brief Set the idle throttling value and align the core f_hid.c: Unconditionally accept SET_IDLE
+     *        (idle is only the throttling parameter on the device side, this project does not throttle by default, just accept it)
      */
     virtual void request_set_idle(std::uint8_t speed, std::uint32_t *p_status) {
         *p_status = static_cast<std::uint32_t>(UrbStatusType::StatusOK);
     };
 
-    // ========== 标准请求默认实现 ==========
+    // ========== Standard request default implementation ==========
 
     void request_clear_feature(std::uint16_t feature_selector, std::uint32_t *p_status) override {
         *p_status = 0;
@@ -194,7 +194,7 @@ public:
         *p_status = static_cast<std::uint32_t>(UrbStatusType::StatusEPIPE);
     }
 
-    // ========== 内部实现（子类无需关心） ==========
+    // ========== Internal implementation (subclasses do not need to care) ==========
 
     void on_new_connection(TransferResponder &current_session, error_code &ec) override;
 
@@ -204,16 +204,16 @@ public:
 
 protected:
     /**
-     * @brief IN 输入报告通道（消息模式）
+     * @brief IN input report channel (message mode)
      *
-     * 封装「挂起-应答」：主机 IN 请求先挂起，send_input_report() 推入数据
-     * 时匹配应答；缓冲超上限丢最旧（见 MAX_PENDING_INPUT_REPORTS）
+     * encapsulates "suspend-response": the host IN request is suspended first, and send_input_report() pushes data
+     * matches the response; the buffer exceeds the upper limit and discards the oldest one (see MAX_PENDING_INPUT_REPORTS)
      */
     MessageInChannel input_channel;
 
     /**
-     * @brief 待发送输入报告上限，超过丢最旧（主机长期不发起中断 IN 请求时
-     * 报告会堆积，防止内存无限增长）
+     * @brief Limit on pending input reports; discard the oldest when exceeded (reports accumulate when the host does not issue interrupt IN requests for a long time;
+     * this prevents unlimited memory growth)
      */
     static constexpr std::size_t MAX_PENDING_INPUT_REPORTS = 1024;
 

@@ -1,5 +1,5 @@
-# 手动打包 CI — 不创建 Release，产物作为 workflow artifact 下载
-# 与 release.yml 相同的构建配置，但无需 tag，版本号从 CMakeLists.txt 提取
+# Manual packaging CI—creates no Release; download build output as workflow artifacts
+# Same build configuration as release.yml, but no tag required; extract version from CMakeLists.txt
 
 name: Build packages (manual)
 
@@ -23,7 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # ======== 依赖 ========
+      # ======== Dependencies ========
 
       - name: Install dependencies (Linux)
         if: runner.os == 'Linux'
@@ -61,7 +61,7 @@ jobs:
         run: |
           vcpkg install asio spdlog libusb cxxopts pkgconf gtest miniaudio --triplet x64-windows
 
-      # ======== CMake 配置 ========
+      # ======== CMake configuration ========
 
       - name: Configure CMake (Linux)
         if: runner.os == 'Linux'
@@ -118,15 +118,15 @@ jobs:
             -DUSBIPDCPP_BUILD_TESTS=ON `
             -S ${{ github.workspace }}
 
-      # ======== 编译 + 安装到临时目录 ========
+      # ======== Build + install to a temporary directory ========
 
-      # ubuntu runner 只有 2 核且内存小：并行编译内存峰值超限被内核 OOM 杀
-      # （实测 g++: fatal error: Killed + exit 143），Linux 限 1 并发
+      # The ubuntu runner has only 2 cores and little memory: parallel compilation exceeds the peak memory limit and is killed by the kernel OOM killer
+      # (observed in practice: g++: fatal error: Killed + exit 143); limit Linux to 1 concurrent compilation
       - name: Build (Linux)
         if: runner.os == 'Linux'
         run: cmake --build build --config Release --parallel 1
 
-      # macOS/Windows 编译器内存占用低，不限制（用满 runner 核数）
+      # macOS/Windows compilers use less memory; do not limit parallelism (use all runner cores)
       - name: Build
         if: runner.os != 'Linux'
         run: cmake --build build --config Release --parallel
@@ -141,7 +141,7 @@ jobs:
           SHORT_SHA=$(git rev-parse --short HEAD)
           DIRNAME="usbipdcpp-${SHORT_SHA}-${{ matrix.name }}"
           cmake --install build --config Release --prefix "out/${DIRNAME}"
-          # 复制 BtbN ffmpeg DLL 到安装目录（Windows）
+          # Copy the BtbN ffmpeg DLLs to the installation directory (Windows)
           [ -n "$FFMPEG_DIR" ] && cp "$FFMPEG_DIR"/bin/*.dll "out/${DIRNAME}/bin/"
           echo "dirname=${DIRNAME}" >> $GITHUB_ENV
 
@@ -158,13 +158,13 @@ jobs:
             ./wldd.exe "$file" 2>&1
           done < /tmp/files.txt > /tmp/wldd_out.txt
           if grep -qiE "(not found|missing|could not)" /tmp/wldd_out.txt; then
-            echo "存在未解析的 DLL 依赖！"
+            echo "There is an unresolved DLL dependency!"
             grep -iE "(not found|missing|could not)" /tmp/wldd_out.txt
             exit 1
           fi
-          echo "所有 DLL 依赖验证通过"
+          echo "All DLL dependencies passed verification"
 
-      # ======== 上传构建产物 ========
+      # ======== Upload build output ========
 
       - uses: actions/upload-artifact@v4
         with:
@@ -172,7 +172,7 @@ jobs:
           path: out/*/bin/*
           if-no-files-found: error
 
-  # 等待所有平台构建成功后统一打包
+  # Wait for successful builds on all platforms, then package them together
   package:
     needs: [ build ]
     runs-on: ubuntu-latest

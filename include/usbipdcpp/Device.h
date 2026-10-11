@@ -50,18 +50,18 @@ struct USBIPDCPP_API UsbDevice {
     UsbEndpoint ep0_out;
 
     /**
-     * @brief 设备处理器
-     * 必须在 Server::add_device 调用之前设置，推荐使用 with_handler 函数。
-     * 如果调用时 handler 为空，属于未定义行为。
+     * @brief Device handler
+     * must be set before calling Server::add_device. It is recommended to use with_handler function.
+     * If handler is empty when called, it is undefined behavior.
      */
     std::shared_ptr<AbstDeviceHandler> handler;
 
     /**
-     * @brief 按下标给所有接口的 interface_number 依次赋值（0, 1, 2, ...）
+     * @brief Assign interface_number to every interface in index order (0, 1, 2, ...)
      *
-     * 适用于接口从 0 连续编号的虚拟设备（默认场景，多接口 mock 设备创建后
-     * 调用一次）。跳号/自定义编号的设备（如 libusb 后端按配置描述符填充）
-     * 不需要调用
+     * Suitable for virtual devices whose interfaces are numbered consecutively from 0 (the default case; call once after creating
+     * a multi-interface mock device). Devices with gaps/custom numbering (such as a libusb backend populated from configuration descriptors)
+     * do not need to call this function
      */
     void assign_interface_numbers() {
         for (std::size_t i = 0; i < interfaces.size(); i++) {
@@ -70,13 +70,13 @@ struct USBIPDCPP_API UsbDevice {
     }
 
     /**
-     * @brief 按 interface_number 连续查找 N 个接口（first, first+1, ..., first+N-1）
+     * @brief Find N interfaces with consecutive interface_number values (first, first+1, ..., first+N-1)
      *
-     * 复合设备里功能接口可能与其他功能交错（数组下标不连续），按 interface_number
-     * 定位才可靠（如 UvcDeviceHelper 找 VC/VS 两个相邻接口）。
-     * @tparam N 要找的接口数
-     * @param first_interface_number 第一个接口的 interface_number
-     * @return 找到的接口填指针、缺失的填 nullptr（N 个，按下标对应编号偏移）
+     * In a composite device, interfaces belonging to a function may be interleaved with other functions (nonconsecutive array indices); locating them by interface_number
+     * is reliable (for example, UvcDeviceHelper finds the two adjacent VC/VS interfaces).
+     * @tparam N The number of interfaces to be found
+     * @param first_interface_number interface_number of the first interface
+     * @return Pointers for found interfaces and nullptr for missing ones (N entries, with each index corresponding to a number offset)
      */
     template<std::size_t N>
     std::array<UsbInterface *, N> find_interfaces_by_number(std::uint8_t first_interface_number) {
@@ -91,11 +91,11 @@ struct USBIPDCPP_API UsbDevice {
     }
 
     /**
-     * @brief 创建并设置 handler
-     * 推荐使用此函数设置 handler。
-     * @tparam T handler 类型
-     * @tparam args 传递给 handler 构造函数的参数
-     * @return 创建的 handler
+     * @brief Create and set handler
+     * It is recommended to use this function to set the handler.
+     * @tparam T handler type
+     * @tparam args Parameters passed to the handler constructor
+     * @return the handler created
      */
     template<typename T, typename... Args>
     std::shared_ptr<T> with_handler(Args &&... args) {
@@ -105,25 +105,25 @@ struct USBIPDCPP_API UsbDevice {
     }
 
     /**
-     * @brief 创建一台基本的虚拟设备：接口列表（通常由各接口 handler 的
-     * make_interface 创建，已绑好 handler）与易变字段当参数，其余字段给默认值；
-     * EP0 最大包大小按 speed 自动生成。
+     * @brief Create a basic virtual device: take the interface list (usually created by each interface handler's
+     * make_interface, with handlers already bound) and frequently changed fields as parameters; give other fields default values;
+     * EP0 The maximum packet size is automatically generated according to speed.
      *
-     * 参数按改动频率从高到低排列（前面的参数改动时无需填后面的）。
-     * 返回后仍可改任意字段，随后用 with_handler 绑定设备级 handler。
-     * @param busid 设备 busid（如 "1-1"），devlist/attach 用它标识
-     * @param vendor_id 厂商 ID
-     * @param product_id 产品 ID
-     * @param interfaces 设备接口列表
-     * @param bus_num 总线编号（默认 1）
-     * @param dev_num 设备编号（默认 1）
-     * @param device_class 设备级类标识（默认 0 = 在接口级定义；IAD 复合设备如
-     *        CDC 需设 0x02）
-     * @param path 设备路径（devlist 显示用）；默认空 = "/usbipdcpp/<busid>"
-     * @param speed 设备速度（默认 Full）
-     * @param device_bcd 设备版本号（BCD，默认 1.0）
-     * @param device_subclass / device_protocol 设备级子类/协议（默认 0）
-     * @param configuration_value / num_configurations 配置序号与配置数（默认 1）
+     * parameters are arranged from high to low according to the frequency of change (there is no need to fill in the following parameters when changing the previous parameters).
+     * After returning , you can still change any field, and then use with_handler to bind the device-level handler.
+     * @param busid device busid (such as "1-1"), devlist/attach uses it to identify
+     * @param vendor_id Manufacturer ID
+     * @param product_id Product ID
+     * @param interfaces device interface list
+     * @param bus_num bus number (default 1)
+     * @param dev_num device number (default 1)
+     * @param device_class Device level class identifier (default 0 = defined at interface level; IAD composite device e.g.
+     *        CDC requires 0x02)
+     * @param path device path (for devlist display); default empty = "/usbipdcpp/<busid>"
+     * @param speed device speed (default Full)
+     * @param device_bcd device version number (BCD, default 1.0)
+     * @param device_subclass / device_protocol device-level subclass/protocol (default 0)
+     * @param configuration_value / num_configurations Configuration value and number of configurations (default 1)
      */
     static std::shared_ptr<UsbDevice> make(std::string busid, std::uint16_t vendor_id, std::uint16_t product_id,
                                            std::vector<UsbInterface> interfaces,
@@ -174,7 +174,7 @@ struct USBIPDCPP_API UsbDevice {
     [[nodiscard]] std::vector<std::uint8_t> to_bytes_with_interfaces() const;
     [[nodiscard]] array_data_type<bytes_without_interfaces_num> to_bytes_without_interfaces() const;
 
-    //devlist请求的时候要发送接口信息，import请求时不发送接口信息
+    //Send interface information for devlist requests, but not for import requests
     [[nodiscard]] array_data_type<bytes_without_interfaces_num> to_bytes() const;
     void from_socket(asio::ip::tcp::socket &sock);
 

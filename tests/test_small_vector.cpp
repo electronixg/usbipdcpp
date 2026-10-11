@@ -43,7 +43,7 @@ TEST(SmallVector, PushBackHeap) {
     vec.push_back(2);
     EXPECT_FALSE(vec.on_heap());
 
-    vec.push_back(3); // 溢出到堆
+    vec.push_back(3); // Overflow to heap
     EXPECT_TRUE(vec.on_heap());
     EXPECT_EQ(vec.size(), 3u);
 
@@ -95,7 +95,7 @@ TEST(SmallVector, Clear) {
     vec.clear();
     EXPECT_TRUE(vec.empty());
     EXPECT_EQ(vec.size(), 0u);
-    EXPECT_FALSE(vec.on_heap()); // 清空后回到栈
+    EXPECT_FALSE(vec.on_heap()); // Return to stack after clearing
 }
 
 TEST(SmallVector, Resize) {
@@ -104,28 +104,28 @@ TEST(SmallVector, Resize) {
     vec.push_back(1);
     vec.push_back(2);
 
-    // 扩展（仍在栈）
+    // Expand (still on stack)
     vec.resize(4);
     EXPECT_EQ(vec.size(), 4u);
     EXPECT_FALSE(vec.on_heap());
 
-    // 扩展到堆
+    // Expand onto heap
     vec.resize(10);
     EXPECT_TRUE(vec.on_heap());
     EXPECT_EQ(vec.size(), 10u);
 
-    // 缩小回栈
+    // Shrink back to stack
     vec.resize(2);
     EXPECT_FALSE(vec.on_heap());
     EXPECT_EQ(vec.size(), 2u);
 }
 
 TEST(SmallVector, ResizeFromHeapToStackWithGrow) {
-    // 堆上元素数小于 N 时 resize 扩容并迁回栈：只迁移现有元素，
-    // 不能读取堆存储越界部分（回归测试）
+    // When heap element count is below N, resize expansion migrates back to stack: migrate only existing elements,
+    // without reading beyond heap storage bounds (regression test)
     SmallVector<int, 4> vec;
     for (int i = 0; i < 6; i++) {
-        vec.push_back(i); // 6 个元素，在堆上
+        vec.push_back(i); // 6 elements, on heap
     }
     EXPECT_TRUE(vec.on_heap());
     vec.pop_back();
@@ -134,14 +134,14 @@ TEST(SmallVector, ResizeFromHeapToStackWithGrow) {
     EXPECT_EQ(vec.size(), 3u);
     EXPECT_TRUE(vec.on_heap());
 
-    vec.resize(4); // 扩容且迁回栈：旧代码读 heap_storage_[3] 越界
+    vec.resize(4); // Expand and migrate back to stack: old code read heap_storage_[3] out of bounds
     EXPECT_FALSE(vec.on_heap());
     EXPECT_EQ(vec.size(), 4u);
     EXPECT_EQ(vec[0], 0);
     EXPECT_EQ(vec[1], 1);
     EXPECT_EQ(vec[2], 2);
 
-    // 迁移后可以继续正常使用
+    // Still usable normally after migration
     vec.push_back(100);
     EXPECT_EQ(vec.size(), 5u);
     EXPECT_EQ(vec[4], 100);
@@ -204,7 +204,7 @@ TEST(SmallVector, CopyConstructor) {
     SmallVector<int, 2> vec1;
     vec1.push_back(1);
     vec1.push_back(2);
-    vec1.push_back(3); // 堆
+    vec1.push_back(3); // Heap
 
     SmallVector<int, 2> vec2(vec1);
     EXPECT_EQ(vec2.size(), 3u);
@@ -258,7 +258,7 @@ TEST(SmallVector, MoveAssignment) {
 TEST(SmallVector, Reserve) {
     SmallVector<int, 2> vec;
 
-    vec.reserve(10); // 大于 N，迁移到堆
+    vec.reserve(10); // Greater than N; migrate to heap
     EXPECT_TRUE(vec.on_heap());
     EXPECT_GE(vec.capacity(), 10u);
     EXPECT_EQ(vec.size(), 0u);
@@ -277,7 +277,7 @@ TEST(SmallVector, ComplexType) {
         NonTrivial() = default;
         NonTrivial(std::string str, int* ptr) : s(std::move(str)), p(ptr) {}
 
-        // 确保拷贝/移动正确
+        // Ensure correct copy/move
         NonTrivial(const NonTrivial& other) : s(other.s), p(other.p) {}
         NonTrivial& operator=(const NonTrivial& other) {
             s = other.s;
@@ -301,21 +301,21 @@ TEST(SmallVector, ComplexType) {
     EXPECT_EQ(vec[2].s, "third");
 }
 
-// ============== 极端情况测试 ==============
+// ============== Edge-case tests ==============
 
 TEST(SmallVector, ExactlyNElements) {
-    // 刚好在栈容量边界
+    // Exactly at stack-capacity boundary
     SmallVector<int, 4> vec;
 
     vec.push_back(1);
     vec.push_back(2);
     vec.push_back(3);
-    vec.push_back(4); // 刚好满
+    vec.push_back(4); // Exactly full
 
     EXPECT_EQ(vec.size(), 4u);
-    EXPECT_FALSE(vec.on_heap()); // 仍在栈上
+    EXPECT_FALSE(vec.on_heap()); // Still on stack
 
-    vec.push_back(5); // 溢出
+    vec.push_back(5); // Overflow
     EXPECT_TRUE(vec.on_heap());
     EXPECT_EQ(vec.size(), 5u);
 }
@@ -331,9 +331,9 @@ TEST(SmallVector, ResizeToZero) {
     vec.resize(0);
     EXPECT_EQ(vec.size(), 0u);
     EXPECT_TRUE(vec.empty());
-    EXPECT_FALSE(vec.on_heap()); // resize(0) 回到栈
+    EXPECT_FALSE(vec.on_heap()); // resize(0) returns to stack
 
-    // 可以重新使用
+    // Can reuse
     vec.push_back(10);
     EXPECT_EQ(vec.size(), 1u);
     EXPECT_EQ(vec[0], 10);
@@ -342,13 +342,13 @@ TEST(SmallVector, ResizeToZero) {
 TEST(SmallVector, EmptyOperations) {
     SmallVector<int, 4> vec;
 
-    // 空容器操作
+    // Empty-container operations
     EXPECT_TRUE(vec.empty());
     EXPECT_EQ(vec.size(), 0u);
     EXPECT_EQ(vec.begin(), vec.end());
 
-    vec.pop_back(); // 对空容器 pop_back（未定义行为，但不应崩溃）
-    vec.clear();    // 对空容器 clear
+    vec.pop_back(); // pop_back on empty container (undefined behavior, but should not crash)
+    vec.clear();    // clear on empty container
 
     EXPECT_TRUE(vec.empty());
 }
@@ -356,7 +356,7 @@ TEST(SmallVector, EmptyOperations) {
 TEST(SmallVector, LargeData) {
     SmallVector<int, 4> vec;
 
-    // 大量数据
+    // Large amount of data
     for (int i = 0; i < 1000; ++i) {
         vec.push_back(i);
     }
@@ -364,7 +364,7 @@ TEST(SmallVector, LargeData) {
     EXPECT_TRUE(vec.on_heap());
     EXPECT_EQ(vec.size(), 1000u);
 
-    // 验证数据正确
+    // Verify correct data
     for (int i = 0; i < 1000; ++i) {
         EXPECT_EQ(vec[i], i);
     }
@@ -375,7 +375,7 @@ TEST(SmallVector, SelfAssignment) {
     vec.push_back(1);
     vec.push_back(2);
 
-    // 自赋值保护
+    // Self-assignment protection
     vec = vec;
     EXPECT_EQ(vec.size(), 2u);
     EXPECT_EQ(vec[0], 1);
@@ -385,33 +385,33 @@ TEST(SmallVector, SelfAssignment) {
 TEST(SmallVector, ReserveOnStack) {
     SmallVector<int, 4> vec;
 
-    vec.reserve(2); // 小于 N，仍在栈
+    vec.reserve(2); // Less than N, still on stack
     EXPECT_FALSE(vec.on_heap());
-    EXPECT_EQ(vec.capacity(), 4u); // 栈容量不变
+    EXPECT_EQ(vec.capacity(), 4u); // Stack capacity unchanged
 
-    vec.reserve(4); // 等于 N，仍在栈
+    vec.reserve(4); // Equal to N, still on stack
     EXPECT_FALSE(vec.on_heap());
 }
 
 TEST(SmallVector, MultipleStackHeapTransitions) {
     SmallVector<int, 2> vec;
 
-    // 栈 -> 堆
+    // Stack -> heap
     vec.push_back(1);
     vec.push_back(2);
     vec.push_back(3);
     EXPECT_TRUE(vec.on_heap());
 
-    // 堆 -> 栈 (通过 resize)
+    // Heap -> stack (via resize)
     vec.resize(1);
     EXPECT_FALSE(vec.on_heap());
 
-    // 栈 -> 堆
+    // Stack -> heap
     vec.push_back(2);
     vec.push_back(3);
     EXPECT_TRUE(vec.on_heap());
 
-    // 堆 -> 栈 (通过 clear)
+    // Heap -> stack (via clear)
     vec.clear();
     EXPECT_FALSE(vec.on_heap());
 }
@@ -419,7 +419,7 @@ TEST(SmallVector, MultipleStackHeapTransitions) {
 TEST(SmallVector, StressTest) {
     SmallVector<int, 4> vec;
 
-    // 大量 push/pop
+    // Many push/pop operations
     for (int round = 0; round < 100; ++round) {
         for (int i = 0; i < 100; ++i) {
             vec.push_back(i);

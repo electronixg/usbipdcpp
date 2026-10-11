@@ -19,7 +19,7 @@ std::vector<MouseDescript> usbipdcpp::umouse::findAllMouses() {
             if (fd >= 0) {
                 libevdev *dev = nullptr;
                 if (libevdev_new_from_fd(fd, &dev) == 0) {
-                    // 检查设备是否为鼠标
+                    // Check whether the device is a mouse
                     if (libevdev_has_event_type(dev, EV_REL) &&
                         (libevdev_has_event_code(dev, EV_KEY, BTN_LEFT) ||
                          libevdev_has_event_code(dev, EV_KEY, BTN_RIGHT))) {
@@ -31,13 +31,13 @@ std::vector<MouseDescript> usbipdcpp::umouse::findAllMouses() {
                 }
                 else {
                     throw std::system_error(errno, std::system_category(),
-                                            std::format("libevdev无法打开{}", full_path.string()));
+                                            std::format("libevdev cannot open {}", full_path.string()));
                 }
 
             }
             else {
                 throw std::system_error(errno, std::system_category(),
-                                        std::format("open {} 出错", full_path.string()));
+                                        std::format("open {} error", full_path.string()));
             }
         }
     }
@@ -47,28 +47,28 @@ std::vector<MouseDescript> usbipdcpp::umouse::findAllMouses() {
 
 MouseDevice usbipdcpp::umouse::openMouse(const std::filesystem::path &path) {
     MouseDevice mouse_device;
-    // 打开设备文件
+    // Open device file
     mouse_device.fd = open(path.c_str(), O_RDONLY | O_NONBLOCK);
     if (mouse_device.fd < 0) {
         throw std::system_error(errno, std::system_category(),
-                                std::format("open {} 出错", path.string()));
+                                std::format("open {} error", path.string()));
     }
 
-    // 初始化 libevdev 上下文
+    // Initialize libevdev context
     int rc = libevdev_new_from_fd(mouse_device.fd, &mouse_device.dev);
     if (rc < 0) {
         close(mouse_device.fd);
         throw std::system_error(errno, std::system_category(),
-                                std::format("libevdev无法打开{}", path.string()));
+                                std::format("libevdev cannot open {}", path.string()));
     }
 
     mouse_device.path = path;
 
-    std::cout << "成功打开鼠标设备:" << std::endl;
-    std::cout << std::format("\t名字: {}", libevdev_get_name(mouse_device.dev)) << std::endl;;
-    std::cout << std::format("\t路径: {}", path.string()) << std::endl;;
-    std::cout << std::format("\t厂家: {:4x}", libevdev_get_id_vendor(mouse_device.dev)) << std::endl;;
-    std::cout << std::format("\t产品: {:4x}", libevdev_get_id_product(mouse_device.dev)) << std::endl;;
+    std::cout << "successfully opened the mouse device:" << std::endl;
+    std::cout << std::format("\t Name: {}", libevdev_get_name(mouse_device.dev)) << std::endl;;
+    std::cout << std::format("\t Path: {}", path.string()) << std::endl;;
+    std::cout << std::format("\tManufacturer: {:4x}", libevdev_get_id_vendor(mouse_device.dev)) << std::endl;;
+    std::cout << std::format("\t Product: {:4x}", libevdev_get_id_product(mouse_device.dev)) << std::endl;;
 
 
     return mouse_device;

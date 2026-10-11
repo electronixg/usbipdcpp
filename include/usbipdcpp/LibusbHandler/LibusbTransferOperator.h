@@ -18,7 +18,7 @@ namespace detail {
 } // namespace detail
 
 /**
- * @brief libusb 后端的传输操作器，handle 为 libusb_transfer*
+ * @brief libusb back-end transfer operator, handle is libusb_transfer*
  */
 class USBIPDCPP_API LibusbTransferOperator : public TransferOperator {
 public:
@@ -39,7 +39,7 @@ public:
                             std::error_code &ec) override;
 
 private:
-    // 非同步传输对象池（num_iso_packets == 0），同步传输直接走 libusb_alloc_transfer
+    // Non-isochronous transfer object pool (num_iso_packets == 0); isochronous transfers use libusb_alloc_transfer directly
     ObjectPool<libusb_transfer, 64, true, detail::LibusbTransferLM, detail::LibusbTransferReset> transfer_pool_;
 };
 

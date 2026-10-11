@@ -2,7 +2,7 @@
 
 #include <cstring>
 
-// 单头文件库：仅此编译单元提供实现
+// single header library: only this compilation unit provides implementation
 #define MINIAUDIO_IMPLEMENTATION
 #include <miniaudio.h>
 #include <spdlog/spdlog.h>
@@ -20,7 +20,7 @@ PlaybackSink::~PlaybackSink() {
 }
 
 std::vector<AudioFormatInfo> PlaybackSink::supported_formats() const {
-    // 常见采样率 × 单双声道（16 位 PCM），重采样交给声卡驱动
+    // common sampling rate × single and dual channels (16 bit PCM), resampling is left to the sound card driver
     static const std::uint32_t rates[] = {8000, 16000, 22050, 32000, 44100, 48000, 96000};
     std::vector<AudioFormatInfo> fmts;
     for (auto rate: rates) {
@@ -42,13 +42,13 @@ bool PlaybackSink::set_format(std::uint16_t channels, std::uint8_t bits_per_samp
     }
     bool restart = !discarding && (channels != format.channels || sample_rate != format.sample_rate);
     format = {channels, bits_per_sample, sample_rate};
-    // 采样率切换时清空残留缓冲：旧采样率的 PCM 与新格式不匹配，
-    // 且残留水位会让收流速率闭环长时间停在错误方向（实测切换后
-    // 缓冲残留几十万字节，闭环一直延迟响应导致欠载沙沙）
+    // Clear the residual buffer when switching the sampling rate: the PCM of the old sampling rate does not match the new format,
+    // and residual buffer occupancy makes the incoming-stream rate-control loop act in the wrong direction for a long time (observed after switching:
+    // hundreds of thousands of bytes remain buffered; the control loop keeps delaying responses, causing underrun noise)
     buffer.clear();
     lock.unlock();
     if (restart) {
-        // 不能持锁重启：ma_device_uninit 等回调线程退出，回调拿同一把锁会死锁
+        // cannot restart while holding the lock: ma_device_uninit Wait for the callback thread to exit, and the callback will deadlock if it takes the same lock.
         open_device();
     }
     return true;
@@ -60,10 +60,10 @@ void PlaybackSink::write_pcm(const std::uint8_t *data, std::size_t size) {
     if (discarding) {
         return;
     }
-    // 缓冲满时丢新数据（RingBuffer.write 返回实际写入字节数），回调侧缺数据填静音
+    // New data is lost when the buffer is full (RingBuffer.write returns the actual number of bytes written), and the callback side is silent when filling in missing data
     auto written = buffer.write(data, size);
     if (written < size) {
-        SPDLOG_WARN("PlaybackSink: 缓冲满，丢弃 {} 字节", size - written);
+        SPDLOG_WARN("PlaybackSink: Buffer full, discarding {} bytes", size - written);
     }
 }
 
@@ -87,8 +87,8 @@ void PlaybackSink::open_device() {
     config.sampleRate = format.sample_rate;
     config.dataCallback = data_callback;
     config.pUserData = this;
-    // Android 的 AAudio/OpenSL 默认缓冲偏大（数百 ms 级，实测听感半秒延迟），
-    // 显式设小回调周期（20ms）压播放延迟；抖动由设备侧 RingBuffer 吸收
+    // Android's AAudio/OpenSL default buffer is too large (hundreds of ms, measured half-second delay),
+    // explicitly sets a small callback period (20ms) to suppress the playback delay; jitter is absorbed by the device side RingBuffer
     config.periodSizeInMilliseconds = 20;
 
     ma_result result;
@@ -96,19 +96,19 @@ void PlaybackSink::open_device() {
         result = ma_device_init(NULL, &config, static_cast<ma_device *>(device));
     }
     else {
-        // 指定设备名：自建 context 枚举设备匹配名字。注意 ma_device_init 后 context
-        // 必须保持存活，所以存成员；析构时随 device 一起释放
+        // Specify the device name: self-created context enumeration device matching name. Note the ma_device_init post-context
+        // must remain alive, so the members are saved; they are released together with the device when destructed.
         auto *ctx = new ma_context;
         context = ctx;
         if (ma_context_init(NULL, 0, NULL, ctx) != MA_SUCCESS) {
-            SPDLOG_ERROR("PlaybackSink: miniaudio context 初始化失败，进入丢弃模式");
+            SPDLOG_ERROR("PlaybackSink: miniaudio context initialization failed and entered discard mode");
             discarding = true;
             return;
         }
         ma_device_info *devices = nullptr;
         ma_uint32 count = 0;
         if (ma_context_get_devices(ctx, &devices, &count, NULL, NULL) != MA_SUCCESS || count == 0) {
-            SPDLOG_ERROR("PlaybackSink: 枚举播放设备失败，进入丢弃模式");
+            SPDLOG_ERROR("PlaybackSink: Failed to enumerate playback devices and entered discard mode");
             discarding = true;
             return;
         }
@@ -121,12 +121,12 @@ void PlaybackSink::open_device() {
             }
         }
         if (!found) {
-            // 报错时逐行列出可用设备名，方便用户指定正确的 --device
-            SPDLOG_ERROR("PlaybackSink: 找不到播放设备 \"{}\"，可用设备列表：", device_name);
+            // Lists the available device names line by line when an error is reported, allowing users to specify the correct --device
+            SPDLOG_ERROR("PlaybackSink: Playback device not found \"{}\", available device list:", device_name);
             for (ma_uint32 i = 0; i < count; i++) {
                 SPDLOG_INFO("  - \"{}\"", devices[i].name);
             }
-            SPDLOG_ERROR("进入丢弃模式");
+            SPDLOG_ERROR("Entering discard mode");
             discarding = true;
             return;
         }
@@ -134,36 +134,36 @@ void PlaybackSink::open_device() {
     }
 
     if (result != MA_SUCCESS) {
-        SPDLOG_ERROR("PlaybackSink: 打开播放设备失败（{}），进入丢弃模式", ma_result_description(result));
+        SPDLOG_ERROR("PlaybackSink: Failed to open the playback device ({}) and entered discard mode", ma_result_description(result));
         discarding = true;
         return;
     }
     device_initialized = true;
     if (ma_device_start(static_cast<ma_device *>(device)) != MA_SUCCESS) {
-        SPDLOG_ERROR("PlaybackSink: 启动播放失败，进入丢弃模式");
+        SPDLOG_ERROR("PlaybackSink: Failed to start playback and entered discard mode");
         close_device();
         discarding = true;
         return;
     }
-    // 默认设备（未指定 --device）：打印实际用到的设备名——ma_device 初始化
-    // 后 pContext 有效，按 playback.id 查设备信息
+    // default device (not specified --device): print the actual device name used - ma_device initialization
+    // has completed, pContext is valid; query device information using playback.id
     if (device_name.empty()) {
         auto *dev = static_cast<ma_device *>(device);
         ma_device_info info;
         if (ma_context_get_device_info(dev->pContext, ma_device_type_playback, &dev->playback.id, &info) ==
             MA_SUCCESS) {
-            SPDLOG_INFO("PlaybackSink: 使用默认播放设备 \"{}\"", info.name);
+            SPDLOG_INFO("PlaybackSink: Use default playback device \"{}\"", info.name);
         }
     }
     auto *dev = static_cast<ma_device *>(device);
-    SPDLOG_INFO("PlaybackSink: 开始播放（请求 {}ch {}Hz，设备实际 sampleRate={} channels={}）",
+    SPDLOG_INFO("PlaybackSink: Start playback (request {}ch {}Hz, device actual sampleRate={} channels={})",
                 format.channels, format.sample_rate, dev->sampleRate, dev->playback.channels);
 }
 
 void PlaybackSink::close_device() {
     auto *dev = static_cast<ma_device *>(device);
     if (device_initialized) {
-        // uninit 会等待回调线程退出后才返回
+        // uninit will wait for the callback thread to exit before returning
         ma_device_uninit(dev);
         device_initialized = false;
     }
@@ -183,7 +183,7 @@ void PlaybackSink::data_callback(struct ma_device *device, void *output, const v
     std::lock_guard lock(self->mutex);
     auto read = self->buffer.read(static_cast<std::uint8_t *>(output), n);
     if (read < n) {
-        std::memset(static_cast<std::uint8_t *>(output) + read, 0, n - read); // 缺数据填静音
+        std::memset(static_cast<std::uint8_t *>(output) + read, 0, n - read); // Missing data, fill in mute
     }
 }
 

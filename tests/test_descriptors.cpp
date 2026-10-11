@@ -1,7 +1,7 @@
-// 描述符结构体序列化回归测试：
-// 各结构体 append_to 的输出字节必须与规范定义及结构体化改造前的构建代码完全一致。
-// 期望字节独立于实现编写（对照 UAC 1.0 / UVC 1.5 / CDC 1.1 / USB 2.0 规范），
-// 防止重构改变线上字节序列造成回归。
+// Descriptor-struct serialization regression tests:
+// Each struct's append_to output bytes must exactly match the specification and the construction code before the conversion to structs.
+// Expected bytes are written independently of the implementation (against UAC 1.0 / UVC 1.5 / CDC 1.1 / USB 2.0 specifications),
+// preventing regressions caused by refactoring that changes the wire byte sequence.
 
 #include <gtest/gtest.h>
 
@@ -12,11 +12,11 @@
 
 using namespace usbipdcpp;
 
-// ==================== 序列化基础函数 ====================
+// ==================== Basic serialization functions ====================
 
 TEST(DescriptorStruct, HtoleLittleEndianPlatform) {
-    // 小端平台上 htole 原样返回；大端平台上返回字节交换结果。
-    // 两种情况下序列化字节都必须等于小端线格式。
+    // On little-endian platforms, htole returns the value unchanged; on big-endian platforms, it returns the byte-swapped result.
+    // In both cases, the serialized bytes must match the little-endian wire format.
     if constexpr (std::endian::native == std::endian::little) {
         EXPECT_EQ(htole(std::uint16_t{0x1234}), 0x1234);
         EXPECT_EQ(htole(std::uint32_t{0x01020304}), 0x01020304);
@@ -40,7 +40,7 @@ TEST(DescriptorStruct, VectorAppendToLeRangeParam) {
     EXPECT_EQ(d, (data_type{0x01, 0xDE, 0xAD, 0xBE, 0x02, 0x01}));
 }
 
-// ==================== 描述符结构体字节级回归 ====================
+// ==================== Byte-level descriptor-struct regression ====================
 
 TEST(DescriptorStruct, UacAcHeader) {
     data_type d;
@@ -66,7 +66,7 @@ TEST(DescriptorStruct, UacInputTerminalStereo) {
 
 TEST(DescriptorStruct, UacFeatureUnitMono) {
     data_type d;
-    // mute|volume = 0x03，单声道 → bmaControls[master+ch1] 各 1 字节 + iFeature
+    // mute|volume = 0x03, mono → bmaControls[master+ch1] 1 byte each + iFeature
     AcFeatureUnitHead{0x09, 0x24, AC_DESC_FEATURE_UNIT, UAC_ENTITY_FEATURE_UNIT, UAC_ENTITY_INPUT_TERMINAL, 0x01}
             .append_to(d, 0x03, 1);
     EXPECT_EQ(d, (data_type{0x09, 0x24, 0x06, 0x02, 0x01, 0x01, 0x03, 0x03, 0x00}));
@@ -74,7 +74,7 @@ TEST(DescriptorStruct, UacFeatureUnitMono) {
 
 TEST(DescriptorStruct, UacFeatureUnitStereo) {
     data_type d;
-    // 双声道 → bmaControls 共 3 个元素（master + ch1 + ch2）
+    // Stereo → bmaControls has 3 elements (master + ch1 + ch2)
     AcFeatureUnitHead{0x0A, 0x24, AC_DESC_FEATURE_UNIT, UAC_ENTITY_FEATURE_UNIT, UAC_ENTITY_INPUT_TERMINAL, 0x01}
             .append_to(d, 0x03, 2);
     EXPECT_EQ(d, (data_type{0x0A, 0x24, 0x06, 0x02, 0x01, 0x01, 0x03, 0x03, 0x03, 0x00}));
@@ -98,7 +98,7 @@ TEST(DescriptorStruct, UacAsFormatTypeI) {
     data_type d;
     AsFormatTypeIHead{17, 0x24, AS_DESC_FORMAT_TYPE, 0x01, 1, 0x02, 16, 3}
             .append_to(d, std::vector<std::uint32_t>{48000, 16000, 8000});
-    // bLength = 8 + 3*3 = 17；tSamFreq 均为 24 位小端
+    // bLength = 8 + 3*3 = 17; all tSamFreq values are 24-bit little-endian
     EXPECT_EQ(d, (data_type{0x11, 0x24, 0x02, 0x01, 0x01, 0x02, 0x10, 0x03,
                             0x80, 0xBB, 0x00, // 48000
                             0x80, 0x3E, 0x00, // 16000

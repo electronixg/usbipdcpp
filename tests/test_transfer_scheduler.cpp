@@ -16,8 +16,8 @@ using namespace std::chrono_literals;
 
 namespace {
 
-/// 应答桩：替代真实 Session（提交全部丢弃/记录，响应由 TestTransferScheduler
-/// 的 on_urb_completed 拦截断言，不触网）
+/// Response stub: replaces real Session (all submissions discarded/recorded; responses intercepted and asserted by TestTransferScheduler
+/// on_urb_completed, without network access)
 class StubResponder : public TransferResponder {
 public:
     void submit_ret_submit(UsbIpResponse::UsbIpRetSubmit &&) override {}
@@ -28,13 +28,13 @@ public:
     void stop_transfer() override {}
 };
 
-/// 收集完成响应的调度器测试子类：override on_urb_completed 拦截响应并记录
-/// 完成时刻，供测试断言延迟/节奏/内容
+/// Scheduler test subclass collecting completion responses: override on_urb_completed to intercept responses and record
+/// completion times for delay/cadence/content assertions
 class TestTransferScheduler : public TransferScheduler {
 public:
     explicit TestTransferScheduler(UsbSpeed speed) : TransferScheduler(speed) {}
 
-    /// 等待收集到至少 n 个响应，超时返回 false
+    /// Wait for at least n collected responses; return false on timeout
     bool wait_for_response_count(std::size_t n, std::chrono::milliseconds timeout) {
         std::unique_lock lock(mutex);
         return cv.wait_for(lock, timeout, [&] { return responses.size() >= n; });
@@ -45,13 +45,13 @@ public:
         return responses.size();
     }
 
-    /// 取走全部响应（清空，与 completion_times 一一对应）
+    /// Retrieve all responses (clear collection; correspond one-to-one with completion_times)
     std::vector<UsbIpResponse::UsbIpRetSubmit> take_responses() {
         std::lock_guard lock(mutex);
         return std::move(responses);
     }
 
-    /// 各响应的完成时刻（与响应一一对应）
+    /// Completion times of responses (one-to-one correspondence)
     std::vector<std::chrono::steady_clock::time_point> completion_times() {
         std::lock_guard lock(mutex);
         return times;
@@ -74,8 +74,8 @@ private:
     std::vector<std::chrono::steady_clock::time_point> times;
 };
 
-/// 测试骨架：StubResponder 替代真实 Session（响应被子类拦截，不触网）。
-/// 析构顺序（后声明先析构）：scheduler（内部线程先停）→ responder
+/// Test scaffold: StubResponder replaces real Session (subclass intercepts responses; no network access).
+/// Destruction order (later declarations destroyed first): scheduler (internal thread stops first) → responder
 struct TestFixture {
     StubResponder responder;
     TestTransferScheduler scheduler{UsbSpeed::High};
@@ -85,7 +85,7 @@ struct TestFixture {
     }
 };
 
-/// 等时提交的便捷封装（响应为 OK + 10 字节）
+/// Convenience wrapper for isochronous submission (response OK + 10 bytes)
 void submit_iso(TestTransferScheduler &scheduler, TransferResponder &responder, std::uint8_t ep,
                 std::chrono::microseconds interval, int num_packets, std::uint32_t seqnum) {
     scheduler.submit(responder, ep, EndpointAttributes::Isochronous, interval, num_packets,
@@ -94,10 +94,10 @@ void submit_iso(TestTransferScheduler &scheduler, TransferResponder &responder, 
 
 } // namespace
 
-// ==================== 端点间隔换算（纯函数） ====================
+// ==================== Endpoint-interval conversion (pure function) ====================
 
 TEST(TransferSchedulerTest, EndpointIntervalHighSpeed) {
-    // 高速：2^(bInterval-1) × 125µs
+    // High speed: 2^(bInterval-1) × 125µs
     EXPECT_EQ(TransferScheduler::endpoint_interval(UsbEndpoint{.address = 0x81, .interval = 1}, UsbSpeed::High), 125us);
     EXPECT_EQ(TransferScheduler::endpoint_interval(UsbEndpoint{.address = 0x81, .interval = 2}, UsbSpeed::High), 250us);
     EXPECT_EQ(TransferScheduler::endpoint_interval(UsbEndpoint{.address = 0x81, .interval = 3}, UsbSpeed::High), 500us);
@@ -106,18 +106,18 @@ TEST(TransferSchedulerTest, EndpointIntervalHighSpeed) {
 }
 
 TEST(TransferSchedulerTest, EndpointIntervalOtherSpeeds) {
-    // 全速/低速：bInterval × 1ms
+    // Full/low speed: bInterval × 1ms
     EXPECT_EQ(TransferScheduler::endpoint_interval(UsbEndpoint{.address = 0x81, .interval = 4}, UsbSpeed::Full), 4ms);
-    // Super：bInterval × 125µs
+    // Super:bInterval × 125µs
     EXPECT_EQ(TransferScheduler::endpoint_interval(UsbEndpoint{.address = 0x81, .interval = 4}, UsbSpeed::Super), 500us);
-    // bInterval=0 防御：按 1 处理
+    // Defensive bInterval=0 handling: treat as 1
     EXPECT_EQ(TransferScheduler::endpoint_interval(UsbEndpoint{.address = 0x81, .interval = 0}, UsbSpeed::High), 125us);
 }
 
-// ==================== 延迟语义 ====================
+// ==================== Delay semantics ====================
 
 TEST(TransferSchedulerTest, DelayedResponse) {
-    // 1 个包 × 20ms：响应至少等满一个间隔（定时器粒度粗的平台只验下限）
+    // 1 packet × 20ms: response waits at least a full interval (verify only lower bound on coarse-timer platforms)
     TestFixture fx;
     fx.start();
     auto t0 = std::chrono::steady_clock::now();
@@ -133,7 +133,7 @@ TEST(TransferSchedulerTest, DelayedResponse) {
 }
 
 TEST(TransferSchedulerTest, MultiplePacketsExtendDelay) {
-    // 5 个包 × 10ms：延迟 50ms（多个包分布在多个间隔）
+    // 5 packets × 10ms: delay 50ms (multiple packets distributed across multiple intervals)
     TestFixture fx;
     fx.start();
     auto t0 = std::chrono::steady_clock::now();
@@ -144,8 +144,8 @@ TEST(TransferSchedulerTest, MultiplePacketsExtendDelay) {
 }
 
 TEST(TransferSchedulerTest, DataDurationOverridesInterval) {
-    // 显式数据时长优先于 包数×间隔：3 包 × 10ms = 30ms，数据时长 60ms → 按 60ms 延迟
-    // （模拟自适应 OUT 跟随主机数据量：响应间隔 = 数据对应的音频时长）
+    // Explicit data duration takes precedence over packet count×interval: 3 packets × 10ms = 30ms; data duration 60ms → delay 60ms
+    // (simulates adaptive OUT following host data volume: response interval = audio duration corresponding to data)
     TestFixture fx;
     fx.start();
     auto t0 = std::chrono::steady_clock::now();
@@ -157,7 +157,7 @@ TEST(TransferSchedulerTest, DataDurationOverridesInterval) {
 }
 
 TEST(TransferSchedulerTest, DataDurationShorterThanIntervalProduct) {
-    // 数据时长比 包数×间隔 短时同样按数据时长：2 包 × 20ms = 40ms，数据时长 10ms → 约 10ms
+    // Use data duration even when shorter than packet count×interval: 2 packets × 20ms = 40ms; data duration 10ms → about 10ms
     TestFixture fx;
     fx.start();
     auto t0 = std::chrono::steady_clock::now();
@@ -166,13 +166,13 @@ TEST(TransferSchedulerTest, DataDurationShorterThanIntervalProduct) {
     ASSERT_TRUE(fx.scheduler.wait_for_response_count(1, 2s));
     auto elapsed = std::chrono::steady_clock::now() - t0;
     EXPECT_GE(elapsed, 8ms);
-    EXPECT_LE(elapsed, 150ms); // 上限只需排除按 40ms 延迟（定时器慢的机器也远够）
+    EXPECT_LE(elapsed, 150ms); // Upper bound only needs to exclude a 40ms delay (ample even on slow-timer machines)
     fx.scheduler.stop();
 }
 
 TEST(TransferSchedulerTest, NegativeDataDurationRespondsImmediately) {
-    // 负数据时长 = 提前响应（水位闭环修正主机提交开销用）：deadline 不早于
-    // 当前时刻，到点即完成，不等待包数×间隔
+    // Negative data duration = early response (for buffer-level feedback correcting host submission overhead): deadline no earlier than
+    // current time; complete when due without waiting packet count×interval
     TestFixture fx;
     fx.start();
     auto t0 = std::chrono::steady_clock::now();
@@ -185,9 +185,9 @@ TEST(TransferSchedulerTest, NegativeDataDurationRespondsImmediately) {
 }
 
 TEST(TransferSchedulerTest, BulkDelayedOneFrame) {
-    // bulk 对齐 vudc 帧驱动语义：URB 对齐帧边界完成（不立即响应）。
-    // 断言上限放宽到 100ms：Windows 定时器默认 ~15.6ms 粒度，亚毫秒
-    // deadline 无法精确触发（见 TransferScheduler.cpp 帧对齐注释）
+    // bulk matches vudc frame-driven semantics: URB completes on frame boundary (no immediate response).
+    // Relax upper-bound assertion to 100ms: Windows default timer granularity ~15.6ms; submillisecond
+    // deadlines cannot trigger precisely (see TransferScheduler.cpp frame-alignment comment)
     TestFixture fx;
     fx.start();
     auto t0 = std::chrono::steady_clock::now();
@@ -202,7 +202,7 @@ TEST(TransferSchedulerTest, BulkDelayedOneFrame) {
 }
 
 TEST(TransferSchedulerTest, InterruptDelayedOneFrame) {
-    // interrupt 同 bulk：对齐帧边界完成（不立即响应），上限放宽同 bulk
+    // interrupt like bulk: completes on frame boundary (no immediate response); same relaxed upper bound as bulk
     TestFixture fx;
     fx.start();
     auto t0 = std::chrono::steady_clock::now();
@@ -217,8 +217,8 @@ TEST(TransferSchedulerTest, InterruptDelayedOneFrame) {
 }
 
 TEST(TransferSchedulerTest, BulkSerialCompletionSameEndpoint) {
-    // 同端点 2 个 bulk URB：串行完成（同端点不重叠）。间隔断言放宽：
-    // Windows 定时器粒度下可能同批到期（平均吞吐仍受限，见帧对齐注释）
+    // 2 bulk URBs on same endpoint: serial completion (no overlap on same endpoint). Relax interval assertion:
+    // Windows timer granularity may make them expire in same batch (average throughput still limited; see frame-alignment comment)
     TestFixture fx;
     fx.start();
     fx.scheduler.submit(fx.responder, 0x01, EndpointAttributes::Bulk, 0us, 0,
@@ -234,7 +234,7 @@ TEST(TransferSchedulerTest, BulkSerialCompletionSameEndpoint) {
 }
 
 TEST(TransferSchedulerTest, ControlRespondsImmediately) {
-    // 控制请求不走帧调度：立即响应（对齐 vudc 的 ep0 无延迟）
+    // Control requests bypass frame scheduling: immediate response (matching vudc ep0 without delay)
     TestFixture fx;
     fx.start();
     auto t0 = std::chrono::steady_clock::now();
@@ -247,7 +247,7 @@ TEST(TransferSchedulerTest, ControlRespondsImmediately) {
 }
 
 TEST(TransferSchedulerTest, ZeroPacketsRespondImmediately) {
-    // 无等时包：不占调度窗口，立即响应
+    // No isochronous packets: occupies no scheduling window; immediate response
     TestFixture fx;
     fx.start();
     auto t0 = std::chrono::steady_clock::now();
@@ -267,12 +267,12 @@ TEST(TransferSchedulerTest, NegativePacketsRespondImmediately) {
     fx.scheduler.stop();
 }
 
-// ==================== 同一端点串行 ====================
+// ==================== Same-endpoint serialization ====================
 
 TEST(TransferSchedulerTest, SerialCompletionSameEndpoint) {
-    // 同端点 2 个 URB 各 1 包：后一个完成不早于提交时刻 + 一个间隔（只晚不早），
-    // 且顺序保持。不断言相邻间隔：调度延迟会让相邻 URB 的完成时刻靠拢
-    // （交付只可能晚于帧边界，不可能提前），间隔下界断言在该场景下不成立
+    // 2 URBs on same endpoint, 1 packet each: later completion no earlier than submission time + one interval (late allowed, early forbidden),
+    // with order preserved. Do not assert adjacent intervals: scheduling delay can bring adjacent URB completion times closer
+    // (delivery can only occur after frame boundary, never before); interval lower-bound assertion invalid in this scenario
     TestFixture fx;
     fx.start();
     submit_iso(fx.scheduler, fx.responder,0x81, 60ms, 1, 1);
@@ -281,7 +281,7 @@ TEST(TransferSchedulerTest, SerialCompletionSameEndpoint) {
     ASSERT_TRUE(fx.scheduler.wait_for_response_count(2, 3s));
     auto times = fx.scheduler.completion_times();
     ASSERT_EQ(times.size(), 2);
-    EXPECT_GE(times[1] - submit2_at, 55ms) << "第二个 URB 提前完成";
+    EXPECT_GE(times[1] - submit2_at, 55ms) << "Second URB completed early";
     EXPECT_GT(times[1], times[0]);
     auto responses = fx.scheduler.take_responses();
     EXPECT_EQ(responses[0].header.seqnum, 1);
@@ -290,8 +290,8 @@ TEST(TransferSchedulerTest, SerialCompletionSameEndpoint) {
 }
 
 TEST(TransferSchedulerTest, PacingAcrossManyUrbs) {
-    // 同端点 4 个 URB 连续提交：每个至少等满一个间隔（提交时刻 + 40ms）
-    // 才完成，且完成时刻严格递增。不断言相邻间隔，原因见 SerialCompletionSameEndpoint
+    // 4 URBs submitted consecutively on same endpoint: each waits at least one full interval (submission time + 40ms)
+    // before completion, with strictly increasing completion times. Do not assert adjacent intervals; see SerialCompletionSameEndpoint
     TestFixture fx;
     fx.start();
     std::vector<std::chrono::steady_clock::time_point> submitted_at;
@@ -303,19 +303,19 @@ TEST(TransferSchedulerTest, PacingAcrossManyUrbs) {
     auto times = fx.scheduler.completion_times();
     ASSERT_EQ(times.size(), 4);
     for (std::size_t i = 0; i < times.size(); ++i) {
-        // 定时器只可能晚触发，不可能提前（容差 5ms 与 DelayedResponse 风格一致）
-        EXPECT_GE(times[i] - submitted_at[i], 35ms) << "URB " << i + 1 << " 提前完成";
+        // Timer can only trigger late, never early (5ms tolerance matches DelayedResponse style)
+        EXPECT_GE(times[i] - submitted_at[i], 35ms) << "URB " << i + 1 << " Completed early";
     }
     for (std::size_t i = 1; i < times.size(); ++i) {
-        EXPECT_GT(times[i], times[i - 1]) << "URB " << i << " 应晚于前一 URB";
+        EXPECT_GT(times[i], times[i - 1]) << "URB " << i << " Should be later than previous URB";
     }
     fx.scheduler.stop();
 }
 
-// ==================== 不同端点独立 ====================
+// ==================== Independent endpoints ====================
 
 TEST(TransferSchedulerTest, DifferentEndpointsRunIndependently) {
-    // 端 A 每 40ms、端 B 每 80ms：各自节奏互不拖累
+    // Endpoint A every 40ms, B every 80ms: independent cadences without mutual delay
     TestFixture fx;
     fx.start();
     submit_iso(fx.scheduler, fx.responder,0x81, 40ms, 1, 1);
@@ -323,21 +323,21 @@ TEST(TransferSchedulerTest, DifferentEndpointsRunIndependently) {
     ASSERT_TRUE(fx.scheduler.wait_for_response_count(2, 3s));
     auto responses = fx.scheduler.take_responses();
     ASSERT_EQ(responses.size(), 2);
-    // 先完成的应是更快的 A（seqnum 1）
+    // Faster A (seqnum 1) should complete first
     EXPECT_EQ(responses[0].header.seqnum, 1);
     EXPECT_EQ(responses[1].header.seqnum, 2);
     fx.scheduler.stop();
 }
 
-// ==================== 取消（UNLINK 语义） ====================
+// ==================== Cancellation (UNLINK semantics) ====================
 
 TEST(TransferSchedulerTest, CancelPendingUrb) {
-    // 取消成功：返回 true，且不再发出 RET_SUBMIT
+    // Successful cancellation: return true and send no further RET_SUBMIT
     TestFixture fx;
     fx.start();
     submit_iso(fx.scheduler, fx.responder,0x81, 20ms, 1, 9);
     EXPECT_TRUE(fx.scheduler.cancel(9));
-    // 等待超过原 deadline，确认无响应
+    // Wait beyond original deadline, confirming no response
     EXPECT_FALSE(fx.scheduler.wait_for_response_count(1, 200ms));
     EXPECT_EQ(fx.scheduler.response_count(), 0);
     fx.scheduler.stop();
@@ -351,12 +351,12 @@ TEST(TransferSchedulerTest, CancelMissingUrbReturnsFalse) {
 }
 
 TEST(TransferSchedulerTest, CanceledUrbKeepsPacingOfFollowers) {
-    // 被取消 URB 占用的总线时间不回收：后继 URB 仍在原 deadline 完成，不提前
+    // Bus time occupied by canceled URB not reclaimed: subsequent URB still completes at original deadline, not early
     TestFixture fx;
     fx.start();
     auto t0 = std::chrono::steady_clock::now();
     submit_iso(fx.scheduler, fx.responder,0x81, 60ms, 1, 1); // deadline ≈ t0+60
-    submit_iso(fx.scheduler, fx.responder,0x81, 60ms, 1, 2); // deadline ≈ t0+120（串行）
+    submit_iso(fx.scheduler, fx.responder,0x81, 60ms, 1, 2); // deadline ≈ t0+120 (serial)
     ASSERT_TRUE(fx.scheduler.cancel(1));
     ASSERT_TRUE(fx.scheduler.wait_for_response_count(1, 2s));
     EXPECT_EQ(fx.scheduler.take_responses()[0].header.seqnum, 2);
@@ -364,10 +364,10 @@ TEST(TransferSchedulerTest, CanceledUrbKeepsPacingOfFollowers) {
     fx.scheduler.stop();
 }
 
-// ==================== 连接生命周期 ====================
+// ==================== Connection lifecycle ====================
 
 TEST(TransferSchedulerTest, StopDropsPendingUrbs) {
-    // 断连：未完成 URB 丢弃（不响应）；stop 后提交的 URB 也丢弃
+    // Disconnect: discard incomplete URBs (no response); discard URBs submitted after stop too
     TestFixture fx;
     fx.start();
     submit_iso(fx.scheduler, fx.responder,0x81, 20ms, 1, 1);
@@ -378,12 +378,12 @@ TEST(TransferSchedulerTest, StopDropsPendingUrbs) {
 }
 
 TEST(TransferSchedulerTest, RestartAfterStopWorks) {
-    // 重连：stop 后 start 再次可用，状态干净
+    // Reconnect: start after stop works again, with clean state
     TestFixture fx;
     fx.start();
     submit_iso(fx.scheduler, fx.responder,0x81, 20ms, 1, 1);
     ASSERT_TRUE(fx.scheduler.wait_for_response_count(1, 2s));
-    fx.scheduler.take_responses(); // 清空第一次连接的响应
+    fx.scheduler.take_responses(); // Clear first connection's responses
     fx.scheduler.stop();
 
     fx.start();
@@ -397,13 +397,13 @@ TEST(TransferSchedulerTest, StopIsIdempotent) {
     TestFixture fx;
     fx.start();
     fx.scheduler.stop();
-    fx.scheduler.stop(); // 二次 stop 不应崩溃
+    fx.scheduler.stop(); // Second stop should not crash
 }
 
-// ==================== 规模与并发 ====================
+// ==================== Scale and concurrency ====================
 
 TEST(TransferSchedulerTest, ManyUrbsAllRespondInOrder) {
-    // 同端点连续 30 个 URB：全部响应且按提交顺序（seqnum 递增）
+    // 30 consecutive URBs on same endpoint: all receive responses in submission order (increasing seqnum)
     TestFixture fx;
     fx.start();
     constexpr int kCount = 30;
@@ -418,7 +418,7 @@ TEST(TransferSchedulerTest, ManyUrbsAllRespondInOrder) {
 }
 
 TEST(TransferSchedulerTest, ConcurrentSubmitFromMultipleThreads) {
-    // 多线程并发提交（模拟 handler 线程与调度线程并发）：全部响应无丢失
+    // Multithreaded concurrent submission (simulate handler/scheduler thread concurrency): all respond without loss
     TestFixture fx;
     fx.start();
     constexpr int kThreads = 2;
@@ -427,7 +427,7 @@ TEST(TransferSchedulerTest, ConcurrentSubmitFromMultipleThreads) {
     for (int t = 0; t < kThreads; ++t) {
         threads.emplace_back([&, t] {
             for (int i = 0; i < kPerThread; ++i) {
-                // 各线程用不同端点，避免测试时长叠加
+                // Use distinct endpoints per thread, avoiding cumulative test duration
                 submit_iso(fx.scheduler, fx.responder,static_cast<std::uint8_t>(0x81 + t), 30ms, 1,
                            static_cast<std::uint32_t>(t * kPerThread + i + 1));
             }
@@ -440,11 +440,11 @@ TEST(TransferSchedulerTest, ConcurrentSubmitFromMultipleThreads) {
     fx.scheduler.stop();
 }
 
-// ==================== 处理器版（通知语义：自发送 + on_urb_done） ====================
+// ==================== Processor variant (notification semantics: self-send + on_urb_done) ====================
 
 TEST(TransferSchedulerTest, IsoProcessorCalledAfterDataDuration) {
-    // iso 处理器版：数据时长（30ms）后调度线程通知处理器开始处理，处理器
-    // 自行发送（测试里收集）+ on_urb_done 上报。限速靠"延迟服务时机"
+    // iso processor variant: after data duration (30ms), scheduler thread notifies processor to start processing; processor
+    // sends itself (collected in test) + reports via on_urb_done. Rate limiting uses "delayed service time"
     TestFixture fx;
     fx.start();
     std::mutex m;
@@ -459,7 +459,7 @@ TEST(TransferSchedulerTest, IsoProcessorCalledAfterDataDuration) {
                                 sent.push_back(UsbIpResponse::UsbIpRetSubmit::create_ret_submit_ok_without_data(
                                         seqnum, 10));
                             }
-                            // 处理完上报完成：推进串行点、服务下一个 URB
+                            // Report completion after processing: advance serialization point, service next URB
                             fx.scheduler.on_urb_done(ep.address, seqnum);
                         });
     std::unique_lock lock(m);
@@ -470,8 +470,8 @@ TEST(TransferSchedulerTest, IsoProcessorCalledAfterDataDuration) {
 }
 
 TEST(TransferSchedulerTest, BulkProcessorCalledAtFrameBoundary) {
-    // bulk 处理器版：对齐帧边界后通知处理器。上限放宽同 BulkDelayedOneFrame
-    // （Windows 定时器粒度）
+    // bulk processor variant: notify processor after frame alignment. Upper bound relaxed as in BulkDelayedOneFrame
+    // (Windows timer granularity)
     TestFixture fx;
     fx.start();
     std::mutex m;
@@ -494,16 +494,16 @@ TEST(TransferSchedulerTest, BulkProcessorCalledAtFrameBoundary) {
 }
 
 TEST(TransferSchedulerTest, ProcessorUrbsSerializeOnCompletion) {
-    // 同端点两个 iso 处理器版：服务时刻链在提交时定死（间隔 40ms），
-    // 处理耗时/触发延迟不进入节奏；但处理慢（超过链间隔）时第二个 URB
-    // 必须等第一个 on_urb_done 放行（串行保护）——处理器 1 sleep 60ms
-    // 超过 40ms 链间隔，第二个的通知不早于第一个完成上报
+    // Two iso processor URBs on same endpoint: service-time chain fixed at submission (40ms interval);
+    // processing time/trigger delay excluded from cadence; but if processing is slow (exceeds chain interval), second URB
+    // must wait for first on_urb_done to allow it (serialization safeguard)—processor 1 sleeps 60ms,
+    // exceeding 40ms chain interval; second notification no earlier than first completion report
     TestFixture fx;
     fx.start();
     std::mutex m;
     std::condition_variable cv;
     std::vector<std::chrono::steady_clock::time_point> notify_at;
-    // 初始化为 max()：处理器 2 若在处理器 1 上报前被通知，断言恒失败（能测出来）
+    // Initialize to max(): if processor 2 notified before processor 1 reports, assertion always fails (detectable)
     auto first_done_at = std::chrono::steady_clock::time_point::max();
     fx.scheduler.submit(fx.responder, UsbEndpoint{.address = 0x81, .interval = 4}, EndpointAttributes::Isochronous,
                         40ms, 23, {}, [&](TransferResponder &responder, const UsbEndpoint &ep, std::uint32_t seqnum,
@@ -513,8 +513,8 @@ TEST(TransferSchedulerTest, ProcessorUrbsSerializeOnCompletion) {
                                 notify_at.push_back(std::chrono::steady_clock::now());
                                 cv.notify_all();
                             }
-                            // 模拟慢处理：上报前卡 60ms（超过链间隔 40ms，
-                            // 第二个必须等上报，不能按已过的链时刻提前）
+                            // Simulate slow processing: block 60ms before reporting (exceeds 40ms chain interval;
+                            // second must await report, not proceed early at already-passed chain time)
                             std::this_thread::sleep_for(60ms);
                             first_done_at = std::chrono::steady_clock::now();
                             fx.scheduler.on_urb_done(ep.address, seqnum);
@@ -532,15 +532,15 @@ TEST(TransferSchedulerTest, ProcessorUrbsSerializeOnCompletion) {
     std::unique_lock lock(m);
     ASSERT_TRUE(cv.wait_for(lock, 3s, [&] { return notify_at.size() >= 2; }));
     ASSERT_EQ(notify_at.size(), 2);
-    // 串行保护：第二个的通知不早于第一个的完成上报（处理慢超链间隔时）
+    // Serialization safeguard: second notification no earlier than first completion report (when slow processing exceeds chain interval)
     EXPECT_GE(notify_at[1], first_done_at);
     EXPECT_GT(notify_at[1], notify_at[0]);
     fx.scheduler.stop();
 }
 
 TEST(TransferSchedulerTest, CancelPendingProcessorUrb) {
-    // 处理器版 URB 带 seqnum：未服务前可取消（返回 true，处理器不被调用）；
-    // 已通知处理器（处理中）的取消不了（返回 false）
+    // Processor URB carries seqnum: cancellable before service (return true, processor not invoked);
+    // cannot cancel after notifying processor (processing; return false)
     TestFixture fx;
     fx.start();
     bool notified = false;
@@ -549,11 +549,11 @@ TEST(TransferSchedulerTest, CancelPendingProcessorUrb) {
                             notified = true;
                         });
     EXPECT_TRUE(fx.scheduler.cancel(25));
-    // 等待超过原服务时刻，确认处理器未被调用
+    // Wait beyond original service time, confirming processor not invoked
     std::this_thread::sleep_for(200ms);
     EXPECT_FALSE(notified);
 
-    // 已通知（处理中）的 URB 取消不了
+    // Already notified (processing) URB cannot be canceled
     bool done = false;
     std::mutex m;
     std::condition_variable cv;
@@ -574,9 +574,9 @@ TEST(TransferSchedulerTest, CancelPendingProcessorUrb) {
 }
 
 TEST(TransferSchedulerTest, OnUrbDoneWrongSeqnumIgnored) {
-    // on_urb_done 的 seqnum 须匹配处理中的 URB：错误 seqnum 的上报被忽略，
-    // 端点不推进（下一个 URB 不被服务）——处理器完成收尾后的误报不会
-    // 打乱节奏
+    // on_urb_done seqnum must match processing URB: ignore reports with wrong seqnum,
+    // without advancing endpoint (next URB not serviced)—erroneous report after processor finishes cleanup will not
+    // disrupt cadence
     TestFixture fx;
     fx.start();
     std::mutex m;
@@ -591,7 +591,7 @@ TEST(TransferSchedulerTest, OnUrbDoneWrongSeqnumIgnored) {
                             }
                             cv.notify_all();
                             if (seqnum == 31) {
-                                // 先误报一个错误 seqnum（不应生效），再正确上报
+                                // First report wrong seqnum (must have no effect), then report correctly
                                 fx.scheduler.on_urb_done(ep.address, 999);
                                 fx.scheduler.on_urb_done(ep.address, seqnum);
                             } else {
@@ -610,16 +610,16 @@ TEST(TransferSchedulerTest, OnUrbDoneWrongSeqnumIgnored) {
                         });
     std::unique_lock lock(m);
     ASSERT_TRUE(cv.wait_for(lock, 3s, [&] { return notified_seqnums.size() >= 2; }));
-    // 顺序保持：31 先 32 后（错误上报没让 32 提前或跳过）
+    // Order preserved: 31 before 32 (wrong report neither advanced nor skipped 32)
     EXPECT_EQ(notified_seqnums[0], 31);
     EXPECT_EQ(notified_seqnums[1], 32);
     fx.scheduler.stop();
 }
 
 TEST(TransferSchedulerTest, OnUrbDoneFromOtherThreadConcurrentSubmit) {
-    // 真异步处理：处理器在回调里把 on_urb_done 交给另一个线程延迟上报
-    //（模拟慢设备异步完成），同时主线程持续并发 submit——全部完成、
-    // 顺序保持、无死锁。detached 线程在 stop 前用计数确保全部结束
+    // Truly asynchronous processing: processor callback delegates delayed on_urb_done report to another thread
+    //(simulating slow asynchronous device completion), while main thread continues concurrent submit—all complete,
+    // order preserved, no deadlock. Counter ensures all detached threads finish before stop
     TestFixture fx;
     fx.start();
     std::mutex m;
@@ -627,7 +627,7 @@ TEST(TransferSchedulerTest, OnUrbDoneFromOtherThreadConcurrentSubmit) {
     std::vector<std::uint32_t> notified_seqnums;
     int pending_done_threads = 0;
     std::atomic<bool> keep_submitting{true};
-    // 网络线程：持续提交（处理器回调从调度线程调 on_urb_done 不同线程）
+    // Network thread: continuous submission (on_urb_done called from processor callback on scheduler thread, a different thread)
     std::thread submitter([&] {
         std::uint32_t seq = 100;
         while (keep_submitting) {
@@ -641,10 +641,10 @@ TEST(TransferSchedulerTest, OnUrbDoneFromOtherThreadConcurrentSubmit) {
                                         pending_done_threads++;
                                     }
                                     cv.notify_all();
-                                    // 异步上报：新线程延迟 5ms 后调 on_urb_done。
-                                    // join 等待线程结束（on_urb_done 确实从别的
-                                    // 线程调用），避免 detached 线程生命周期
-                                    // 竞态（主线程析构 cv 时线程还在 notify）
+                                    // Asynchronous report: new thread calls on_urb_done after 5ms delay.
+                                    // join waits for thread exit (on_urb_done indeed called from another
+                                    // thread), avoiding detached-thread lifetime
+                                    // race (thread still notifying while main thread destroys cv)
                                     std::thread t([&, ep, seqnum] {
                                         std::this_thread::sleep_for(5ms);
                                         fx.scheduler.on_urb_done(ep.address, seqnum);
@@ -661,17 +661,17 @@ TEST(TransferSchedulerTest, OnUrbDoneFromOtherThreadConcurrentSubmit) {
         }
     });
     std::unique_lock lock(m);
-    // 等 10 个 URB 全部被通知且所有异步上报线程结束
+    // Wait for all 10 URBs notified and all asynchronous-report threads finished
     ASSERT_TRUE(cv.wait_for(lock, 10s, [&] { return notified_seqnums.size() >= 10 && pending_done_threads == 0; }));
     keep_submitting = false;
-    // 必须先放锁再 join：submitter 退出前可能又提交了 URB，其处理器
-    //（调度线程）需要拿 m 锁——主线程持锁 join 会死锁（Windows 定时器
-    // 粒度粗时最后的 URB 会在 stop 前被同批调度，Linux 1ms 粒度下时序
-    // 不同不触发——时序依赖的死锁，测试里一律先放锁）
+    // Must unlock before join: submitter may submit another URB before exiting; its processor
+    //(scheduler thread) needs m lock—main thread joining while holding lock deadlocks (with coarse Windows timer
+    // granularity, final URBs scheduled in same batch before stop; Linux 1ms granularity yields different timing
+    // without triggering it—timing-dependent deadlock; always unlock first in tests)
     lock.unlock();
     submitter.join();
     lock.lock();
-    // 同端点串行通知（提交顺序），异步上报不破坏顺序
+    // Same-endpoint notifications serialized (submission order); asynchronous reporting preserves order
     for (std::size_t i = 1; i < notified_seqnums.size(); ++i)
         EXPECT_GT(notified_seqnums[i], notified_seqnums[i - 1]);
     lock.unlock();
@@ -679,15 +679,15 @@ TEST(TransferSchedulerTest, OnUrbDoneFromOtherThreadConcurrentSubmit) {
 }
 
 TEST(TransferSchedulerTest, ProcessingEndpointDoesNotBlockOthers) {
-    // 端点独立：A（60ms）先提交并进入处理中，B（20ms）的 URB 照常按自己
-    // 的节奏被通知——A 的 processing 状态不阻塞 B 的排期（处理器为中断
-    // 语义、快速返回，见 UrbProcessCallback 契约；此处验证排期独立）
+    // Independent endpoints: A (60ms) submitted first and enters processing; B (20ms) URB notified normally at its own
+    // cadence—A's processing state does not block B's schedule (processor follows interrupt
+    // semantics, returning quickly; see UrbProcessCallback contract; here verify independent scheduling)
     TestFixture fx;
     fx.start();
     std::mutex m;
     std::condition_variable cv;
     std::vector<std::uint32_t> notified; // (seqnum)
-    // A：60ms 后通知，通知后立即上报（处理快速）
+    // A: notified after 60ms, reports immediately afterward (fast processing)
     fx.scheduler.submit(fx.responder, UsbEndpoint{.address = 0x81, .interval = 4}, EndpointAttributes::Isochronous,
                         60ms, 51, {}, [&](TransferResponder &responder, const UsbEndpoint &ep, std::uint32_t seqnum,
                                            TransferHandle &&) {
@@ -699,7 +699,7 @@ TEST(TransferSchedulerTest, ProcessingEndpointDoesNotBlockOthers) {
                             fx.scheduler.on_urb_done(ep.address, seqnum);
                         });
     auto t0 = std::chrono::steady_clock::now();
-    // B：20ms 后通知
+    // B: notified after 20ms
     fx.scheduler.submit(fx.responder, UsbEndpoint{.address = 0x82, .interval = 4}, EndpointAttributes::Isochronous,
                         20ms, 52, {}, [&](TransferResponder &responder, const UsbEndpoint &ep, std::uint32_t seqnum,
                                            TransferHandle &&) {
@@ -711,11 +711,11 @@ TEST(TransferSchedulerTest, ProcessingEndpointDoesNotBlockOthers) {
                             fx.scheduler.on_urb_done(ep.address, seqnum);
                         });
     std::unique_lock lock(m);
-    // B 先到（20ms）：A 的 60ms 排期不拖累 B
+    // B arrives first (20ms): A's 60ms schedule does not delay B
     ASSERT_TRUE(cv.wait_for(lock, 2s, [&] { return notified.size() >= 1; }));
     EXPECT_EQ(notified[0], 52);
     EXPECT_GE(std::chrono::steady_clock::now() - t0, 15ms);
-    // A 随后到
+    // A arrives afterward
     ASSERT_TRUE(cv.wait_for(lock, 2s, [&] { return notified.size() >= 2; }));
     EXPECT_EQ(notified[1], 51);
     fx.scheduler.stop();

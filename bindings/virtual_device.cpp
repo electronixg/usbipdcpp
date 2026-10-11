@@ -11,16 +11,16 @@
 
 namespace py = pybind11;
 
-// Trampoline 类：允许 Python 继承 C++ 虚类
+// Trampoline class: allows Python to derive from C++ abstract classes
 class PyVirtualInterfaceHandler : public usbipdcpp::VirtualInterfaceHandler {
 public:
     using usbipdcpp::VirtualInterfaceHandler::VirtualInterfaceHandler;
 
     void on_new_connection(usbipdcpp::TransferResponder &responder, usbipdcpp::error_code &ec) override {
-        // 手写转发而不是 PYBIND11_OVERRIDE：ec 是纯输出参数，Python 侧的
-        // on_new_connection(self, responder) 只接收 responder（与下面 .def
-        // 暴露的签名一致）；基类登记 responder 由 Python 侧经
-        // super().on_new_connection(responder) 完成
+        // Forward manually rather than using PYBIND11_OVERRIDE: ec is an output-only parameter; the Python
+        // on_new_connection(self, responder) accepts only responder (matching the signature exposed by .def
+        // below); registration of responder in the base class is performed on the Python side through
+        // super().on_new_connection(responder)
         pybind11::gil_scoped_acquire gil;
         pybind11::function override = pybind11::get_override(this, "on_new_connection");
         if (override) {
@@ -126,15 +126,15 @@ public:
 };
 
 void bind_virtual_device(py::module_ &m) {
-    // TransferResponder：传输应答接口。Python 继承 handler 重写
-    // on_new_connection 时会收到它，只暴露对 Python 有意义的方法（停止传输），
-    // 回包系列（submit/enqueue_ret_*）是 C++ 内部通道，不暴露
+    // TransferResponder: transfer response interface. A Python subclass of handler receives it when overriding
+    // on_new_connection; expose only methods useful to Python (stopping transfers).
+    // The response methods (submit/enqueue_ret_*) are internal C++ channels and are not exposed
     py::class_<usbipdcpp::TransferResponder>(m, "TransferResponder",
-                                             "传输应答接口（控制操作用）")
+                                             "Transfer response interface (for control operations)")
         .def("stop_transfer", &usbipdcpp::TransferResponder::stop_transfer,
-             "请求停止传输");
+             "Request that transfers stop");
 
-    // VirtualInterfaceHandler - 支持继承
+    // VirtualInterfaceHandler - supports subclassing
     py::class_<usbipdcpp::VirtualInterfaceHandler, PyVirtualInterfaceHandler,
                std::shared_ptr<usbipdcpp::VirtualInterfaceHandler>>(m, "VirtualInterfaceHandler")
         .def(py::init<usbipdcpp::UsbInterface &, usbipdcpp::StringPool &>(),
@@ -145,14 +145,14 @@ void bind_virtual_device(py::module_ &m) {
             self.VirtualInterfaceHandler::on_new_connection(responder, ec);
         }, py::arg("responder"))
         .def("on_disconnection", [](usbipdcpp::VirtualInterfaceHandler &self) {
-            // 实际清理由 trampoline 在 Python 回调后自动执行
+            // Actual cleanup is performed automatically by the trampoline after the Python callback
         })
         .def("get_string_interface_value", &usbipdcpp::VirtualInterfaceHandler::get_string_interface_value)
         .def("get_string_interface", &usbipdcpp::VirtualInterfaceHandler::get_string_interface)
         .def("change_string_interface", &usbipdcpp::VirtualInterfaceHandler::change_string_interface,
              py::arg("new_str"));
 
-    // HidVirtualInterfaceHandler - 支持继承
+    // HidVirtualInterfaceHandler - supports subclassing
     py::class_<usbipdcpp::HidVirtualInterfaceHandler, PyHidVirtualInterfaceHandler,
                std::shared_ptr<usbipdcpp::HidVirtualInterfaceHandler>>(m, "HidVirtualInterfaceHandler",
                                                                        py::base<usbipdcpp::VirtualInterfaceHandler>())
@@ -165,11 +165,11 @@ void bind_virtual_device(py::module_ &m) {
             self.send_input_report(asio::buffer(str.data(), str.size()));
         });
 
-    // AbstDeviceHandler - 基类（不直接构造，仅供继承链注册）
+    // AbstDeviceHandler - base class (not constructed directly; registered only for the inheritance chain)
     py::class_<usbipdcpp::AbstDeviceHandler, std::shared_ptr<usbipdcpp::AbstDeviceHandler>>(
         m, "AbstDeviceHandler");
 
-    // SimpleVirtualDeviceHandler - 设备级 Handler
+    // SimpleVirtualDeviceHandler - device-level Handler
     py::class_<usbipdcpp::SimpleVirtualDeviceHandler, usbipdcpp::AbstDeviceHandler,
                std::shared_ptr<usbipdcpp::SimpleVirtualDeviceHandler>>(
         m, "SimpleVirtualDeviceHandler")

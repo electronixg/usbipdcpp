@@ -4,11 +4,11 @@
 #include <sstream>
 
 #ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN // 阻止 windows.h 拉入 winsock.h（项目用 winsock2，顺序冲突）
-#define NOMINMAX // 阻止 windows.h 定义 min/max 宏（项目用 std::min/std::max）
+#define WIN32_LEAN_AND_MEAN // prevents windows.h from pulling in winsock.h (the project uses winsock2, order conflict)
+#define NOMINMAX // prevents windows.h from defining min/max macros (projects use std::min/std::max)
 #include <windows.h>
 #include <mmsystem.h>
-// MSVC/clang-cl 链接 winmm（timeBeginPeriod）
+// MSVC/clang-cl link winmm(timeBeginPeriod)
 #pragma comment(lib, "winmm.lib")
 #endif
 
@@ -32,7 +32,7 @@
 
 using namespace usbipdcpp;
 
-/// 解析逗号分隔的采样率列表，如 "48000,16000,8000"
+/// Parse a comma-separated list of sampling rates, such as "48000,16000,8000"
 static std::vector<std::uint32_t> parse_sample_rates(const std::string &str) {
     std::vector<std::uint32_t> rates;
     std::stringstream ss(str);
@@ -46,12 +46,12 @@ static std::vector<std::uint32_t> parse_sample_rates(const std::string &str) {
     return rates;
 }
 
-/// 解析谐波列表，如 "440:50,880:25:1.5708"（频率Hz:幅度百分比[:相位弧度]，相位可省略
-/// 默认 0；幅度可为负值表示反相，即相位翻转 π）。
-/// 合成公式：y(t) = Σ A_k·sin(2π·f_k·t + φ_k)
-/// 方波前 3 谐波示例（440Hz，原始傅里叶系数 4/(kπ)，k 为奇数）：
-/// "440:127.324,1320:42.441,2200:25.465"——叠加峰值超满幅时默认整体除以峰值
-/// 不削波（波形形状不变），--clamp 改为直接削波
+/// Parse a harmonic list, e.g. "440:50,880:25:1.5708" (frequency in Hz: amplitude percentage [: phase in radians]; phase is optional
+/// Default 0; the amplitude can be negative to indicate inversion, that is, phase flip π).
+/// Synthetic formula: y(t) = Σ A_k·sin(2π·f_k·t + φ_k)
+/// Example of the first 3 square-wave harmonics (440Hz, original Fourier coefficient 4/(k*pi), where k is odd):
+/// "440:127.324,1320:42.441,2200:25.465" - the default is to divide the whole by the peak value when the superimposed peak value exceeds the full range
+/// No clipping (waveform shape remains unchanged), --clamp changes to direct clipping
 static std::vector<FourierHarmonic> parse_harmonics(const std::string &str) {
     std::vector<FourierHarmonic> result;
     std::stringstream ss(str);
@@ -73,8 +73,8 @@ static std::vector<FourierHarmonic> parse_harmonics(const std::string &str) {
     return result;
 }
 
-/// 创建音频源：--audio 文件源（文件打不开时软失败输出静音，同 FfmpegSource 做法）、
-/// --harmonics 傅里叶级数合成、否则正弦波
+/// Create audio source: --audio file source (soft failure output mute when the file cannot be opened, the same as FfmpegSource),
+/// --harmonics Fourier series synthesis, otherwise sine wave
 static std::unique_ptr<AudioSource> create_source(const cxxopts::ParseResult &result,
                                                   const std::vector<std::uint32_t> &rates,
                                                   const std::vector<FourierHarmonic> &harmonics,
@@ -114,15 +114,15 @@ int main(int argc, char **argv) {
          "wave down by the peak (default: scale only when peak exceeds full scale)",
          cxxopts::value<bool>()->default_value("false")->implicit_value("true"));
 #ifdef USBIPDCPP_USE_FFMPEG
-    // 仅 FFmpeg 可用时注册 --video：音画同步模式（视频轨 → UVC、音轨 → UAC，
-    // 同一文件同一时间轴）。不可用的构建里 -h 不显示该选项，直接传也会被
-    // cxxopts 按未知选项拒绝
+    // Only register when FFmpeg is available --video: audio and video synchronization mode (video track → UVC, audio track → UAC,
+    // same file, same timeline). In unavailable builds, -h does not display this option, and passing it directly will also be
+    // rejected by cxxopts as an unknown option
     options_group("video", "Audio+video file for A/V-synchronized output (requires FFmpeg)",
                   cxxopts::value<std::string>());
 #endif
 #ifdef USBIPDCPP_USE_MINIAUDIO
-    // 仅 miniaudio 可用时注册 --audio：不可用的构建里 -h 不显示该选项，
-    // 直接传也会被 cxxopts 按未知选项拒绝（parse_example_args 打印 help 退出）
+    // Only register when miniaudio is available --audio: In unavailable builds -h does not display this option.
+    // passing it explicitly is also rejected by cxxopts as an unknown option (parse_example_args prints help and exits)
     options_group("audio", "Audio file to play instead of sine (WAV/MP3/FLAC/OGG)", cxxopts::value<std::string>());
 #endif
     auto result = parse_example_args(opts, argc, argv);
@@ -138,16 +138,16 @@ int main(int argc, char **argv) {
 #ifdef USBIPDCPP_USE_MINIAUDIO
     auto has_audio = result.count("audio") > 0;
 #else
-    auto has_audio = false; // --audio 未注册（无 miniaudio 构建）
+    auto has_audio = false; // --audio not registered (no miniaudio build)
 #endif
 #ifdef USBIPDCPP_USE_FFMPEG
     auto has_video = result.count("video") > 0;
 #else
-    auto has_video = false; // --video 未注册（无 FFmpeg 构建）
+    auto has_video = false; // --video not registered (no FFmpeg build)
 #endif
     auto has_harmonics = result.count("harmonics") > 0;
 
-    // 列表参数解析（stoul/stod 对非法输入抛异常，转成友好报错退出）
+    // list parameter parsing (stoul/stod throws an exception for illegal input and converts it into a friendly error report to exit)
     std::vector<std::uint32_t> rates;
     std::vector<FourierHarmonic> harmonics;
     try {
@@ -177,9 +177,9 @@ int main(int argc, char **argv) {
 
     StringPool string_pool;
 
-    // 视频源 + 音频源：--video 提供时用音画同步文件源（FFmpeg 同时解视频轨和
-    // 音轨，音频消费推进主时钟、视频帧按主时钟对齐取帧）；否则彩条视频 +
-    // 合成音频（sine/fourier/--audio 文件）
+    // Video source + audio source: when --video is supplied, use the synchronized audio/video file source (FFmpeg decodes the video track and
+    // audio track, audio consumption advances the main clock, and video frames are aligned according to the main clock); otherwise color bar video +
+    // synthesized audio (sine/fourier/--audio file)
     std::unique_ptr<VideoSource> video_source;
     std::unique_ptr<AudioSource> source;
     bool av_file_mode = false;
@@ -187,7 +187,7 @@ int main(int argc, char **argv) {
     if (has_video) {
         auto av_state = std::make_shared<AudioVideoFileState>(result["video"].as<std::string>(), rates);
         if (!av_state->ok()) {
-            SPDLOG_ERROR("FFmpeg 音视频源初始化失败，退出");
+            SPDLOG_ERROR("FFmpeg audio/video source initialization failed; exiting");
             return 1;
         }
         video_source = std::make_unique<FfmpegVideoSourceView>(av_state);
@@ -199,16 +199,16 @@ int main(int argc, char **argv) {
         video_source = std::make_unique<ColorBarSource>(width, height, fps);
         source = create_source(result, rates, harmonics, channels, freq, amp, !clamp);
     }
-    // 声道数以音源实际为准
+    // The number of channels is subject to the actual sound source.
     channels = source->current_format().channels;
 
-    // 高速等时端点：bInterval=4 → 每 1ms 一个包（对齐内核 gadget f_uac1.c 的 as_in_ep_desc，
-    // 真实 UAC 设备形态），端点大小按最高采样率帧对齐预留。
-    // 包调度（对齐内核 gadget u_audio.c）为"基准包长 + 残差溢出补一帧"，溢出包比基准大一帧，
-    // 所以 wMaxPacketSize 必须按帧向上取整（帧大小×ceil(max_rate/1000)）：非 1kHz 整数倍采样率
-    // （如 44100 单声道 = 88.2 字节/ms → 88/90 字节包交替）下按字节取整会截断溢出包切碎帧。
-    // 必须用音源实际支持格式的最大采样率：软失败降级格式（48000）可能不在命令行 rates 里，
-    // 端点按命令行算会偏小，等时数据被截断
+    // high-speed isochronous endpoint: bInterval=4 → one packet per 1ms (aligned kernel gadget f_uac1.c’s as_in_ep_desc,
+    // real UAC device form), the endpoint size is reserved according to the highest sampling rate frame alignment.
+    // packet scheduling (aligned kernel gadget u_audio.c) is "base packet length + residual overflow plus one frame", and the overflow packet is one frame larger than the base.
+    // So wMaxPacketSize must be rounded up by frame (frame size × ceil(max_rate/1000)): non-1kHz integer multiples of the sampling rate
+    // Rounding by byte under  (such as 44100 mono = 88.2 bytes/ms → 88/90 byte packet alternation) will truncate the overflow packet and chop the frame.
+    // must use the maximum sampling rate of the format actually supported by the sound source: the soft failure downgrade format (48000) may not be in the command line rates.
+    // endpoint will be too small according to the command line, and the isochronous data will be truncated.
     auto fmts = source->supported_formats();
     auto max_rate = std::max_element(fmts.begin(), fmts.end(),
                                      [](const AudioFormatInfo &a, const AudioFormatInfo &b) {
@@ -216,11 +216,11 @@ int main(int argc, char **argv) {
                                      })->sample_rate;
     auto iso_packet_size = static_cast<std::uint16_t>(((max_rate + 999) / 1000) * 2 * channels);
 
-    // 接口 0-1：UVC（VC + VS），接口 2-3：UAC 麦克风（AC + AS）。
-    // UAC AS 的 ISO IN 用 0x83 不用 0x81：端点号设备内唯一，0x81 已被 UVC VS 占用
-    // （对齐内核 g_webcam：uvc 用 ep1、uac 用 ep2/3）
+    // interface 0-1: UVC (VC + VS), interface 2-3: UAC microphone (AC + AS).
+    // UAC AS uses 0x83 rather than 0x81 for ISO IN: endpoint numbers are unique within the device, and UVC VS already uses 0x81
+    // (aligned core g_webcam: ep1 for uvc, ep2/3 for uac)
     std::vector<UsbInterface> interfaces = {
-            // Interface 0: VideoControl（含中断端点用于状态通知）
+            // Interface 0: VideoControl (including interrupt endpoint for status notification)
             UsbInterface{
                     .interface_class = CC_VIDEO,
                     .interface_subclass = SC_VIDEOCONTROL,
@@ -232,7 +232,7 @@ int main(int argc, char **argv) {
                             .interval = 8,
                     }}},
             },
-            // Interface 1: VideoStreaming（alt 0 空端点，alt 1 ISO IN 端点）
+            // Interface 1: VideoStreaming (alt 0 has no endpoints, alt 1 ISO IN endpoint)
             UsbInterface{
                     .interface_class = CC_VIDEO,
                     .interface_subclass = SC_VIDEOSTREAMING,
@@ -246,8 +246,8 @@ int main(int argc, char **argv) {
                                           .interval = 1,
                                   }}},
             },
-            // Interface 2: AudioControl（含中断端点用于状态通知，
-            // 对齐内核 gadget f_uac1.c 的 ac_int_ep_desc：wMaxPacketSize=2、bInterval=4）
+            // Interface 2: AudioControl (including interrupt endpoint for status notification,
+            // aligns the core gadget ac_int_ep_desc of f_uac1.c: wMaxPacketSize=2, bInterval=4)
             UsbInterface{
                     .interface_class = CC_AUDIO,
                     .interface_subclass = SC_AUDIOCONTROL,
@@ -255,22 +255,22 @@ int main(int argc, char **argv) {
                     .endpoints = {{UsbEndpoint{
                             .address = 0x82, // IN, endpoint 2 — interrupt for status
                             .attributes = 0x03, // Interrupt
-                            .max_packet_size = 2, // UAC1 状态字（bStatusType + bOriginator）
+                            .max_packet_size = 2, // UAC1 status word (bStatusType + bOriginator)
                             .interval = 4,
                     }}},
             },
-            // Interface 3: AudioStreaming（alt 0 空端点，alt 1 ISO IN 端点）
+            // Interface 3: AudioStreaming (alt 0 has no endpoints, alt 1 ISO IN endpoint)
             UsbInterface{
                     .interface_class = CC_AUDIO,
                     .interface_subclass = SC_AUDIOSTREAMING,
                     .interface_protocol = 0x00,
                     .endpoints = {{}, // alt 0: zero bandwidth
                                   {UsbEndpoint{
-                                          .address = 0x83, // IN, endpoint 3（0x81 被 UVC VS 占用）
+                                          .address = 0x83, // IN, endpoint 3 (0x81 is occupied by UVC VS)
                                           .attributes = static_cast<std::uint8_t>(EndpointAttributes::Isochronous) |
                                                         static_cast<std::uint8_t>(IsoSyncType::Async),
                                           .max_packet_size = iso_packet_size,
-                                          .interval = 4, // 每 1ms 一包（对齐 gadget f_uac1.c）
+                                          .interval = 4, // One packet per 1ms (aligned gadget f_uac1.c)
                                   }}},
             },
     };
@@ -294,16 +294,16 @@ int main(int argc, char **argv) {
             .ep0_out = UsbEndpoint::get_ep0_out(UsbSpeed::High),
     });
 
-    // 接口从 0 连续编号：按下标依次填 interface_number（bInterfaceNumber/IAD 依赖它）
+    // interface is numbered consecutively from 0: fill in interface_number in sequence according to the subscript (bInterfaceNumber/IAD depends on it)
     device->assign_interface_numbers();
-    // 先 UVC 后 UAC：UAC helper 会把设备级调度器打开（等时按帧节奏延迟响应），
-    // UVC 等时 URB 不走调度器（立即响应，见 UvcDeviceHelper::setup 注释），互不影响
+    // UVC first, then UAC: UAC helper will open the device-level scheduler (isochronous delayed response according to frame rhythm),
+    // UVC isochronous URB does not go through the scheduler (response immediately, see UvcDeviceHelper::setup comment) and does not affect each other
     if (auto ec = UvcDeviceHelper::setup(device, 0, string_pool, std::move(video_source)); ec) {
-        SPDLOG_ERROR("UVC 功能装配失败：{}", ec.message());
+        SPDLOG_ERROR("UVC function assembly failed: {}", ec.message());
         return 1;
     }
     if (auto ec = UacDeviceHelper::setup_microphone(device, 2, string_pool, std::move(source)); ec) {
-        SPDLOG_ERROR("UAC 功能装配失败：{}", ec.message());
+        SPDLOG_ERROR("UAC function assembly failed: {}", ec.message());
         return 1;
     }
 
@@ -313,7 +313,7 @@ int main(int argc, char **argv) {
     asio::ip::tcp::endpoint endpoint{asio::ip::tcp::v4(), port};
 
     if (auto ec = server.start(endpoint); ec) {
-        SPDLOG_ERROR("服务器启动失败：{}", ec.message());
+        SPDLOG_ERROR("Server startup failed: {}", ec.message());
         return 1;
     }
 

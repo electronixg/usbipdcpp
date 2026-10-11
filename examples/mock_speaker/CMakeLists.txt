@@ -1,8 +1,8 @@
-# PlaybackSink（本机播放）依赖 miniaudio（单头文件库，可选）。
-# 查找方式同 mock_audio：先直接找 miniaudio.h（含 Homebrew 的 include/miniaudio/
-# 子目录布局），找不到走 pkgconf（Termux 等只有 pkg-config 的环境）；两种都找不到
-# 时 mock_speaker 仍正常编译（--output 的 WavFileSink 与丢弃模式不受影响），
-# 只是不提供本机播放选项
+# PlaybackSink (native playback) depends on miniaudio (single header file library, optional).
+# Search as in mock_audio: first find miniaudio.h directly (including the Homebrew include/miniaudio/
+# subdirectory layout), then fall back to pkgconf (for environments such as Termux that provide only pkg-config). If both fail,
+# mock_speaker still builds normally (--output WavFileSink and discard mode are unaffected);
+# only local playback options are unavailable
 find_path(MINIAUDIO_INCLUDE_DIR miniaudio.h)
 if (NOT MINIAUDIO_INCLUDE_DIR)
     find_path(MINIAUDIO_INCLUDE_DIR miniaudio.h PATH_SUFFIXES miniaudio)
@@ -20,7 +20,7 @@ else ()
 endif ()
 
 file(GLOB_RECURSE src *.cpp)
-# 测试文件单独编译进 test target，不参与主程序
+# test files are compiled separately into the test target and do not participate in the main program.
 list(FILTER src EXCLUDE REGEX "test_.*\\.cpp")
 if (MINIAUDIO_INCLUDE_DIRS)
     message(STATUS "miniaudio: ENABLED (include: ${MINIAUDIO_INCLUDE_DIRS})")

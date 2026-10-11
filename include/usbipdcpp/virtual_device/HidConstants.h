@@ -29,12 +29,12 @@ enum HidDescriptorType {
     Physical = 0x23,
 };
 
-/// USB HID 标准按键码（Usage Page 0x07 Keyboard/Keypad）
+/// USB HID standard key code (Usage Page 0x07 Keyboard/Keypad)
 namespace HIDKey {
     constexpr std::uint8_t NoEvent = 0x00;
     constexpr std::uint8_t ErrorRollOver = 0x01;
 
-    // 字母 A-Z: 0x04–0x1D
+    // Letters A-Z: 0x04–0x1D
     constexpr std::uint8_t A = 0x04, B = 0x05, C = 0x06, D = 0x07;
     constexpr std::uint8_t E = 0x08, F = 0x09, G = 0x0A, H = 0x0B;
     constexpr std::uint8_t I = 0x0C, J = 0x0D, K = 0x0E, L = 0x0F;
@@ -43,7 +43,7 @@ namespace HIDKey {
     constexpr std::uint8_t U = 0x18, V = 0x19, W = 0x1A, X = 0x1B;
     constexpr std::uint8_t Y = 0x1C, Z = 0x1D;
 
-    // 主键盘数字: 0x1E–0x27
+    // Main keyboard numbers: 0x1E–0x27
     constexpr std::uint8_t Num1 = 0x1E, Num2 = 0x1F, Num3 = 0x20, Num4 = 0x21;
     constexpr std::uint8_t Num5 = 0x22, Num6 = 0x23, Num7 = 0x24, Num8 = 0x25;
     constexpr std::uint8_t Num9 = 0x26, Num0 = 0x27;
@@ -85,7 +85,7 @@ namespace HIDKey {
     constexpr std::uint8_t DownArrow = 0x51;
     constexpr std::uint8_t UpArrow = 0x52;
 
-    // 小键盘: 0x53–0x63
+    // Keypad: 0x53–0x63
     constexpr std::uint8_t KeypadNumLock = 0x53;
     constexpr std::uint8_t KeypadSlash = 0x54;
     constexpr std::uint8_t KeypadAsterisk = 0x55;
@@ -102,7 +102,7 @@ namespace HIDKey {
     constexpr std::uint8_t Power = 0x66;
 } // namespace HIDKey
 
-/// USB HID Consumer Page (0x0C) Usage ID — 媒体键 / 系统控制
+/// USB HID Consumer Page (0x0C) Usage ID — Media Keys / System Control
 namespace HIDConsumer {
     constexpr std::uint16_t PlayPause = 0x00CD;
     constexpr std::uint16_t Stop = 0x00B7;
@@ -115,10 +115,10 @@ namespace HIDConsumer {
     constexpr std::uint16_t VolumeDec = 0x00EA;
     constexpr std::uint16_t BassBoost = 0x00E5;
     constexpr std::uint16_t Eject = 0x00B8;
-    constexpr std::uint16_t ALCC = 0x00CF; // 自动电平控制（部分键盘用作计算器）
+    constexpr std::uint16_t ALCC = 0x00CF; // automatic level control (some keyboards are used as calculators)
     constexpr std::uint16_t ALTaskManager = 0x0192;
     constexpr std::uint16_t ALFileExplorer = 0x0194;
-    constexpr std::uint16_t ALWWW = 0x0223; // 浏览器
+    constexpr std::uint16_t ALWWW = 0x0223; // browser
     constexpr std::uint16_t Power = 0x0030;
     constexpr std::uint16_t Sleep = 0x0032;
     constexpr std::uint16_t Wake = 0x0083;

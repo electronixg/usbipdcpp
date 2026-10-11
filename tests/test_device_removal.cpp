@@ -1,9 +1,9 @@
-// 设备被物理移除（is_device_removed()）后的释放语义专项测试：导入前被移除、
-// 传输中被移除、FIN/RST 断开、stop 并发、多客户端争用——设备都必须从 using
-// 列表直接丢弃、绝不回可用列表（后端只在拔出那一刻扫一遍列表，放回去就是
-// 没人再清得掉的僵尸，只会在下次导入时白跑一次打开失败）。
-// 真实 libusb 后端的置位路径（hotplug / 传输回调 / try_remove_dead_device）
-// 需要真实设备，由 e2e 覆盖；这里用虚拟设备复现同样的语义
+// Dedicated release-semantics tests after physical device removal (is_device_removed()): removed before import,
+// removed during transfer, FIN/RST disconnection, concurrent stop, contention between multiple clients—the device must always be discarded directly from the using
+// list and never returned to the available list (the backend scans the list only once at unplug time; returning it creates
+// a zombie that nobody can remove, merely causing a wasted failed open on the next import).
+// The real libusb backend's flag-setting paths (hotplug / transfer callback / try_remove_dead_device)
+// require real devices and are covered by e2e; virtual devices reproduce the same semantics here
 #include <gtest/gtest.h>
 
 #include <atomic>
@@ -24,21 +24,21 @@ using namespace usbipdcpp;
 using namespace usbipdcpp::test;
 
 namespace {
-// 可标记"已物理移除"的虚拟键盘：设备级 handler 把 is_device_removed() 接到
-// 共享标记上；"打开失败"放在接口层——真实设备的打开失败（如音频设备打开
-// 失败）就发生在这里，基类 VirtualDeviceHandler::on_new_connection 对接口
-// 建连失败有既有回滚（停调度器、断开已建连的接口、撤 responder），失败的
-// 接口自身没建立状态也就无需回滚
+// Virtual keyboard that can be marked "physically removed": the device-level handler connects is_device_removed() to
+// a shared flag; "open failure" resides at the interface layer—real device open failures (such as audio device open
+// failures) happen here; the base VirtualDeviceHandler::on_new_connection already rolls back interface
+// connection failures (stops scheduler, disconnects connected interfaces, withdraws responder); the failed
+// interface itself established no state and therefore needs no rollback
 class RemovableKeyboardInterfaceHandler : public KeyboardHandler {
 public:
     using KeyboardHandler::KeyboardHandler;
 
-    // 移除标记由测试持有，与设备级 handler 共享（生命周期长于设备）
+    // The removal flag is held by the test and shared with the device-level handler (outliving the device)
     std::shared_ptr<std::atomic_bool> removed_flag;
 
     void on_new_connection(TransferResponder &responder, error_code &ec) override {
         if (removed_flag && removed_flag->load()) {
-            // 已拔出的设备打不开：没有建立任何连接状态，无需回滚
+            // An unplugged device cannot be opened: no connection state is established, so no rollback is needed
             ec = make_error_code(ErrorType::NO_DEVICE);
             return;
         }
@@ -46,8 +46,8 @@ public:
     }
 };
 
-// 设备级 handler：on_new_connection 不覆盖（连接建立与失败回滚全走基类），
-// 只把 is_device_removed() 接到共享标记
+// Device-level handler: does not override on_new_connection (connection establishment and failure rollback both use the base class),
+// only connects is_device_removed() to the shared flag
 class RemovableDeviceHandler : public SimpleVirtualDeviceHandler {
 public:
     using SimpleVirtualDeviceHandler::SimpleVirtualDeviceHandler;
@@ -59,7 +59,7 @@ public:
     }
 };
 
-// 构造使用上面两个 handler 的虚拟键盘设备（接口定义与 mock_keyboard 相同）
+// Construct a virtual keyboard device using the two handlers above (interface definition matches mock_keyboard)
 std::shared_ptr<UsbDevice> make_removable_keyboard(StringPool &string_pool,
                                                    std::shared_ptr<std::atomic_bool> removed_flag) {
     std::vector<UsbInterface> interfaces = {
@@ -103,15 +103,15 @@ std::shared_ptr<UsbDevice> make_removable_keyboard(StringPool &string_pool,
     return mock_keyboard;
 }
 
-// 断言设备已被丢弃：可用与使用中两个列表都为空
+// Assert the device has been discarded: both available and in-use lists are empty
 void expect_discarded(Server &server) {
     std::shared_lock lock(server.get_devices_mutex());
     EXPECT_TRUE(server.get_available_devices().empty());
     EXPECT_TRUE(server.get_using_devices().empty());
 }
 
-// 跑一轮"导入 → 传输中设备被移除 → 客户端断开"，断言设备被丢弃。
-// use_rst 选择断开方式（FIN / RST 走 receiver 的不同收尾分支）
+// Run one "import → device removed during transfer → client disconnects" round; assert the device is discarded.
+// use_rst selects the disconnection method (FIN / RST take different receiver cleanup branches)
 void expect_removed_device_discarded(bool use_rst) {
     asio::io_context io;
     StringPool string_pool;
@@ -129,7 +129,7 @@ void expect_removed_device_discarded(bool use_rst) {
         EXPECT_EQ(server.get_using_devices().size(), 1u);
     }
 
-    removed_flag->store(true); // 传输期间设备被物理拔出
+    removed_flag->store(true); // Device physically unplugged during transfer
 
     if (use_rst) {
         rst_disconnect(client);
@@ -152,7 +152,7 @@ TEST(TestDeviceRemoval, RemovedDeviceIsNotReturnedToAvailableOnRst) {
 }
 
 TEST(TestDeviceRemoval, AliveDeviceIsReturnedToAvailable) {
-    // 对照组：设备未被移除时断开，照常回可用列表（丢弃逻辑不能误伤正常设备）
+    // Control case: disconnecting a device that has not been removed returns it to the available list as usual (discard logic must not harm normal devices)
     asio::io_context io;
     StringPool string_pool;
     usbipdcpp::Server server;
@@ -175,13 +175,13 @@ TEST(TestDeviceRemoval, AliveDeviceIsReturnedToAvailable) {
 }
 
 TEST(TestDeviceRemoval, ImportRemovedDeviceFailsAndIsDiscarded) {
-    // 已移除但还残留在列表里的设备（释放与标记之间的竞态窗口）：导入必然
-    // 失败（打开已拔出的设备不可能成功），失败后设备被直接丢弃，不会留在
-    // 列表里反复被导入——换个连接再导入只会得到"设备不存在"
+    // A removed device still remaining in the list (race window between release and flagging): import must
+    // fail (opening an unplugged device cannot succeed); afterward the device is discarded directly rather than remaining
+    // in the list for repeated imports—importing again through another connection yields only "device does not exist"
     asio::io_context io;
     StringPool string_pool;
     usbipdcpp::Server server;
-    auto removed_flag = std::make_shared<std::atomic_bool>(true); // 拔出后残留在列表里
+    auto removed_flag = std::make_shared<std::atomic_bool>(true); // Remaining in the list after unplugging
     server.add_device(make_removable_keyboard(string_pool, removed_flag));
     ASSERT_FALSE(server.start(asio::ip::tcp::endpoint(asio::ip::address_v4::loopback(), 0)));
 
@@ -202,8 +202,8 @@ TEST(TestDeviceRemoval, ImportRemovedDeviceFailsAndIsDiscarded) {
 }
 
 TEST(TestDeviceRemoval, StopWithRemovedImportedDevice) {
-    // stop() 打断正在传输且已被移除设备的 session：设备同样要从 using 丢弃，
-    // 不能在 stop 的收尾路径上被塞回可用列表
+    // stop() interrupts the session of a transferring device that has been removed: discard the device from using as well,
+    // without returning it to the available list through stop's cleanup path
     asio::io_context io;
     StringPool string_pool;
     usbipdcpp::Server server;
@@ -215,16 +215,16 @@ TEST(TestDeviceRemoval, StopWithRemovedImportedDevice) {
     ASSERT_TRUE(connect_with_retry(client, server.endpoint()));
     ASSERT_EQ(import_device(client, "1-1"), 0u);
 
-    removed_flag->store(true); // 传输期间设备被物理拔出
-    server.stop();             // 不关客户端直接 stop，走打断路径
+    removed_flag->store(true); // Device physically unplugged during transfer
+    server.stop();             // Stop directly without closing the client; take the interruption path
 
     expect_discarded(server);
     client.close();
 }
 
 TEST(TestDeviceRemoval, SecondClientCannotImportDeviceInUseEvenIfRemoved) {
-    // 设备已被移除但第一个客户端还占着（session 未收尾）：第二个客户端导入
-    // 必须被拒（设备仍在 using），不能因"已移除"而放行；第一个断开后丢弃
+    // The device has been removed but the first client still holds it (session not cleaned up): the second client's import
+    // must be rejected (device still in using), not allowed because it is "removed"; discard it after the first disconnects
     asio::io_context io;
     StringPool string_pool;
     usbipdcpp::Server server;
@@ -236,15 +236,15 @@ TEST(TestDeviceRemoval, SecondClientCannotImportDeviceInUseEvenIfRemoved) {
     ASSERT_TRUE(connect_with_retry(client_a, server.endpoint()));
     ASSERT_EQ(import_device(client_a, "1-1"), 0u);
 
-    removed_flag->store(true); // 使用期间设备被物理拔出
+    removed_flag->store(true); // Device physically unplugged while in use
 
     asio::ip::tcp::socket client_b(io);
     ASSERT_TRUE(connect_with_retry(client_b, server.endpoint()));
-    EXPECT_NE(import_device(client_b, "1-1"), 0u); // 占用中，拒绝
+    EXPECT_NE(import_device(client_b, "1-1"), 0u); // In use; reject
     client_b.close();
 
     client_a.close();
     ASSERT_TRUE(wait_sessions_gone(server));
-    expect_discarded(server); // 断开后从 using 丢弃，不回可用列表
+    expect_discarded(server); // Discard from using after disconnection; do not return to the available list
     server.stop();
 }

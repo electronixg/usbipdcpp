@@ -9,7 +9,7 @@ AbsoluteMouseHandler::AbsoluteMouseHandler(UsbInterface &handle_interface, Strin
                                            int screen_height) :
     HidVirtualInterfaceHandler(handle_interface, string_pool), screen_x2_(screen_width), screen_y2_(screen_height),
     screen_width_(screen_width), screen_height_(screen_height) {
-    // 绝对坐标模式的报告描述符（6字节报告）
+    // Report descriptor for absolute-coordinate mode (6-byte report)
     report_descriptor_ = {
             // Usage Page (Generic Desktop)
             0x05, 0x01,
@@ -22,7 +22,7 @@ AbsoluteMouseHandler::AbsoluteMouseHandler(UsbInterface &handle_interface, Strin
             // Collection (Physical)
             0xA1, 0x00,
 
-            // 按钮 (3个按键)
+            // Buttons (3 buttons)
             0x05,
             0x09, // Usage Page (Button)
             0x19,
@@ -40,10 +40,10 @@ AbsoluteMouseHandler::AbsoluteMouseHandler(UsbInterface &handle_interface, Strin
             0x81,
             0x02, // Input (Data,Var,Abs)
 
-            // 填充 (5 bits)
+            // Padding (5 bits)
             0x95, 0x05, 0x81, 0x03,
 
-            // X/Y 绝对坐标
+            // X/Y absolute coordinates
             0x05,
             0x01, // Usage Page (Generic Desktop)
             0x09,
@@ -61,7 +61,7 @@ AbsoluteMouseHandler::AbsoluteMouseHandler(UsbInterface &handle_interface, Strin
             0x81,
             0x02, // Input (Data,Var,Abs)
 
-            // 滚轮
+            // Scroll wheel
             0x09,
             0x38, // Usage (Wheel)
             0x15,
@@ -136,8 +136,8 @@ std::pair<int, int> AbsoluteMouseHandler::hid_to_screen(std::int16_t hid_x, std:
 void AbsoluteMouseHandler::on_new_connection(TransferResponder &current_session, error_code &ec) {
     HidVirtualInterfaceHandler::on_new_connection(current_session, ec);
 
-    // 锁内置位再唤醒（与 on_disconnection 同源的标准 CV 模式）：
-    // 无锁置位会让 wait_for_client 的 CV 分支等满超时才醒来
+    // Set the flag under the lock, then wake (standard CV pattern, same as on_disconnection):
+    // setting without locking makes wait_for_client's CV branch wait until its full timeout before waking
     {
         std::lock_guard lock(client_connect_mutex_);
         client_connected_ = true;
@@ -162,8 +162,8 @@ void AbsoluteMouseHandler::on_new_connection(TransferResponder &current_session,
 }
 
 void AbsoluteMouseHandler::on_disconnection(error_code &ec) {
-    // 锁内置位再唤醒（标准 CV 模式）：无锁置位 + notify 会丢失唤醒，
-    // send_thread_ 永久睡眠导致 join 卡死（与 KeyboardHandler 同源）
+    // Set the flag under the lock, then wake (standard CV pattern): setting without locking + notify loses wakeups,
+    // leaving send_thread_ asleep permanently and hanging join (same cause as KeyboardHandler)
     {
         std::lock_guard lock(state_mutex_);
         should_stop_ = true;
@@ -203,7 +203,7 @@ void AbsoluteMouseHandler::send_current_state() {
     report[5] = static_cast<std::uint8_t>(wheel_);
 
     send_input_report(asio::buffer(report));
-    wheel_ = 0; // 滚轮发送后归零
+    wheel_ = 0; // Reset wheel to zero after sending
 }
 
 void AbsoluteMouseHandler::notify_state_change() {
@@ -211,7 +211,7 @@ void AbsoluteMouseHandler::notify_state_change() {
     state_cv_.notify_one();
 }
 
-// ========== 屏幕坐标 API ==========
+// ========== Screen coordinate API ==========
 
 void AbsoluteMouseHandler::set_position(int x, int y) {
     auto [hid_x, hid_y] = screen_to_hid(x, y);
@@ -235,49 +235,49 @@ void AbsoluteMouseHandler::humanized_move(int from_x, int from_y, int to_x, int 
     auto [from_hid_x, from_hid_y] = screen_to_hid(from_x, from_y);
     auto [to_hid_x, to_hid_y] = screen_to_hid(to_x, to_y);
 
-    // 混合 random_device 和时间戳确保随机性
+    // Combine random_device and timestamp to ensure randomness
     std::random_device rd;
     auto now = std::chrono::high_resolution_clock::now();
     auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
     std::seed_seq seed{rd(), static_cast<std::uint32_t>(nanos), static_cast<std::uint32_t>(nanos >> 32)};
     std::mt19937 gen(seed);
-    // 抖动幅度：约 3-8 像素的随机偏移
+    // Jitter amplitude: random offsets of about 3-8 pixels
     std::uniform_real_distribution<double> jitter_dist(-300.0, 300.0);
-    // 速度变化范围加大
+    // Increase the range of speed variation
     std::uniform_real_distribution<double> speed_dist(0.7, 1.3);
-    // 停顿概率约 5%
+    // Pause probability about 5%
     std::uniform_int_distribution<int> pause_dist(0, 100);
     std::uniform_int_distribution<int> pause_len_dist(15, 80);
 
     double mid_x = (from_hid_x + to_hid_x) / 2.0;
     double mid_y = (from_hid_y + to_hid_y) / 2.0;
     double distance = std::sqrt(std::pow(to_hid_x - from_hid_x, 2) + std::pow(to_hid_y - from_hid_y, 2));
-    // 贝塞尔曲线控制点偏移：确保有明显的弯曲
+    // Bézier control-point offsets: ensure noticeable curvature
     double offset_factor = std::min(distance * 0.25, 5000.0);
-    // 控制点放在线段垂直方向偏移，保证弯曲而非只是微调
+    // Offset control points perpendicular to the line segment to ensure curvature rather than mere adjustment
     double dx = to_hid_x - from_hid_x;
     double dy = to_hid_y - from_hid_y;
     double len = std::sqrt(dx * dx + dy * dy);
-    // 垂直方向单位向量
+    // Perpendicular unit vector
     double perp_x = (len > 0) ? -dy / len : 0;
     double perp_y = (len > 0) ? dx / len : 0;
     std::uniform_real_distribution<double> perp_dist(-offset_factor, offset_factor);
     double perp1 = perp_dist(gen);
     double perp2 = perp_dist(gen);
-    // 沿线段方向也加一些偏移
+    // Add some offset along the line segment as well
     std::uniform_real_distribution<double> along_dist(-distance * 0.1, distance * 0.1);
     double ctrl1_x = (from_hid_x + mid_x) / 2.0 + perp1 * perp_x + along_dist(gen) * dx / (len > 0 ? len : 1);
     double ctrl1_y = (from_hid_y + mid_y) / 2.0 + perp1 * perp_y + along_dist(gen) * dy / (len > 0 ? len : 1);
     double ctrl2_x = (mid_x + to_hid_x) / 2.0 + perp2 * perp_x + along_dist(gen) * dx / (len > 0 ? len : 1);
     double ctrl2_y = (mid_y + to_hid_y) / 2.0 + perp2 * perp_y + along_dist(gen) * dy / (len > 0 ? len : 1);
 
-    // GCC 10+ 对按值返回 std::pair 有 -Wpsabi note（C++17 起 pair 传参 ABI
-    // 变化提示），改用局部聚合结构——调用点的结构化绑定照常工作
+    // GCC 10+ emits a -Wpsabi note for returning std::pair by value (pair parameter-passing ABI
+    // changed in C++17); use a local aggregate struct instead: structured binding at the call site still works
     struct BezierPoint {
         double x;
         double y;
     };
-    // 三次贝塞尔曲线: B(t) = (1-t)^3*P0 + 3*(1-t)^2*t*P1 + 3*(1-t)*t^2*P2 + t^3*P3
+    // Cubic Bézier curve: B(t) = (1-t)^3*P0 + 3*(1-t)^2*t*P1 + 3*(1-t)*t^2*P2 + t^3*P3
     auto bezier = [&](double t) -> BezierPoint {
         double u = 1.0 - t;
         double x = u * u * u * from_hid_x + 3 * u * u * t * ctrl1_x + 3 * u * t * t * ctrl2_x + t * t * t * to_hid_x;
@@ -285,11 +285,11 @@ void AbsoluteMouseHandler::humanized_move(int from_x, int from_y, int to_x, int 
         return {x, y};
     };
 
-    // 增加步数使运动更平滑
+    // Increase step count for smoother movement
     const int base_steps = std::max(1, duration_ms / 5);
     double t = 0.0;
     double current_speed = 1.0;
-    // 抖动用连续随机游走，避免逐帧独立跳变
+    // Use a continuous random walk for jitter, avoiding independent per-frame jumps
     double jitter_x_current = 0.0;
     double jitter_y_current = 0.0;
     std::uniform_real_distribution<double> jitter_step(-50.0, 50.0);
@@ -299,13 +299,13 @@ void AbsoluteMouseHandler::humanized_move(int from_x, int from_y, int to_x, int 
     int jitter_retarget_counter = 0;
 
     while (t < 1.0 && !should_stop_) {
-        // 速度变化更平滑
+        // Smoother speed variation
         double speed_target = speed_dist(gen);
         current_speed = current_speed * 0.7 + speed_target * 0.3;
         double dt = current_speed / base_steps;
         t = std::min(t + dt, 1.0);
 
-        // 抖动：平滑游走向目标偏移，到达后重新生成目标
+        // Jitter: smoothly walk toward a target offset, regenerate target upon reaching it
         jitter_x_current += (jitter_x_target - jitter_x_current) * 0.1;
         jitter_y_current += (jitter_y_target - jitter_y_current) * 0.1;
         jitter_retarget_counter++;
@@ -330,7 +330,7 @@ void AbsoluteMouseHandler::humanized_move(int from_x, int from_y, int to_x, int 
             callback(sx, sy);
         }
 
-        // 约5%概率停顿
+        // About 5% probability of pausing
         if (pause_dist(gen) < 5) {
             std::this_thread::sleep_for(std::chrono::milliseconds(pause_len_dist(gen)));
         }
@@ -343,7 +343,7 @@ void AbsoluteMouseHandler::humanized_move(int from_x, int from_y, int to_x, int 
     }
 }
 
-// ========== HID 原始坐标 API ==========
+// ========== Raw HID coordinate API ==========
 
 void AbsoluteMouseHandler::set_position_raw(std::int16_t x, std::int16_t y) {
     std::lock_guard lock(state_mutex_);
@@ -373,7 +373,7 @@ void AbsoluteMouseHandler::move_raw(std::int16_t from_x, std::int16_t from_y, st
     }
 }
 
-// ========== 按钮 API ==========
+// ========== Button API ==========
 
 void AbsoluteMouseHandler::set_left_button(bool pressed) {
     std::lock_guard lock(state_mutex_);
@@ -426,7 +426,7 @@ void AbsoluteMouseHandler::double_click(int x, int y, int delay_ms) {
     left_click(x, y, delay_ms / 2);
 }
 
-// ========== 拖动 API ==========
+// ========== Drag API ==========
 
 void AbsoluteMouseHandler::drag(int from_x, int from_y, int to_x, int to_y, int duration_ms,
                                 std::function<void(int, int)> callback) {
@@ -444,7 +444,7 @@ void AbsoluteMouseHandler::humanized_drag(int from_x, int from_y, int to_x, int 
     set_left_button(false);
 }
 
-// ========== 状态查询 ==========
+// ========== State queries ==========
 
 AbsoluteMouseHandler::ButtonState AbsoluteMouseHandler::get_button_state() const {
     std::lock_guard lock(state_mutex_);

@@ -31,7 +31,7 @@ int main(int argc, char **argv) {
 
     asio::ip::tcp::endpoint endpoint{asio::ip::tcp::v4(), port};
     if (auto ec = server.start(endpoint); ec) {
-        SPDLOG_ERROR("服务器启动失败：{}", ec.message());
+        SPDLOG_ERROR("Server startup failed: {}", ec.message());
         return 1;
     }
 
@@ -39,7 +39,7 @@ int main(int argc, char **argv) {
     SPDLOG_INFO("Connect with: usbip attach -r <host> -b {}", busid);
     SPDLOG_INFO("Running... (Ctrl+C / SIGTERM / Enter to stop)");
 
-    // 每隔一秒按下/释放 A 键
+    // Press/release the A key every second
     std::atomic<bool> running{true};
     std::thread key_thread([&]() {
         while (running) {

@@ -15,9 +15,9 @@ extern "C" {
 
 namespace usbipdcpp {
 
-/// 基于 FFmpeg 的视频源。
-/// passthrough=false（默认）：全部解码为 YUY2，兼容所有 UVC 驱动。
-/// passthrough=true：MJPEG/H264 直接透传，其他解码为 YUY2。
+/// FFmpeg based video source.
+/// passthrough=false (default): All decoded to YUY2, compatible with all UVC drivers.
+/// passthrough=true: MJPEG/H264 is passed through directly, and other decodes are YUY2.
 class FfmpegSource : public VideoSource {
 public:
     explicit FfmpegSource(std::string video_path, bool passthrough = false);

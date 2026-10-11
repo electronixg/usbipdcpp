@@ -9,14 +9,14 @@ namespace usbipdcpp {
 SineWaveSource::SineWaveSource(std::uint32_t frequency_hz, std::vector<std::uint32_t> sample_rates,
                                std::uint16_t channels, double amplitude) :
     frequency_hz(frequency_hz), sample_rates(std::move(sample_rates)), channels(channels), amplitude(amplitude) {
-    // 注意：初始化列表已完成 move，函数体内必须用 this-> 访问成员（参数已失效）
-    // 过滤非法采样率（保留所有正值：UAC 设备支持任意采样率，8kHz 倍数的
-    // 历史限制会让 44100 等非 8kHz 整数倍采样率被静默丢弃，见 set_format 注释）
+    // Note: the initializer list has already moved the arguments; use this-> to access members in the function body (arguments are no longer valid)
+    // Filter invalid sample rates (retain all positive values: UAC devices support arbitrary sample rates; the historical restriction to
+    // multiples of 8kHz silently discarded rates such as 44100 that are not integer multiples of 8kHz; see set_format comments)
     std::erase_if(this->sample_rates, [](std::uint32_t r) { return r == 0; });
     if (this->sample_rates.empty()) {
         this->sample_rates.push_back(48000);
     }
-    // 首个为初始采样率（用户传入的第一个，不排序——排序会改变初始值）
+    // The first is the initial sample rate (first supplied by the user, without sorting: sorting would change the initial value)
     sample_rate = this->sample_rates.front();
     regenerate();
 }
@@ -55,7 +55,7 @@ bool SineWaveSource::get_chunk(AudioChunk &chunk) {
 }
 
 void SineWaveSource::regenerate() {
-    // 1 秒 PCM：整数 Hz 时恰好包含整周期数，循环播放无缝
+    // 1 second of PCM: integer-Hz frequencies give exactly whole cycles, ensuring seamless looped playback
     auto total_samples = sample_rate * channels;
     buffer.resize(total_samples * 2);
 

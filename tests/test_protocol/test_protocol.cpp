@@ -11,7 +11,7 @@
 using namespace usbipdcpp;
 using namespace usbipdcpp::test;
 
-// 用于测试的 mock DeviceHandler
+// Mock DeviceHandler for testing
 class MockDeviceHandlerForTest : public AbstDeviceHandler {
 public:
     explicit MockDeviceHandlerForTest(UsbDevice &device) : AbstDeviceHandler(device) {}
@@ -63,9 +63,9 @@ TEST(TestProtocol, UsbIpHeaderBasicReadSocket) {
 }
 
 TEST(TestProtocol, UsbIpCmdSubmitReadSocketWithoutData) {
-    // IN 传输，没有数据需要读取。
-    // 注意 ep 不带方向位（协议语义，见 protocol.h 的 UsbIpHeaderBasic::ep
-    // 注释），方向由 direction 字段给出，不能写 0x80（会被解析校验拒绝）
+    // IN transfer, no data to read.
+    // Note ep has no direction bit (protocol semantics; see protocol.h UsbIpHeaderBasic::ep
+    // comment); direction comes from direction field; cannot write 0x80 (rejected by parsing validation)
     UsbIpHeaderBasic header{
             .command = USBIP_CMD_SUBMIT,
             .seqnum = 0x1234,
@@ -85,12 +85,12 @@ TEST(TestProtocol, UsbIpCmdSubmitReadSocketWithoutData) {
     std::thread sender([&]() {
         auto sock = acceptor.accept();
         usbipdcpp::data_type buffer;
-        // 发送版本号 + 命令码
+        // Send version number + command code
         usbipdcpp::vector_append_to_net(buffer, static_cast<std::uint16_t>(USBIP_VERSION));
         usbipdcpp::vector_append_to_net(buffer, static_cast<std::uint16_t>(USBIP_CMD_SUBMIT));
 
-        // from_socket 期望读取的数据从 seqnum 开始（不包含 command）
-        // 所以我们只发送 seqnum, devid, direction, ep (16 字节)
+        // from_socket expects data beginning at seqnum (excluding command)
+        // Thus send only seqnum, devid, direction, ep (16 bytes)
         usbipdcpp::vector_append_to_net(buffer, header.seqnum);
         usbipdcpp::vector_append_to_net(buffer, header.devid);
         usbipdcpp::vector_append_to_net(buffer, header.direction);
@@ -112,7 +112,7 @@ TEST(TestProtocol, UsbIpCmdSubmitReadSocketWithoutData) {
         sock.send(asio::buffer(buffer));
     });
 
-    // 创建测试设备（必须先声明，因为 mock_handler 引用它）
+    // Create test device (declare first because mock_handler references it)
     auto test_device = UsbDevice{
         .path = "/test",
         .busid = "1-1",
@@ -134,7 +134,7 @@ TEST(TestProtocol, UsbIpCmdSubmitReadSocketWithoutData) {
     MockDeviceHandlerForTest mock_handler(test_device);
 
     {
-        // 使用作用域确保 received 在 mock_handler 之前析构
+        // Use scope to ensure received destroyed before mock_handler
         UsbIpCommand::UsbIpCmdSubmit received{};
         asio::ip::tcp::socket server_socket(io_context);
         asio::error_code ec;
@@ -154,15 +154,15 @@ TEST(TestProtocol, UsbIpCmdSubmitReadSocketWithoutData) {
         EXPECT_EQ(received.transfer_flags, 0x1234);
         EXPECT_EQ(received.start_frame, 0x8765);
         EXPECT_EQ(received.interval, 0x1111);
-    }  // received 在这里析构，此时 mock_handler 还有效
+    }  // received destroyed here while mock_handler still valid
 
-    // mock_handler 和 test_device 在这里析构
+    // mock_handler and test_device destroyed here
 }
 
 namespace {
-// 模拟客户端发送一个 IN 方向的 CMD_SUBMIT（无数据阶段），
-// 用 get_cmd_from_socket 接收。handler 必须由调用方持有，
-// 且活得比 out 里的 transfer 久（transfer 析构时要用到 handler 的 operator）。
+// Simulate client sending IN-direction CMD_SUBMIT (no data phase),
+// receive using get_cmd_from_socket. Caller must own handler,
+// which must outlive transfer in out (transfer destructor needs handler's operator).
 void send_cmd_submit_with_packets(std::uint32_t number_of_packets, AbstDeviceHandler &handler,
                                   UsbIpCommand::CmdVariant &out, usbipdcpp::error_code &out_ec) {
     asio::io_context io_context;
@@ -176,22 +176,22 @@ void send_cmd_submit_with_packets(std::uint32_t number_of_packets, AbstDeviceHan
     std::thread sender([&]() {
         auto sock = acceptor.accept();
         usbipdcpp::data_type buffer;
-        // get_cmd_from_socket 先读 4 字节 command
+        // get_cmd_from_socket first reads 4-byte command
         usbipdcpp::vector_append_to_net(buffer, static_cast<std::uint32_t>(USBIP_CMD_SUBMIT));
-        // header 字段（不含 command）：seqnum, devid, direction, ep
+        // header fields (excluding command): seqnum, devid, direction, ep
         usbipdcpp::vector_append_to_net(buffer, static_cast<std::uint32_t>(0x1234));
         usbipdcpp::vector_append_to_net(buffer, static_cast<std::uint32_t>(0));
         usbipdcpp::vector_append_to_net(buffer, static_cast<std::uint32_t>(UsbIpDirection::In));
-        // ep 不带方向位（协议语义，见 protocol.h 的 UsbIpHeaderBasic::ep 注释），
-        // 方向由 direction 字段给出，不能写 0x80（会被解析校验拒绝）
+        // ep has no direction bit (protocol semantics; see protocol.h UsbIpHeaderBasic::ep comment);
+        // direction comes from direction field; cannot write 0x80 (rejected by parsing validation)
         usbipdcpp::vector_append_to_net(buffer, static_cast<std::uint32_t>(0x08));
-        // transfer 参数：transfer_flags, transfer_buffer_length, start_frame, number_of_packets, interval
+        // transfer parameters: transfer_flags, transfer_buffer_length, start_frame, number_of_packets, interval
         usbipdcpp::vector_append_to_net(buffer, static_cast<std::uint32_t>(0));
         usbipdcpp::vector_append_to_net(buffer, static_cast<std::uint32_t>(64));
         usbipdcpp::vector_append_to_net(buffer, static_cast<std::uint32_t>(0));
         usbipdcpp::vector_append_to_net(buffer, number_of_packets);
         usbipdcpp::vector_append_to_net(buffer, static_cast<std::uint32_t>(0));
-        // setup packet（8 字节）
+        // setup packet (8 bytes)
         buffer.insert(buffer.end(), {0, 0, 0, 0, 0, 0, 0, 0});
 
         sock.send(asio::buffer(buffer));
@@ -213,7 +213,7 @@ void send_cmd_submit_with_packets(std::uint32_t number_of_packets, AbstDeviceHan
 } // namespace
 
 TEST(TestProtocol, UsbIpCmdSubmitRejectsTooManyIsoPackets) {
-    // 恶意客户端发送超限 number_of_packets：应返回错误断开本会话，而不是异常崩溃
+    // Malicious client sends excessive number_of_packets: return error and disconnect this session rather than crashing with exception
     auto test_device = UsbDevice{
         .path = "/test",
         .busid = "1-1",
@@ -239,11 +239,11 @@ TEST(TestProtocol, UsbIpCmdSubmitRejectsTooManyIsoPackets) {
 
     EXPECT_TRUE(ec);
     EXPECT_EQ(ec.value(), static_cast<int>(ErrorType::SOCKET_ERR));
-    // ret 在 mock_handler 之前析构，transfer 释放时 operator 仍有效
+    // ret destroyed before mock_handler; operator still valid when transfer released
 }
 
 TEST(TestProtocol, UsbIpCmdSubmitAcceptsAllOnesPacketsPlaceholder) {
-    // 0xFFFFFFFF 是协议中非等时传输的占位值，必须放行，不能误判为超限
+    // 0xFFFFFFFF is protocol placeholder for non-isochronous transfers; must allow, not misidentify as exceeding limit
     auto test_device = UsbDevice{
         .path = "/test",
         .busid = "1-1",
@@ -270,7 +270,7 @@ TEST(TestProtocol, UsbIpCmdSubmitAcceptsAllOnesPacketsPlaceholder) {
     ASSERT_FALSE(ec);
     ASSERT_TRUE(std::holds_alternative<UsbIpCommand::UsbIpCmdSubmit>(ret));
     EXPECT_EQ(std::get<UsbIpCommand::UsbIpCmdSubmit>(ret).number_of_packets, 0xFFFFFFFFu);
-    // ret 在 mock_handler 之前析构，transfer 释放时 operator 仍有效
+    // ret destroyed before mock_handler; operator still valid when transfer released
 }
 
 TEST(TestProtocol, UsbIpCmdUnlinkReadSocket) {
@@ -290,7 +290,7 @@ TEST(TestProtocol, UsbIpCmdUnlinkReadSocket) {
     expect_cmd_unlink_equal(received, origin);
 }
 
-// ============== 极端情况测试 ==============
+// ============== Edge-case tests ==============
 
 TEST(TestProtocol, UsbIpHeaderBasicAllZeros) {
     UsbIpHeaderBasic header{
@@ -319,7 +319,7 @@ TEST(TestProtocol, UsbIpHeaderBasicMaxValues) {
     auto bytes = header.to_bytes();
     EXPECT_EQ(bytes.size(), 20);
 
-    // 验证字节序（大端）
+    // Verify byte order (big-endian)
     EXPECT_EQ(bytes[0], 0xFF);
     EXPECT_EQ(bytes[1], 0xFF);
     EXPECT_EQ(bytes[2], 0xFF);
@@ -350,7 +350,7 @@ TEST(TestProtocol, UsbIpIsoPacketDescriptorRoundTrip) {
     auto bytes = original.to_bytes();
     EXPECT_EQ(bytes.size(), 16);
 
-    // 大端序验证
+    // Big-endian verification
     EXPECT_EQ(bytes[0], 0x12);
     EXPECT_EQ(bytes[1], 0x34);
     EXPECT_EQ(bytes[2], 0x56);
@@ -390,7 +390,7 @@ TEST(TestProtocol, OpReqDevlistRoundTrip) {
     UsbIpCommand::OpReqDevlist origin{.status = 0};
     auto bytes = origin.to_bytes();
 
-    // 验证版本号(2) + 命令码(2) + status(4) = 8字节
+    // Verify version(2) + command(2) + status(4) = 8 bytes
     EXPECT_EQ(bytes.size(), 8);
 }
 
@@ -400,7 +400,7 @@ TEST(TestProtocol, OpReqImportRoundTrip) {
             .busid = {'1', '-', '1', '5', '\0'}
     };
 
-    // 填充剩余字节为0
+    // Fill remaining bytes with 0
     for (std::size_t i = 5; i < 32; ++i) {
         origin.busid[i] = 0;
     }
@@ -410,7 +410,7 @@ TEST(TestProtocol, OpReqImportRoundTrip) {
 }
 
 TEST(TestProtocol, DifferentEndpointAddresses) {
-    // 测试不同端点地址
+    // Test different endpoint addresses
     for (std::uint8_t ep = 0; ep <= 0x0F; ++ep) {
         UsbIpHeaderBasic header{
                 .command = USBIP_CMD_SUBMIT,
@@ -426,7 +426,7 @@ TEST(TestProtocol, DifferentEndpointAddresses) {
 }
 
 TEST(TestProtocol, AllCommandTypes) {
-    // 测试所有命令类型
+    // Test all command types
     std::vector<std::uint32_t> commands = {
             USBIP_CMD_SUBMIT,
             USBIP_CMD_UNLINK,

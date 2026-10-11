@@ -7,15 +7,15 @@
 
 using namespace usbipdcpp;
 
-// ========== GenericTransferOperator 实现 ==========
+// ========== GenericTransferOperator implementation ==========
 
 void *GenericTransferOperator::alloc_transfer_handle(std::size_t buffer_length, int num_iso_packets,
                                                      const UsbIpHeaderBasic &header, const SetupPacket &setup_packet) {
     auto *trx = new GenericTransfer{};
     trx->data.resize(buffer_length);
     trx->iso_descriptors.resize(num_iso_packets);
-    // 方向由 CMD_SUBMIT 的 direction 决定，供 transfer_is_in 查询
-    // （OUT 应答无数据回发，协议层按此计算发送 length）
+    // Direction is determined by CMD_SUBMIT's direction, for transfer_is_in queries
+    // (OUT responses return no data; the protocol layer calculates the send length accordingly)
     trx->is_in = (header.direction == UsbIpDirection::In);
     return trx;
 }
@@ -41,7 +41,7 @@ std::size_t GenericTransferOperator::set_transfer_data(void *handle, const data_
 }
 
 std::size_t GenericTransferOperator::get_transfer_data(void *handle, data_type &out, bool &supported) {
-    // OUT 已接收数据追加到 out 末尾（调用方决定怎么消费）
+    // Append received OUT data to the end of out (the caller decides how to consume it)
     auto *trx = GenericTransfer::from_handle(handle);
     supported = true;
     out.insert(out.end(), trx->data.begin(), trx->data.end());
@@ -70,7 +70,7 @@ void GenericTransferOperator::send_transfer_data(void *handle, asio::ip::tcp::so
         for (auto &iso: trx->iso_descriptors) {
             if (need_to_send_buffer)
                 buffers.push_back(asio::buffer(trx->data.data() + iso.offset, iso.actual_length));
-            // 描述符原样透传，offset/length 保持调用者设置的 buffer 布局值
+            // Pass descriptors through unchanged; offset/length retain the caller's buffer layout values
             desc_bytes.push_back(iso.to_bytes());
         }
         for (auto &bytes: desc_bytes) {

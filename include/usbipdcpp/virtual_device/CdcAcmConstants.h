@@ -7,7 +7,7 @@
 #include "usbipdcpp/virtual_device/UsbClassConstants.h"
 
 namespace usbipdcpp {
-// CDC ACM 类特定描述符子类型
+// CDC ACM class-specific descriptor subtype
 enum class CdcAcmDescriptorSubtype {
     Header = 0x00,
     CallManagement = 0x01,
@@ -28,7 +28,7 @@ enum class CdcAcmDescriptorSubtype {
     ATMNetworking = 0x10,
 };
 
-// CDC ACM 控制请求码
+// CDC ACM control request code
 enum class CdcAcmRequest {
     SendEncapsulatedCommand = 0x00,
     GetEncapsulatedResponse = 0x01,
@@ -41,13 +41,13 @@ enum class CdcAcmRequest {
     SendBreak = 0x23,
 };
 
-// CDC ACM 控制信号位
+// CDC ACM control signal bit
 enum class CdcAcmControlSignal : std::uint16_t {
     DTR = 0x01, // Data Terminal Ready
     RTS = 0x02, // Request To Send
 };
 
-// CDC ACM 串口状态位
+// CDC ACM serial port status bit
 enum class CdcAcmSerialState : std::uint16_t {
     DCD = 0x01, // Data Carrier Detect
     DSR = 0x02, // Data Set Ready
@@ -59,13 +59,13 @@ enum class CdcAcmSerialState : std::uint16_t {
     CTS = 0x80, // Clear To Send
 };
 
-// ==================== 固定长度类特定描述符结构体 ====================
-// CDC 1.1 功能描述符长度由规范硬性规定，用 packed 结构体表示，
-// static_assert 校验 sizeof 防止字段增删导致长度偏离规范。
-// append_to 按字段序列化（多字节字段自动转小端），与平台字节序无关。
+// ==================== Fixed-length class-specific descriptor structure ====================
+// CDC 1.1 The length of the function descriptor is rigidly specified by the specification and is represented by a packed structure.
+// static_assert Verification sizeof prevents the addition and deletion of fields from causing the length to deviate from the specification.
+// append_to is serialized by field (multi-byte fields are automatically converted to little-endian), regardless of platform byte order.
 
 #pragma pack(push, 1)
-/// CDC Header 功能描述符（CDC 1.1，固定 5 字节）
+/// CDC Header function descriptor (CDC 1.1, fixed 5 bytes)
 struct CdcHeaderFunctionalDesc {
     std::uint8_t bLength;
     std::uint8_t bDescriptorType;
@@ -76,9 +76,9 @@ struct CdcHeaderFunctionalDesc {
         vector_append_to_le(d, bLength, bDescriptorType, bDescriptorSubtype, bcdCDC);
     }
 };
-static_assert(sizeof(CdcHeaderFunctionalDesc) == 5, "CDC Header 功能描述符必须为 5 字节");
+static_assert(sizeof(CdcHeaderFunctionalDesc) == 5, "CDC Header function descriptor must be 5 bytes");
 
-/// Call Management 功能描述符（CDC 1.1，固定 5 字节）
+/// Call Management function descriptor (CDC 1.1, fixed 5 bytes)
 struct CdcCallManagementDesc {
     std::uint8_t bLength;
     std::uint8_t bDescriptorType;
@@ -90,9 +90,9 @@ struct CdcCallManagementDesc {
         vector_append_to_le(d, bLength, bDescriptorType, bDescriptorSubtype, bmCapabilities, bDataInterface);
     }
 };
-static_assert(sizeof(CdcCallManagementDesc) == 5, "Call Management 功能描述符必须为 5 字节");
+static_assert(sizeof(CdcCallManagementDesc) == 5, "Call Management function descriptor must be 5 bytes");
 
-/// ACM 功能描述符（CDC 1.1，固定 4 字节）
+/// ACM function descriptor (CDC 1.1, fixed 4 bytes)
 struct CdcAcmFunctionalDesc {
     std::uint8_t bLength;
     std::uint8_t bDescriptorType;
@@ -103,9 +103,9 @@ struct CdcAcmFunctionalDesc {
         vector_append_to_le(d, bLength, bDescriptorType, bDescriptorSubtype, bmCapabilities);
     }
 };
-static_assert(sizeof(CdcAcmFunctionalDesc) == 4, "ACM 功能描述符必须为 4 字节");
+static_assert(sizeof(CdcAcmFunctionalDesc) == 4, "ACM function descriptor must be 4 bytes");
 
-/// Union 功能描述符（CDC 1.1，固定 5 字节，单从属接口）
+/// Union function descriptor (CDC 1.1, fixed 5 bytes, single slave interface)
 struct CdcUnionFunctionalDesc {
     std::uint8_t bLength;
     std::uint8_t bDescriptorType;
@@ -117,6 +117,6 @@ struct CdcUnionFunctionalDesc {
         vector_append_to_le(d, bLength, bDescriptorType, bDescriptorSubtype, bMasterInterface, bSlaveInterface0);
     }
 };
-static_assert(sizeof(CdcUnionFunctionalDesc) == 5, "Union 功能描述符必须为 5 字节");
+static_assert(sizeof(CdcUnionFunctionalDesc) == 5, "Union function descriptor must be 5 bytes");
 #pragma pack(pop)
 } // namespace usbipdcpp

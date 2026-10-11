@@ -9,11 +9,11 @@ namespace usbipdcpp {
 
 namespace {
 
-/// 从服务开始时刻对齐到下一个帧边界（1ms 网格）的等待时长：
-/// vudc 帧定时器按 1ms tick 推进，帧边界 = 1ms 网格。
-/// 注意：精度受平台定时器分辨率限制（Windows 默认 ~15.6ms 粒度，
-/// asio timer 无法精确触发亚毫秒 deadline），实际节流粒度
-/// 1ms~15.6ms，批量到期时同端点多个 URB 可能同批完成——平均吞吐仍受限
+/// Wait duration to align the service start time to the next frame boundary (1ms grid):
+/// vudc's frame timer advances in 1ms ticks; frame boundaries = 1ms grid.
+/// Note: precision is limited by the platform timer resolution (Windows defaults to ~15.6ms granularity,
+/// and asio timers cannot accurately trigger submillisecond deadlines); actual throttling granularity is
+/// 1ms~15.6ms. With batched expirations, multiple URBs on the same endpoint may complete in one batch; average throughput remains limited
 std::chrono::microseconds frame_alignment_delay(std::chrono::steady_clock::time_point service_start) {
     return std::chrono::microseconds(1000 - static_cast<std::int64_t>(
             std::chrono::duration_cast<std::chrono::microseconds>(service_start.time_since_epoch()).count() % 1000));
@@ -37,14 +37,14 @@ void TransferScheduler::stop() {
         if (!started)
             return;
         started = false;
-        // 连接已断：丢弃未完成 URB（不响应，对齐 vudc stop_activity 的 nuke 队列）
+        // Connection disconnected: discard unfinished URBs (no response, matching vudc stop_activity's queue nuke)
         endpoints.clear();
-        // 取消排期：aborted 回调会因 started=false 直接返回
+        // Cancel scheduling: the aborted callback returns immediately because started=false
         timer_pending = false;
         timer.cancel();
     }
-    // 放行 work_guard（允许 run() 在无 work 时返回）+ 停止 io_context
-    // 让 run() 立即返回（正在执行的 on_timer 会先跑完），join 等待
+    // Release work_guard (allow run() to return with no work) + stop io_context
+    // Make run() return immediately (an executing on_timer finishes first); join waits
     work_guard.reset();
     io_context.stop();
     if (thread.joinable())
@@ -54,14 +54,14 @@ void TransferScheduler::stop() {
 void TransferScheduler::submit(TransferResponder &responder, const UsbEndpoint &ep, EndpointAttributes type,
                                std::chrono::microseconds data_duration, std::uint32_t seqnum,
                                TransferHandle transfer, UrbProcessCallback processor) {
-    // 防御：控制请求不走处理器版（handler 无此调用场景），立即通知处理
+    // Safeguard: control requests do not use the processor variant (handler has no such call scenario); notify for processing immediately
     if (type == EndpointAttributes::Control) {
         processor(responder, ep, seqnum, std::move(transfer));
         return;
     }
 
     std::lock_guard lock(mutex);
-    // stop 之后到达的 URB：连接已断，直接丢弃
+    // URB arriving after stop: connection disconnected; discard directly
     if (!started)
         return;
 
@@ -69,8 +69,8 @@ void TransferScheduler::submit(TransferResponder &responder, const UsbEndpoint &
     bool queue_was_empty = state.queue.empty();
     state.queue.push_back(PendingUrb{{}, std::move(processor), {}, ep, type, seqnum, data_duration,
                                      std::move(transfer), &responder});
-    // 成为队头即定死服务时刻（自持链）；processing 中只算不排期
-    //（放行后 on_urb_done 的 kick 排期）
+    // Fix service time on becoming queue head (self-sustaining chain); during processing, calculate only without scheduling
+    //(schedule through on_urb_done's kick after release)
     if (queue_was_empty) {
         arm_next(ep.address, state);
         if (!state.processing)
@@ -81,8 +81,8 @@ void TransferScheduler::submit(TransferResponder &responder, const UsbEndpoint &
 void TransferScheduler::submit(TransferResponder &responder, const UsbEndpoint &ep, EndpointAttributes type,
                                int num_iso_packets, UsbIpResponse::UsbIpRetSubmit &&submit,
                                std::chrono::microseconds data_duration) {
-    // 端点版：间隔按 bInterval 与设备速度推导（对齐 USB 规范）。
-    // 参数名 submit 遮蔽了成员函数，需 this-> 显式解析
+    // Endpoint variant: derive interval from bInterval and device speed (matching the USB specification).
+    // Parameter name submit shadows the member function; use this-> for explicit resolution
     this->submit(responder, ep.address, type, endpoint_interval(ep, speed), num_iso_packets, std::move(submit),
                  data_duration);
 }
@@ -91,22 +91,22 @@ void TransferScheduler::submit(TransferResponder &responder, std::uint8_t ep_add
                                std::chrono::microseconds interval, int num_iso_packets,
                                UsbIpResponse::UsbIpRetSubmit &&submit,
                                std::chrono::microseconds data_duration) {
-    // 控制请求与无等时包的 iso URB：不占调度窗口，立即响应
-    //（控制端点必须快速，对齐 vudc 的 ep0 无延迟处理）
+    // Control requests and iso URBs without isochronous packets do not occupy a scheduling window; respond immediately
+    //(control endpoints must be fast, matching vudc's delay-free ep0 handling)
     if (type == EndpointAttributes::Control || (type == EndpointAttributes::Isochronous && num_iso_packets <= 0)) {
         on_urb_completed(responder, std::move(submit));
         return;
     }
 
     std::lock_guard lock(mutex);
-    // stop 之后到达的 URB：连接已断，直接丢弃
+    // URB arriving after stop: connection disconnected; discard directly
     if (!started)
         return;
 
     auto &state = endpoints[ep_address];
-    // 等时延迟：显式数据时长优先（跟随主机数据量，允许负值 = 提前响应，
-    // 收流速率闭环用），否则按包数×间隔。
-    // bulk/interrupt：服务时刻对齐帧边界（arm_next 里做，delay 不用）
+    // Isochronous delay: explicit data duration takes priority (follows the host's data amount; negative values allow an early response,
+    // used for closed-loop receive-rate control); otherwise packet count x interval.
+    // bulk/interrupt: align service time to frame boundaries (done in arm_next; delay unused)
     auto delay = (type == EndpointAttributes::Isochronous)
                          ? (data_duration != std::chrono::microseconds::zero()
                                     ? data_duration
@@ -115,8 +115,8 @@ void TransferScheduler::submit(TransferResponder &responder, std::uint8_t ep_add
     auto seqnum = submit.header.seqnum;
     bool queue_was_empty = state.queue.empty();
     state.queue.push_back(PendingUrb{{}, {}, std::move(submit), UsbEndpoint{}, type, seqnum, delay, {}, &responder});
-    // 成为队头即定死服务时刻（自持链）；processing 中只算不排期
-    //（放行后 on_urb_done 的 kick 排期）
+    // Fix service time on becoming queue head (self-sustaining chain); during processing, calculate only without scheduling
+    //(schedule through on_urb_done's kick after release)
     if (queue_was_empty) {
         arm_next(ep_address, state);
         if (!state.processing)
@@ -126,19 +126,19 @@ void TransferScheduler::submit(TransferResponder &responder, std::uint8_t ep_add
 
 void TransferScheduler::on_urb_done(std::uint8_t ep_address, std::uint32_t seqnum) {
     std::lock_guard lock(mutex);
-    // stop 之后（队列已清）到达的上报：忽略
+    // Reports arriving after stop (queue already cleared): ignore
     if (!started)
         return;
     auto it = endpoints.find(ep_address);
     if (it == endpoints.end())
         return;
     auto &state = it->second;
-    // seqnum 校验：须匹配处理中的 URB（处理器完成收尾后的重复上报被忽略）
+    // Validate seqnum: must match the URB being processed (duplicate reports after processor cleanup are ignored)
     if (!state.processing || state.processing_seqnum != seqnum)
         return;
-    // 只放行不重算：下一个 URB 的服务时刻在提交时已定死（自持链），
-    // 处理耗时/定时器触发延迟不进入节奏。处理慢（链时刻已过）时
-    // schedule_next 按已过的 service_time 排期，立即触发服务
+    // Only release, without recalculating: the next URB's service time was fixed on submission (self-sustaining chain),
+    // so processing time/timer-trigger delay do not enter the cadence. If processing is slow (chain time has passed),
+    // schedule_next schedules the already-past service_time, triggering service immediately
     state.processing = false;
     state.processing_seqnum = 0;
     if (!state.queue.empty())
@@ -148,7 +148,7 @@ void TransferScheduler::on_urb_done(std::uint8_t ep_address, std::uint32_t seqnu
 bool TransferScheduler::cancel(std::uint32_t seqnum) {
     std::lock_guard lock(mutex);
     for (auto &[ep, state] : endpoints) {
-        // 已交给处理器（处理中）的 URB 取消不了
+        // URBs already handed to the processor (being processed) cannot be cancelled
         if (state.processing && state.processing_seqnum == seqnum)
             return false;
         for (auto it = state.queue.begin(); it != state.queue.end(); ++it) {
@@ -156,12 +156,12 @@ bool TransferScheduler::cancel(std::uint32_t seqnum) {
                 auto is_front = (it == state.queue.begin());
                 auto canceled_service_time = it->service_time;
                 state.queue.erase(it);
-                // 被取消的是队头：其服务窗口不回收（对齐真实总线：时隙
-                // 空着也流逝）——链基准推进到它的服务时刻，后继 URB 仍按
-                // 原节奏完成，不提前
+                // If the cancelled URB is queue head, its service window is not reclaimed (matching a real bus: a time slot
+                // passes even if empty); advance the chain baseline to its service time, and successor URBs still complete
+                // at the original cadence, without advancing early
                 if (is_front)
                     state.last_scheduled = std::max(state.last_scheduled, canceled_service_time);
-                // 队列仍有待服务 URB 且端点空闲：重算新队头服务时刻
+                // Pending URBs remain and the endpoint is idle: recalculate the new queue head's service time
                 if (!state.processing && !state.queue.empty())
                     arm_next(ep, state);
                 return true;
@@ -174,18 +174,18 @@ bool TransferScheduler::cancel(std::uint32_t seqnum) {
 std::chrono::microseconds TransferScheduler::endpoint_interval(const UsbEndpoint &ep, UsbSpeed speed) {
     auto interval = ep.interval;
     if (interval == 0)
-        interval = 1; // 防御非法 bInterval=0
+        interval = 1; // Guard against invalid bInterval=0
     switch (speed) {
         case UsbSpeed::High:
-            // 高速：2^(bInterval-1) 个 microframe，每个 125µs（bInterval 上限 16）
+            // High speed: 2^(bInterval-1) microframes, each 125us (bInterval maximum 16)
             interval = std::min(interval, static_cast<std::uint8_t>(16));
             return std::chrono::microseconds(125) * (std::uint64_t{1} << (interval - 1));
         case UsbSpeed::Super:
         case UsbSpeed::SuperPlus:
-            // SuperSpeed：bInterval × 125µs
+            // SuperSpeed:bInterval × 125µs
             return std::chrono::microseconds(125) * interval;
         default:
-            // 全速/低速：bInterval 个帧，每帧 1ms
+            // Full/low speed: bInterval frames, each 1ms
             return std::chrono::milliseconds(1) * interval;
     }
 }
@@ -199,12 +199,12 @@ void TransferScheduler::on_urb_completed(TransferResponder &current_session, Usb
 }
 
 void TransferScheduler::kick() {
-    // 定时器已排期（RUNNING）：新 URB 只入队，到期处理时会扫到
-    //（同端点串行保证服务时刻递增，不会被现有排期拖延）
+    // Timer already scheduled (RUNNING): new URBs only enter the queue and will be found during expiration handling
+    //(serial execution on the same endpoint guarantees increasing service times, without delay by the existing schedule)
     if (timer_pending)
         return;
-    // 排期动作交给调度线程（post 的唤醒是 io_context 核心机制，可靠）：
-    // 跨线程直接注册 timer 在 Windows 上偶发不唤醒，见 schedule_next 注释
+    // Leave scheduling to the scheduler thread (post wakeup is a reliable core io_context mechanism):
+    // direct cross-thread timer registration occasionally fails to wake on Windows; see the schedule_next comment
     asio::post(io_context, [this] { schedule_on_thread(); });
 }
 
@@ -212,7 +212,7 @@ void TransferScheduler::schedule_on_thread() {
     std::lock_guard lock(mutex);
     if (!started)
         return;
-    // 另一路（on_timer 的 schedule_next）可能已排期
+    // The other path (on_timer's schedule_next) may already have scheduled it
     if (timer_pending)
         return;
     schedule_next();
@@ -221,13 +221,13 @@ void TransferScheduler::schedule_on_thread() {
 void TransferScheduler::schedule_next() {
     auto next = std::chrono::steady_clock::time_point::max();
     for (auto &[ep, state] : endpoints) {
-        // 处理中（等待 on_urb_done）或队列空：不参与排期
+        // Being processed (waiting for on_urb_done) or queue empty: do not participate in scheduling
         if (state.processing || state.queue.empty())
             continue;
         next = std::min(next, state.queue.front().service_time);
     }
     if (next == std::chrono::steady_clock::time_point::max())
-        return; // 队列空：定时器转 IDLE（对齐 vudc 的 IDLE 状态）
+        return; // Queue empty: timer becomes IDLE (matching vudc's IDLE state)
 
     timer_pending = true;
     timer.expires_at(next);
@@ -239,18 +239,18 @@ void TransferScheduler::arm_next(std::uint8_t ep_address, EndpointState &state) 
         return;
     auto &front = state.queue.front();
     auto now = std::chrono::steady_clock::now();
-    // 首次排期（链基准未初始化 = epoch）：从提交时刻起算，否则
-    // epoch + 延迟远小于 now，max 会取 now 让首个 URB 立即响应
+    // First schedule (chain baseline uninitialized = epoch): start from submission time; otherwise
+    // epoch + delay is far earlier than now, so max takes now and the first URB responds immediately
     if (state.last_scheduled == std::chrono::steady_clock::time_point{})
         state.last_scheduled = now;
-    // 自持链：服务时刻 = max(现在, 上次计划服务时刻 + 延迟)。链在"成为
-    // 队头"的时刻定死（提交/取走前一个/取消队头）：主机提前提交（池机制）
-    // 时服务时刻延续链——处理耗时、定时器触发延迟、主机重提交延迟完全不
-    // 进入节奏（若按实际完成时刻或提交时刻起算，间隔会多出这些开销，收流
-    // 闭环限幅补不动 → 接收速率低于消费速率 → 欠载沙沙）；主机提交太慢
-    //（链时刻已过）时取 now，立即服务（主机控制节奏）
-    // 等时：完成节奏 = 主机数据速率（数据时长，可负 = 提前服务）；
-    // bulk/interrupt：对齐帧边界（等待 0-1ms，平均 0.5ms）
+    // Self-sustaining chain: service time = max(now, last scheduled service time + delay). Fix the chain when becoming
+    // queue head (submission/taking the previous URB/cancelling the head): when the host submits ahead (pool mechanism),
+    // service time follows the chain; processing time, timer-trigger delay, and host resubmission delay never
+    // enter the cadence (starting from actual completion or submission would add these overheads to the interval, beyond the receive-rate
+    // loop's compensation limits -> receive rate below consumption rate -> underrun noise). If the host submits too slowly
+    //(chain time already passed), use now and serve immediately (host controls the cadence)
+    // Isochronous: completion cadence = host data rate (data duration, possibly negative for early service);
+    // bulk/interrupt: align to frame boundaries (wait 0-1ms, average 0.5ms)
     front.service_time = (front.type == EndpointAttributes::Isochronous)
                                  ? std::max(now, state.last_scheduled + front.delay)
                                  : align_to_frame(std::max(now, state.last_scheduled));
@@ -271,14 +271,14 @@ void TransferScheduler::on_timer(const asio::error_code &ec) {
     {
         std::lock_guard lock(mutex);
         timer_pending = false;
-        // aborted：仅 stop() 取消排期场景，连接已断不处理
+        // aborted: only stop() cancellation of scheduling; connection disconnected, so do not process
         if (ec || !started)
             return;
 
         auto now = std::chrono::steady_clock::now();
-        // 服务所有到期的队头 URB（每端点至多一个：处理中的端点跳过；
-        // 不同端点可同时到期）。取出队头并标记处理中——同端点下一个
-        // URB 必须等 handler 的 on_urb_done 上报后才排期
+        // Serve all due queue-head URBs (at most one per endpoint: skip endpoints being processed;
+        // different endpoints may become due simultaneously). Take the head and mark it processing; the next URB on the same
+        // endpoint must wait for handler's on_urb_done report before scheduling
         for (auto &[addr, state] : endpoints) {
             if (state.processing || state.queue.empty())
                 continue;
@@ -288,17 +288,17 @@ void TransferScheduler::on_timer(const asio::error_code &ec) {
                 state.queue.pop_front();
                 state.processing = true;
                 state.processing_seqnum = due.back().urb.seqnum;
-                // 下一个变队头：立即按自持链定死服务时刻（取走时定死，
-                // 处理耗时/触发延迟不进入节奏；on_urb_done 只放行不重算）
+                // The next URB becomes head: immediately fix service time according to the self-sustaining chain (fixed when taking the previous URB,
+                // so processing time/trigger delay do not enter cadence; on_urb_done only releases without recalculating)
                 arm_next(addr, state);
             }
         }
-        // 队列可能仍有未到期 URB：排期下一次
+        // The queue may still have URBs not yet due: schedule the next expiration
         schedule_next();
     }
-    // 锁外处理（处理器可安全重入 submit()/on_urb_done()，不持锁不阻塞）：
-    // 待处理 URB → 通知处理器（handler 自发送 + on_urb_done 上报）；
-    // 数据已就绪 URB → 直接发送，发送即完成，立即推进串行点
+    // Process outside the lock (processors can safely reenter submit()/on_urb_done(), without holding locks or blocking):
+    // URB requiring processing -> notify processor (handler sends itself + reports on_urb_done);
+    // URB with data ready -> send directly; sending completes it, immediately advancing the serialization point
     for (auto &d : due) {
         if (d.urb.processor) {
             d.urb.processor(*d.responder, d.urb.ep, d.urb.seqnum, std::move(d.urb.transfer));

@@ -24,7 +24,7 @@ TEST(ReuseMap, InsertDuplicateReturnsExisting) {
     map.insert(1, "one");
     auto *v = map.insert(1, "ONE");
     ASSERT_NE(v, nullptr);
-    EXPECT_EQ(*v, "one");  // 旧值不变
+    EXPECT_EQ(*v, "one");  // Old value unchanged
     EXPECT_EQ(map.size(), 1u);
 }
 
@@ -38,7 +38,7 @@ TEST(ReuseMap, EraseAndReuseSlot) {
     EXPECT_EQ(map.find(1), nullptr);
     EXPECT_EQ(map.size(), 1u);
 
-    // 复用空槽，因前两个 push_back 未触发 reallocate，应复用同槽
+    // Reuse empty slot; first two push_back calls did not reallocate, so same slot should be reused
     auto *p3 = map.insert(3, "three");
     ASSERT_NE(p3, nullptr);
     EXPECT_EQ(p3, p1);
@@ -46,11 +46,11 @@ TEST(ReuseMap, EraseAndReuseSlot) {
 
 TEST(ReuseMap, PushBackWhenNoFreeSlot) {
     ReuseMap<int, int> map;
-    // 填满初始空 vector 时逐个 push_back
+    // push_back individually when filling initially empty vector
     for (int i = 0; i < 3; i++) map.insert(i, i * 10);
     EXPECT_EQ(map.size(), 3u);
 
-    // 删除后复用，不应 push_back
+    // Reuse after deletion; should not push_back
     map.erase(1);
     auto *reused = map.insert(10, 100);
     ASSERT_NE(reused, nullptr);
@@ -87,7 +87,7 @@ TEST(ReuseMap, ForEach) {
     });
     EXPECT_NE(result.find("2:two;"), std::string::npos);
     EXPECT_NE(result.find("3:three;"), std::string::npos);
-    EXPECT_EQ(result.find("1:one;"), std::string::npos);  // 已删除
+    EXPECT_EQ(result.find("1:one;"), std::string::npos);  // Deleted
 }
 
 TEST(ReuseMap, Clear) {
@@ -98,7 +98,7 @@ TEST(ReuseMap, Clear) {
     EXPECT_EQ(map.size(), 0u);
     EXPECT_TRUE(map.empty());
     for (int i = 0; i < 5; i++) EXPECT_EQ(map.find(i), nullptr);
-    // 清空后可重新插入
+    // Can insert again after clearing
     map.insert(1, 100);
     EXPECT_EQ(*map.find(1), 100);
 }
@@ -108,16 +108,16 @@ TEST(ReuseMap, PointerStabilityWithoutReallocation) {
     map.reserve(4);
     auto *p1 = map.insert(1, 10);
     map.insert(2, 20);
-    // 删除后插入复用，因 reserve 了内存未 reallocate，指针不变
+    // Reuse insertion after deletion; reserved memory avoids reallocation, keeping pointer unchanged
     map.erase(1);
     auto *p3 = map.insert(3, 30);
-    EXPECT_EQ(p3, p1);  // 复用同槽
+    EXPECT_EQ(p3, p1);  // Reuse same slot
 }
 
 TEST(ReuseMap, Reserve) {
     ReuseMap<int, int> map;
     map.reserve(64);
-    // 预留后插入不应触发 reallocate
+    // Insertion after reserve should not reallocate
     for (int i = 0; i < 32; i++) map.insert(i, i);
     EXPECT_EQ(map.size(), 32u);
     for (int i = 0; i < 32; i++) EXPECT_NE(map.find(i), nullptr);
@@ -154,15 +154,15 @@ TEST(ReuseMap, ConstFind) {
 
 TEST(ReuseMap, MultiEraseReuse) {
     ReuseMap<int, int> map;
-    // 填满一批
+    // Fill a batch
     for (int i = 0; i < 10; i++) map.insert(i, i * 10);
-    // 删除一半
+    // Delete half
     for (int i = 0; i < 5; i++) map.erase(i);
     EXPECT_EQ(map.size(), 5u);
-    // 重新插入，应复用全部空槽
+    // Reinsert; should reuse all empty slots
     for (int i = 0; i < 5; i++) map.insert(i + 100, (i + 100) * 10);
     EXPECT_EQ(map.size(), 10u);
-    // 所有 key 应该都能找到
+    // All keys should be found
     for (int i = 0; i < 5; i++) {
         EXPECT_EQ(map.find(i), nullptr);
         EXPECT_NE(map.find(i + 100), nullptr);

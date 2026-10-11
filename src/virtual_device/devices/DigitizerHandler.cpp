@@ -134,8 +134,8 @@ DigitizerHandler::DigitizerHandler(UsbInterface &handle_interface, StringPool &s
 void DigitizerHandler::on_new_connection(TransferResponder &current_session, error_code &ec) {
     HidVirtualInterfaceHandler::on_new_connection(current_session, ec);
 
-    // 锁内置位再唤醒（与 on_disconnection 同源的标准 CV 模式）：
-    // 无锁置位会让 wait_for_client 的 CV 分支等满超时才醒来
+    // Set the flag under the lock, then wake (standard CV pattern, same as on_disconnection):
+    // setting without locking makes wait_for_client's CV branch wait until its full timeout before waking
     {
         std::lock_guard lock(client_connect_mutex_);
         client_connected_ = true;
@@ -166,7 +166,7 @@ void DigitizerHandler::on_new_connection(TransferResponder &current_session, err
                 report[4] = (current_state_.y >> 8) & 0xFF;
                 report[5] = current_state_.pressure;
             }
-            // 不触摸时发送全零报告（tip=0, in_range=0）
+            // Send an all-zero report when not touching (tip=0, in_range=0)
 
             send_input_report(asio::buffer(report));
             last_state_ = current_state_;
@@ -175,8 +175,8 @@ void DigitizerHandler::on_new_connection(TransferResponder &current_session, err
 }
 
 void DigitizerHandler::on_disconnection(error_code &ec) {
-    // 锁内置位再唤醒（标准 CV 模式）：无锁置位 + notify 会丢失唤醒，
-    // send_thread_ 永久睡眠导致 join 卡死（与 KeyboardHandler 同源）
+    // Set the flag under the lock, then wake (standard CV pattern): setting without locking + notify loses wakeups,
+    // leaving send_thread_ asleep permanently and hanging join (same cause as KeyboardHandler)
     {
         std::lock_guard lock(state_mutex_);
         should_stop_ = true;

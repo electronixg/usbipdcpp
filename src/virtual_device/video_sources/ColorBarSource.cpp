@@ -14,10 +14,10 @@ ColorBarSource::ColorBarSource(std::uint16_t width, std::uint16_t height, std::u
 }
 
 std::vector<VideoFormatInfo> ColorBarSource::supported_formats() const {
-    // 仅支持单一固定帧率：min 和 default 相同，max = min * 10（可降至 1/10 帧率）
+    // Supports only one fixed frame rate: min equals default, max = min * 10 (can reduce to 1/10 frame rate)
     auto min_iv = frame_interval_;
     auto max_iv = frame_interval_ * 10;
-    // (max - min) % min == 0 满足 usbvideo.sys 整除检查
+    // (max - min) % min == 0 satisfies usbvideo.sys's divisibility check
     return {
             {UvcFourCC::YUY2, width_, height_, static_cast<std::uint32_t>(width_ * height_ * 2),
              frame_interval_, min_iv, max_iv, 16},
@@ -54,12 +54,12 @@ std::uint32_t ColorBarSource::frame_interval() const {
     return frame_interval_;
 }
 
-// SMPTE 彩条: 白 黄 青 绿 品 红 蓝 黑
-// YCbCr BT.601: Y=16..235, CbCr=16..240, 居中值=128
+// SMPTE color bars: white yellow cyan green magenta red blue black
+// YCbCr BT.601: Y=16..235, CbCr=16..240, center value=128
 void ColorBarSource::generate_color_bars() {
     buffer_.resize(static_cast<std::size_t>(width_) * height_ * 2);
 
-    // 8 种颜色条的 Y Cb Cr 值
+    // Y Cb Cr values for the 8 color bars
     static constexpr std::uint8_t colors[8][3] = {
             {235, 128, 128}, // White
             {210, 16, 146}, // Yellow

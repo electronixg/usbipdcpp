@@ -6,8 +6,8 @@ namespace usbipdcpp {
 
 RelativeMouseHandler::RelativeMouseHandler(UsbInterface &handle_interface, StringPool &string_pool) :
     HidVirtualInterfaceHandler(handle_interface, string_pool) {
-    // 相对坐标鼠标: 6 字节报告，5 按钮 + X/Y 16位相对移动 + 滚轮
-    // [0] 按钮 bit0-4 + 3 位填充, [1-2] X LE, [3-4] Y LE, [5] 滚轮
+    // Relative-coordinate mouse: 6-byte report, 5 buttons + X/Y 16-bit relative movement + wheel
+    // [0] Buttons bit0-4 + 3 padding bits, [1-2] X LE, [3-4] Y LE, [5] wheel
     report_descriptor = {
             0x05,
             0x01, // Usage Page (Generic Desktop)
@@ -20,7 +20,7 @@ RelativeMouseHandler::RelativeMouseHandler(UsbInterface &handle_interface, Strin
             0xA1,
             0x00, //   Collection (Physical)
 
-            // 5 按钮 + 3 位填充
+            // 5 buttons + 3 padding bits
             0x05,
             0x09, //   Usage Page (Button)
             0x19,
@@ -45,7 +45,7 @@ RelativeMouseHandler::RelativeMouseHandler(UsbInterface &handle_interface, Strin
             0x81,
             0x03, //   Input (Const)
 
-            // X/Y 相对移动 16位 (-32767~32767)
+            // X/Y 16-bit relative movement (-32767~32767)
             0x05,
             0x01, //   Usage Page (Generic Desktop)
             0x09,
@@ -65,7 +65,7 @@ RelativeMouseHandler::RelativeMouseHandler(UsbInterface &handle_interface, Strin
             0x81,
             0x06, //   Input (Data,Var,Rel)
 
-            // 滚轮 (-127~127)
+            // Wheel (-127~127)
             0x09,
             0x38, //   Usage (Wheel)
             0x15,
@@ -87,8 +87,8 @@ RelativeMouseHandler::RelativeMouseHandler(UsbInterface &handle_interface, Strin
 void RelativeMouseHandler::on_new_connection(TransferResponder &current_session, error_code &ec) {
     HidVirtualInterfaceHandler::on_new_connection(current_session, ec);
 
-    // 锁内置位再唤醒（与 on_disconnection 同源的标准 CV 模式）：
-    // 无锁置位会让 wait_for_client 的 CV 分支等满超时才醒来
+    // Set the flag under the lock, then wake (standard CV pattern, same as on_disconnection):
+    // setting without locking makes wait_for_client's CV branch wait until its full timeout before waking
     {
         std::lock_guard lock(connect_mutex);
         client_connected = true;
@@ -100,7 +100,7 @@ void RelativeMouseHandler::on_new_connection(TransferResponder &current_session,
     current = State{};
     last = State{};
 
-    // 启动发送线程，等待状态变化后发送报告
+    // Start sender thread, wait for state changes, then send reports
     send_thread = std::thread([this]() {
         while (!should_stop) {
             std::unique_lock lock(state_mutex);
@@ -108,7 +108,7 @@ void RelativeMouseHandler::on_new_connection(TransferResponder &current_session,
             if (should_stop)
                 break;
 
-            // 这里只当状态变化了才去发送报告符
+            // Send reports here only when state changes
             if (current != last) [[likely]] {
                 send_report();
                 current.relative_data.reset();
@@ -119,8 +119,8 @@ void RelativeMouseHandler::on_new_connection(TransferResponder &current_session,
 }
 
 void RelativeMouseHandler::on_disconnection(error_code &ec) {
-    // 锁内置位再唤醒（标准 CV 模式）：无锁置位 + notify 会丢失唤醒，
-    // send_thread 永久睡眠导致 join 卡死（与 KeyboardHandler 同源）
+    // Set the flag under the lock, then wake (standard CV pattern): setting without locking + notify loses wakeups,
+    // leaving send_thread asleep permanently and hanging join (same cause as KeyboardHandler)
     {
         std::lock_guard lock(state_mutex);
         should_stop = true;
@@ -176,8 +176,8 @@ void RelativeMouseHandler::notify() {
 
 void RelativeMouseHandler::move(std::int16_t dx, std::int16_t dy) {
     std::lock_guard lock(state_mutex);
-    // 累加钳位到 ±32767：int16 溢出会导致方向反向，
-    // 钳位到 HID 描述符 16 位 Logical Min/Max 一致，保证饱和而非回绕
+    // Accumulate and clamp to ±32767: int16 overflow reverses direction,
+    // clamp consistently with the HID descriptor's 16-bit Logical Min/Max, ensuring saturation rather than wrapping
     int new_dx = std::clamp(static_cast<int>(current.relative_data.dx) + dx, -32767, 32767);
     int new_dy = std::clamp(static_cast<int>(current.relative_data.dy) + dy, -32767, 32767);
     current.relative_data.dx = static_cast<std::int16_t>(new_dx);
@@ -187,7 +187,7 @@ void RelativeMouseHandler::move(std::int16_t dx, std::int16_t dy) {
 
 void RelativeMouseHandler::set_wheel(std::int8_t delta) {
     std::lock_guard lock(state_mutex);
-    // 同 move，累加钳位防止 int8 溢出回绕
+    // As with move, accumulate and clamp to prevent int8 overflow/wrapping
     int new_wheel = std::clamp(static_cast<int>(current.relative_data.wheel) + delta, -127, 127);
     current.relative_data.wheel = static_cast<std::int8_t>(new_wheel);
     notify();

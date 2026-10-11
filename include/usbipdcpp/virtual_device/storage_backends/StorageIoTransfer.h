@@ -9,102 +9,102 @@
 namespace usbipdcpp {
 
 /**
- * @brief MSC 存储 I/O 专用 Transfer，配合 StorageTransferOperator 使用
+ * @brief Transfer dedicated to MSC storage I/O, used with StorageTransferOperator
  *
- * 不分配内部 GenericTransfer::data，所有 I/O 通过本结构体的成员直达目标地址。
- * 支持两种数据路径：零拷贝（mmap 文件内存）和回退（staging_data_ / fallback_data）。
+ * Does not allocate internal GenericTransfer::data; all I/O reaches target addresses directly through this struct's members.
+ * Supports two data paths: zero-copy (mmap file memory) and fallback (staging_data_ / fallback_data).
  *
- * === IN 方向（设备 → host，READ / CSW） ===
- * handle_bulk_transfer 中设置 external_buf 和 actual_length，sender 线程通过
- * send_transfer_data 发送。优先走 sendfile / TransmitFile（direct_io），回退 asio::write。
- * - READ mmap：external_buf 指向 RawImageBackend 映射的文件内存，direct_io = true
- * - READ 回退：external_buf 指向 staging_data_ 内部
- * - CSW：external_buf 指向本结构体 fallback_data，direct_io = false
+ * === IN direction (device → host, READ / CSW) ===
+ * handle_bulk_transfer sets external_buf and actual_length; the sender thread sends through
+ * send_transfer_data. Prefer sendfile / TransmitFile (direct_io), fall back to asio::write.
+ * - READ mmap: external_buf points to file memory mapped by RawImageBackend, direct_io = true
+ * - READ fallback: external_buf points into staging_data_
+ * - CSW: external_buf points to this struct's fallback_data, direct_io = false
  *
- * === OUT 方向（host → 设备，CBW / WRITE / UNMAP） ===
- * alloc_transfer_handle 时 prepare_out_buffer 设置 external_buf，
- * recv_transfer_data 优先 splice 直写文件（direct_io），回退 asio::read 到 external_buf，
- * 随后 on_out_data_received 解析 CBW 或累积写数据。
- * - CBW：external_buf 为 nullptr，走 fallback_data，direct_io = false
- * - WRITE mmap：external_buf 指向 mmap 文件内存，direct_io = true
- * - WRITE 回退 / UNMAP：external_buf 指向 staging_data_ 尾部预留空间
+ * === OUT direction (host → device, CBW / WRITE / UNMAP) ===
+ * During alloc_transfer_handle, prepare_out_buffer sets external_buf;
+ * recv_transfer_data prefers splice directly into the file (direct_io), falling back to asio::read into external_buf,
+ * then on_out_data_received parses CBW or accumulates write data.
+ * - CBW: external_buf is nullptr, uses fallback_data, direct_io = false
+ * - WRITE mmap: external_buf points to mmap file memory, direct_io = true
+ * - WRITE fallback / UNMAP: external_buf points to reserved space at the end of staging_data_
  */
 struct StorageIoTransfer {
-    // ===== 由 MscBulkOnlyHandler 设置 =====
+    // ===== Set by MscBulkOnlyHandler =====
 
     /**
-     * @brief 直读/直写的目标地址
+     * @brief Target address for direct reads/writes
      *
-     * IN(READ mmap)：指向 RawImageBackend 映射的文件内存；
-     * IN(READ staging)：指向 staging_data_ 内部偏移；
-     * IN(CSW)：指向 fallback_data 内 CSW 内容；
-     * OUT(WRITE mmap)：指向 mmap 映射内存，socket 直读入或 splice 直写；
-     * OUT(WRITE staging)：指向 staging_data_ 尾部预留空间；
-     * OUT(Idle)：nullptr，CBW 走 fallback_data 读入。
+     * IN(READ mmap): points to file memory mapped by RawImageBackend;
+     * IN(READ staging): points to an offset within staging_data_;
+     * IN(CSW): points to CSW contents in fallback_data;
+     * OUT(WRITE mmap): points to mmap memory, read directly from socket or write directly with splice;
+     * OUT(WRITE staging): points to reserved space at the end of staging_data_;
+     * OUT(Idle): nullptr, read CBW through fallback_data.
      */
     void *external_buf = nullptr;
 
     /**
-     * @brief IN 方向待发送的字节数
+     * @brief Bytes to send in the IN direction
      *
-     * MscBulkOnlyHandler 在 handle_bulk_transfer DataIn/Status 中设置，
-     * 即 send_transfer_data 的 length 参数。OUT 方向未使用。
+     * Set by MscBulkOnlyHandler in handle_bulk_transfer DataIn/Status;
+     * this is send_transfer_data's length parameter. Unused for OUT.
      */
     std::size_t actual_length = 0;
 
     /**
-     * @brief 文件 I/O 的起始 LBA 编号
+     * @brief Starting LBA for file I/O
      *
-     * send_direct / recv_direct 据此和 block_size 算出文件偏移。
-     * IN(READ)：由 handle_bulk_transfer DataIn 设置为 read_lba_；
-     * OUT(WRITE)：由 prepare_out_buffer 设置为 write_lba_；
-     * CSW / CBW：保持 0（direct_io = false 时不触发此路径）。
+     * send_direct / recv_direct calculate file offset from this and block_size.
+     * IN(READ): set to read_lba_ by handle_bulk_transfer DataIn;
+     * OUT(WRITE): set to write_lba_ by prepare_out_buffer;
+     * CSW / CBW: remains 0 (this path is not triggered when direct_io = false).
      */
     std::uint64_t file_lba = 0;
 
     /**
-     * @brief LBA 内的字节偏移
+     * @brief Byte offset within the LBA
      *
-     * 与 file_lba 配合确定精确的文件位置。
-     * IN(READ)：即 staging_offset_；
-     * OUT(WRITE)：即 write_accumulated_。
+     * Combined with file_lba to determine the exact file position.
+     * IN(READ): staging_offset_;
+     * OUT(WRITE): write_accumulated_.
      */
     std::size_t file_offset = 0;
 
     /**
-     * @brief 是否走零拷贝 sendfile / splice 路径
+     * @brief Whether to use the zero-copy sendfile / splice path
      *
-     * true 仅当 external_buf 指向 RawImageBackend 的 mmap 文件内存时设置：
-     * - IN(READ mmap)：handle_bulk_transfer DataIn 中设为 true；
-     * - OUT(WRITE mmap)：prepare_out_buffer 中设为 true。
+     * Set true only when external_buf points to RawImageBackend's mmap file memory:
+     * - IN(READ mmap): set true in handle_bulk_transfer DataIn;
+     * - OUT(WRITE mmap): set true in prepare_out_buffer.
      *
-     * CSW / CBW / staging 回退路径均为 false，send_transfer_data / recv_transfer_data
-     * 据此跳过 send_direct / recv_direct，直接走 asio 读写。
+     * CSW / CBW / staging fallback paths are all false; send_transfer_data / recv_transfer_data
+     * therefore skip send_direct / recv_direct and use asio reads/writes directly.
      */
     bool direct_io = false;
 
     /**
-     * @brief 传输方向（CMD_SUBMIT 的 direction，alloc 时确定）
+     * @brief Transfer direction (CMD_SUBMIT direction, determined at allocation)
      *
-     * true=IN（READ/CSW 应答回发数据），false=OUT（CBW/WRITE/UNMAP 收数据）。
-     * 满足 TransferOperator::alloc_transfer_handle 的方向记录契约，
-     * 供 transfer_is_in 查询。MSC 的 OUT 应答不带 transfer，正常情况下
-     * 不会走到 send_transfer_data，该字段主要用于协议层 length 计算。
+     * true=IN (READ/CSW response sends data back), false=OUT (CBW/WRITE/UNMAP receives data).
+     * Satisfies TransferOperator::alloc_transfer_handle's direction-recording contract,
+     * for transfer_is_in queries. MSC OUT responses carry no transfer and normally
+     * do not reach send_transfer_data; this field is mainly for protocol-layer length calculation.
      */
     bool is_in = false;
 
-    // ===== 本结构体自用缓冲区 =====
+    // ===== Buffer for this struct's own use =====
 
     /**
-     * @brief external_buf 为空时的后备缓冲区
+     * @brief Fallback buffer when external_buf is null
      *
-     * - OUT(Idle)：CBW（31 字节）读入此处，再由 on_out_data_received memcpy 到
-     *   current_cbw_，防止 CBW 过长损坏栈；
-     * - IN(Status)：CSW（13 字节）构造于此，external_buf 指向其 data()。
+     * - OUT(Idle): read CBW (31 bytes) here, then on_out_data_received uses memcpy to copy it into
+     *   current_cbw_, preventing overly long CBWs from corrupting the stack;
+     * - IN(Status): construct CSW (13 bytes) here, with external_buf pointing to its data().
      */
     std::vector<std::uint8_t> fallback_data;
 
-    /** 重置所有字段以供对象池复用 */
+    /** Reset all fields for object-pool reuse */
     void reset() {
         external_buf = nullptr;
         actual_length = 0;
@@ -120,7 +120,7 @@ struct StorageIoTransfer {
     }
 };
 
-// 传输对象类型必须满足 FromHandleTransfer 约束（同 protocol.h 里 GenericTransfer 的检查）
+// Transfer object type must satisfy FromHandleTransfer constraints (same check as GenericTransfer in protocol.h)
 static_assert(FromHandleTransfer<StorageIoTransfer, StorageIoTransfer>);
 
 } // namespace usbipdcpp

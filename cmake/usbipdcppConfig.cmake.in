@@ -9,7 +9,7 @@ include(CMakeFindDependencyMacro)
 find_dependency(asio)
 find_dependency(spdlog)
 
-# 如果 usbipdcpp::libusb 目标存在，无论是否请求组件都要创建 PkgConfig::libusb
+# If the usbipdcpp::libusb target exists, create PkgConfig::libusb whether or not the component was requested
 if(TARGET usbipdcpp::libusb)
     find_dependency(PkgConfig)
     pkg_check_modules(libusb REQUIRED IMPORTED_TARGET libusb-1.0)

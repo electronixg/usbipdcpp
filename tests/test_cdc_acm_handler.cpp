@@ -8,21 +8,21 @@
 
 using namespace usbipdcpp;
 
-// ========== CDC ACM LineCoding 序列化 ==========
+// ========== CDC ACM LineCoding serialization ==========
 
 TEST(VirtualDeviceHandlers, CdcLineCodingRoundTrip) {
     LineCoding coding{.dwDTERate = 115200, .bCharFormat = 1, .bParityType = 2, .bDataBits = 8};
 
     auto bytes = coding.to_bytes();
     ASSERT_EQ(bytes.size(), 7u);
-    // 115200 = 0x1C200，小端
+    // 115200 = 0x1C200, little-endian
     EXPECT_EQ(bytes[0], 0x00);
     EXPECT_EQ(bytes[1], 0xC2);
     EXPECT_EQ(bytes[2], 0x01);
     EXPECT_EQ(bytes[3], 0x00);
-    EXPECT_EQ(bytes[4], 1); // 停止位
-    EXPECT_EQ(bytes[5], 2); // 偶校验
-    EXPECT_EQ(bytes[6], 8); // 数据位
+    EXPECT_EQ(bytes[4], 1); // Stop bits
+    EXPECT_EQ(bytes[5], 2); // Even parity
+    EXPECT_EQ(bytes[6], 8); // Data bits
 
     auto restored = LineCoding::from_bytes({bytes.begin(), bytes.end()});
     EXPECT_EQ(restored.dwDTERate, 115200u);
@@ -32,7 +32,7 @@ TEST(VirtualDeviceHandlers, CdcLineCodingRoundTrip) {
 }
 
 TEST(VirtualDeviceHandlers, CdcLineCodingFromShortDataKeepsDefaults) {
-    // 少于 7 字节时保持默认值，不越界
+    // Keep default values with fewer than 7 bytes; no out-of-bounds access
     auto coding = LineCoding::from_bytes({0x00, 0x01, 0x02});
     EXPECT_EQ(coding.dwDTERate, 115200u);
     EXPECT_EQ(coding.bCharFormat, 0);
@@ -57,7 +57,7 @@ TEST(VirtualDeviceHandlers, CdcControlSignalStateRoundTrip) {
     EXPECT_TRUE(restored.rts);
 }
 
-// ========== CDC ACM 类特定描述符 ==========
+// ========== CDC ACM class-specific descriptors ==========
 
 TEST(VirtualDeviceHandlers, CdcClassSpecificDescriptor) {
     StringPool pool;
@@ -65,10 +65,10 @@ TEST(VirtualDeviceHandlers, CdcClassSpecificDescriptor) {
     CdcAcmCommunicationInterfaceHandler handler(intf, pool);
 
     auto desc = handler.get_class_specific_descriptor();
-    // Header(5) + CallManagement(5) + ACM(4) + Union(5) = 19 字节
+    // Header(5) + CallManagement(5) + ACM(4) + Union(5) = 19 bytes
     ASSERT_EQ(desc.size(), 19u);
 
-    // Header: bLength=5, bDescriptorType=0x24(CS_INTERFACE), bDescriptorSubtype=0x00, bcdCDC=1.10 小端
+    // Header: bLength=5, bDescriptorType=0x24(CS_INTERFACE), bDescriptorSubtype=0x00, bcdCDC=1.10 little-endian
     EXPECT_EQ(desc[0], 0x05);
     EXPECT_EQ(desc[1], 0x24);
     EXPECT_EQ(desc[2], 0x00);
@@ -101,7 +101,7 @@ TEST(VirtualDeviceHandlers, CdcDataInterfaceHasNoClassDescriptor) {
     EXPECT_TRUE(handler.get_class_specific_descriptor().empty());
 }
 
-// ========== CDC 串口状态通知 ==========
+// ========== CDC serial-state notification ==========
 
 TEST(VirtualDeviceHandlers, CdcSerialStateNotificationFormat) {
     SerialStateNotification notif;
@@ -112,7 +112,7 @@ TEST(VirtualDeviceHandlers, CdcSerialStateNotificationFormat) {
     ASSERT_EQ(bytes.size(), 10u);
     EXPECT_EQ(bytes[0], 0xA1); // bmRequestType
     EXPECT_EQ(bytes[1], 0x20); // bNotification: SERIAL_STATE
-    EXPECT_EQ(bytes[4], 1);    // wIndex 小端
-    EXPECT_EQ(bytes[8], 0x00); // data 小端
+    EXPECT_EQ(bytes[4], 1);    // wIndex little-endian
+    EXPECT_EQ(bytes[8], 0x00); // data little-endian
     EXPECT_EQ(bytes[9], 0x03);
 }

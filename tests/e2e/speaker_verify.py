@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-# 验证 mock_speaker 收流写出的 WAV 与播放源内容基本一致（内容级，不是非空）：
-#  - 频率：过零率估频（正弦波 440Hz）
-#  - 波形形状：局部波峰 + 波谷总数
-# 播放路径有 ALSA 缓冲，允许小误差：频率差 < 2%，极值数差 < 5%
+# Verify WAV written from mock_speaker reception approximately matches playback source (content level, not merely nonempty):
+#  - Frequency: estimate with zero-crossing rate (440Hz sine wave)
+#  - Waveform shape: total local peaks + troughs
+# Playback path has ALSA buffering; allow small errors: frequency difference < 2%, extrema-count difference < 5%
 import array
 import sys
 import wave
@@ -19,10 +19,10 @@ def analyze(path):
         data = data[::ch]
     if not data:
         return None
-    # 过零率估频：每秒过零次数 / 2 = 周期数
+    # Frequency from zero-crossing rate: crossings per second / 2 = periods
     crossings = sum(1 for i in range(1, len(data)) if (data[i - 1] < 0) != (data[i] < 0))
     freq = crossings / 2.0 / (n / sr)
-    # 局部极值（波峰 + 波谷）
+    # Local extrema (peaks + troughs)
     peaks = valleys = 0
     for i in range(2, len(data)):
         if data[i - 1] > data[i - 2] and data[i - 1] >= data[i]:

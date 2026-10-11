@@ -1,119 +1,119 @@
-协议解析部分的修改请务必慎重，这部分是调试很久的结果，其他架构部分可以修改。
+Be very careful when modifying protocol parsing: this part is the result of extensive debugging. Other architectural components may be modified.
 
-解析/构造协议字段（USB 描述符、以太网/IP/TCP 头等）时用 packed 结构体 + 命名成员字段访问，
-禁止用 std::vector、std::array + 手算字节偏移读写（偏移极易算错、字段增删时无法自动发现错误）。
-多字节字段按网络序存内存，访问时用 bswap/htons 类函数显式转换。
+When parsing/constructing protocol fields (USB descriptors, Ethernet/IP/TCP headers, etc.), use packed structures and access named member fields.
+Do not use std::vector or std::array with manually calculated byte offsets for reads/writes (offsets are easy to miscalculate, and adding/removing fields cannot automatically expose errors).
+Store multibyte fields in memory in network byte order; explicitly convert them on access using functions such as bswap/htons.
 
-## 测试汇总查看
+## Viewing the Test Summary
 
-跑 ctest 必须一条命令看到通过/失败数，禁止跑两遍：输出 tail 至少留 15 行
-（汇总行 `100% tests passed out of N` 在输出最后两行，tail 太短会把汇总
-截掉，还得再跑一次）：
+When running ctest, a single command must show the pass/fail counts. Do not run it twice: retain at least 15 lines with tail
+(the summary line `100% tests passed out of N` is in the last two output lines; a tail that is too short truncates the summary
+and requires another run):
 
 ```bash
 ctest --test-dir build --output-on-failure -j12 2>&1 | tail -15
 ```
 
-## 注释风格
+## Comment Style
 
-函数/方法/结构体的文档注释一律用 Doxygen 风格（`/** ... */`，@brief 简述 +
-@param 参数说明 + @return 返回值说明），格式对齐 InterfaceHandler.h 的
-AbstInterfaceHandler::on_new_connection：
+Documentation comments for functions/methods/structures must use Doxygen style (`/** ... */`, @brief summary +
+@param parameter descriptions + @return return-value description), matching the format in InterfaceHandler.h for
+AbstInterfaceHandler::on_new_connection:
 
 ```cpp
     /**
-     * @brief 新的客户端连接时会调这个函数
-     * @param responder 传输应答接口（提交应答/停止传输用）
-     * @param ec 发生的ec
+     * @brief Called when a new client connects
+     * @param responder Transfer response interface (for submitting responses/stopping transfers)
+     * @param ec The resulting error code
      */
 ```
 
-禁止用 `///` 或 `//` 给函数/方法/结构体写文档（行内注释说明"为什么"不受限）。
+Do not use `///` or `//` to document functions/methods/structures (inline comments explaining "why" are unrestricted).
 
-## spdlog 日志级别被编译期裁剪时的调试手法
+## Debugging When spdlog Log Levels Are Removed at Compile Time
 
-Release/RelWithDebInfo 构建下 SPDLOG_ACTIVE_LEVEL 编译期定为 INFO，TRACE/DEBUG 日志
-打不出来（spdlog::set_level 运行时设置无效）。需要看某个文件的 TRACE/DEBUG 日志时，
-**不要逐行把日志级别改高**，参照 Session.cpp 顶部的方式：在该 cpp 文件最顶部
-（include 之前）强制重定义宏，让本文件日志全量输出，调试完删除：
+In Release/RelWithDebInfo builds, SPDLOG_ACTIVE_LEVEL is set to INFO at compile time, so TRACE/DEBUG logs
+are not emitted (setting spdlog::set_level at runtime has no effect). To view TRACE/DEBUG logs for a particular file,
+**do not raise the log level line by line**. Follow the approach at the top of Session.cpp: at the very top of that cpp file,
+before the includes, forcibly redefine the macro to enable all log levels for that file; remove it after debugging:
 
 ```cpp
-// 调试用：<这里写为什么要开，排查完删除>
+// For debugging: <state why this is enabled; remove after troubleshooting>
 #ifdef SPDLOG_ACTIVE_LEVEL
     #undef SPDLOG_ACTIVE_LEVEL
 #endif
 #define SPDLOG_ACTIVE_LEVEL SPDLOG_LEVEL_TRACE
 ```
 
-改各种api时需要考虑这种嵌入式平台的实现难易度
+When changing APIs, consider how difficult they are to implement on embedded platforms of this kind
 
-这个项目的开源协议是lgpl，别搞混了
+This project's open-source license is lgpl; do not confuse it with another license
 
-别主动提交git，我叫你提交再提交
+Do not create git commits proactively; commit only when I ask you to
 
-成员变量末尾不要加"_"
+Do not append "_" to member variable names
 
-push前先提交代码，push和提交请分别执行不要放在一起
+Commit the code before pushing; execute the push and commit separately, not together
 
-有新版本tag的时候别忘记更新CMakeLists.txt里的版本号
+When creating a new version tag, remember to update the version number in CMakeLists.txt
 
-所有编译出来的二进制（examples 的 mock_*、tests 的 test_* 等）一律在编译目录根目录（build* 下），不在任何子目录，别搞错了
+All compiled binaries (mock_* from examples, test_* from tests, etc.) are placed in the build directory root (under build*), never in subdirectories; do not confuse their locations
 
-## git 工作流
+## git Workflow
 
-单 main 分支模型（develop 已删除）：
+Single main branch model (develop has been deleted):
 
-- 日常提交直接进 main
-- 大的实验性功能：开临时 feature 分支开发，完成后合并回 main 并删除
-- 外部贡献者：fork + PR 到 main
-- 发版本：先更新 CMakeLists.txt 里的版本号并提交推送，再打 v* tag 推送，CI 自动构建发布包
+- Routine commits go directly to main
+- Large experimental features: develop on a temporary feature branch, then merge back into main and delete the branch
+- External contributors: fork + PR to main
+- Releases: update the version number in CMakeLists.txt, commit and push, then create and push a v* tag; CI automatically builds release packages
 
-## usbip命令使用
+## Using usbip Commands
 
-假设有个usbip服务器在本机的53240端口监听，请你attach或者list时使用
-`usbip -t 53240 attach/list ...`这种命令，注意-t必须紧跟usbip的后面，
-处于attach list等所有子命令的前面
+Assuming a usbip server is listening on local port 53240, use commands such as
+`usbip -t 53240 attach/list ...` for attach or list. Note that -t must immediately follow usbip,
+before all subcommands such as attach and list
 
-**usbip 的 attach 必须用 sudo**：attach 要写 /sys 并移交 fd 给 vhci_hcd，
-WSL 默认用户非 root 时权限不足会报 `usbip: error: import device`（极易误判成
-服务器/协议问题）。list 只读不需要 sudo，但为统一可直接
-`sudo usbip -t 53240 ...`。验证导入状态用 `sudo usbip port`。
+**usbip attach must use sudo**: attach writes to /sys and hands the fd over to vhci_hcd.
+If the default WSL user is not root, insufficient permissions produce `usbip: error: import device` (easily mistaken for
+a server/protocol problem). list is read-only and does not require sudo, but for consistency you can use
+`sudo usbip -t 53240 ...` directly. Verify the import status with `sudo usbip port`.
 
-**Windows 的 usbip.exe 与 Linux usbip 工具命令完全一样**：-t/--tcp-port 是
-两者共同的顶层全局选项（紧跟 usbip 之后、所有子命令之前），Windows 与 Linux
-的 attach/list/port 语法一一对应。Windows 侧连非 3240 端口服务器的命令就是
-`usbip -t 53240 list -r <ip>` / `usbip -t 53240 attach -r <ip> -b 1-1`，
-不要因为 attach 子命令帮助里 -t 显示为 --terse 就以为不支持端口
-（--terse 是 attach 子命令自己的短选项，顶层 -t 才是端口，看 `usbip --help`
-的顶层 OPTIONS）。Linux 中导入 Windows 侧导出的设备（usbipd-win）写法与此
-完全相同：`usbip -t <端口> attach -r <Windows 主机 ip> -b <busid>`。
+**Windows usbip.exe and the Linux usbip tool use exactly the same commands**: -t/--tcp-port is
+a shared top-level global option (immediately after usbip, before all subcommands). Windows and Linux
+have corresponding attach/list/port syntax. To connect from Windows to a server on a port other than 3240, use
+`usbip -t 53240 list -r <ip>` / `usbip -t 53240 attach -r <ip> -b 1-1`,
+Do not assume port selection is unsupported because the attach subcommand's help lists -t as --terse
+(--terse is an option of the attach subcommand itself; top-level -t selects the port, as shown in the top-level OPTIONS
+of `usbip --help`). Importing a device exported from Windows (usbipd-win) on Linux uses
+exactly the same syntax: `usbip -t <port> attach -r <Windows host ip> -b <busid>`.
 
-## mock 设备本地验证的坑
+## Pitfalls in Local Validation of mock Devices
 
-在 WSL 里起 mock 服务器并 attach 验证时，注意：
+When starting a mock server in WSL and validating it with attach, note the following:
 
-- **启动**：mock 服务器（wait_for_exit）等退出信号（POSIX：SIGINT/SIGTERM；
-  Windows：控制台事件），后台运行不需要挂 stdin。直接
+- **Starting**: mock servers (wait_for_exit) wait for exit signals (POSIX: SIGINT/SIGTERM;
+  Windows: console events); background execution does not require stdin to remain attached. Use
   `setsid ./mock_xxx -p 53240 < /dev/null > log 2>&1 &`
-- **关闭**：`kill -TERM <pid>` 或 `pkill -x mock_xxx`（都是 SIGTERM），
-  服务器走正常清理路径（server.stop：关连接、释放端口）优雅退出。
-  退出后 `ss -tln | grep 53240` 确认端口释放（端口被占会导致下一个
-  服务器起不来，误 attach 到旧设备上）
-- **清理旧进程时禁用 `pkill -f mock_xxx`**：`-f` 按整条命令行匹配，
-  会把自己的 shell（bash -lc 命令串里含 "mock_xxx"）杀掉。改用精确
-  进程名 `pkill -x mock_xxx`（可执行名，不含路径/参数）
-- **进程名超 15 字符会被内核截断**（Linux comm 上限）：`pkill -x` 匹配的
-  是截断后的名字，如 `mock_cdc_throttle`→`mock_cdc_thrott`、
-  `multi_interface_hid`→`multi_interface`、`multi_devices` 恰好 13 字符不截断。
-  杀不掉时先 `ps -eo comm | grep -i mock` 看真实 comm 名再用 `pkill -x <真实名>`
+- **Stopping**: use `kill -TERM <pid>` or `pkill -x mock_xxx` (both send SIGTERM).
+  The server follows its normal cleanup path (server.stop: closes connections and releases the port) and exits gracefully.
+  After exit, use `ss -tln | grep 53240` to confirm the port was released (an occupied port prevents the next
+  server from starting and can cause an accidental attach to the old device)
+- **Do not use `pkill -f mock_xxx` to clean up old processes**: `-f` matches the entire command line
+  and can kill its own shell (whose bash -lc command string contains "mock_xxx"). Instead, match the exact
+  process name with `pkill -x mock_xxx` (the executable name, without paths/arguments)
+- **The kernel truncates process names longer than 15 characters** (the Linux comm limit): `pkill -x` matches
+  the truncated name, for example `mock_cdc_throttle`→`mock_cdc_thrott`,
+  `multi_interface_hid`→`multi_interface`; `multi_devices` is exactly 13 characters and is not truncated.
+  If termination fails, first inspect the actual comm name with `ps -eo comm | grep -i mock`, then use `pkill -x <actual name>`
 
-**MSC（U盘）块设备读写必须分步，禁止一条命令里混查询和写**：
-attach 后先单独确认新出现的块设备是哪个（如 attach 前后 `lsblk` 对比、
-`dmesg | tail` 看内核枚举的 sdX 名），确认无误后**再单独执行**读写命令。
-严禁 `lsblk ... && dd if=/dev/sdX ...` 这类"查设备 + 写设备"一条命令
-串联——WSL 里还有其他物理硬盘，写错盘符会毁数据
+**MSC (USB flash drive) block-device reads/writes must be performed in separate steps; do not combine discovery and writing in one command**:
+After attach, first identify the newly appeared block device separately (for example, compare `lsblk` before/after attach,
+or use `dmesg | tail` to see the sdX name enumerated by the kernel). After confirming it, **run the read/write command separately**.
+Never chain "discover device + write device" into a single command such as
+`lsblk ... && dd if=/dev/sdX ...`: WSL contains other physical disks, and writing to the wrong disk destroys data
 
-**evtest 定位设备用 `/dev/input/by-path/`**：WSL 的 devtmpfs 下 `/dev/input/eventX`
-节点号与 `/sys/class/input/inputX` 编号不一定一致（容易拿错节点），by-path 的
-符号链接才对应真实设备（如 `platform-vhci_hcd.0-usb-0:1:1.0-event-kbd -> ../event0`）。
-先 `ls /dev/input/by-path/` 找目标设备名，再 `sudo evtest /dev/input/by-path/<名字>`。
+**Use `/dev/input/by-path/` to locate devices for evtest**: under WSL's devtmpfs, `/dev/input/eventX`
+node numbers do not necessarily match `/sys/class/input/inputX` numbers (making the wrong node easy to select). The by-path
+symlinks identify the actual device (for example `platform-vhci_hcd.0-usb-0:1:1.0-event-kbd -> ../event0`).
+First find the target device name with `ls /dev/input/by-path/`, then run `sudo evtest /dev/input/by-path/<name>`.

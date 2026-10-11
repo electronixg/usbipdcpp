@@ -10,7 +10,7 @@
 #include "usbipdcpp/virtual_device/EcmVirtualInterfaceHandler.h"
 #include "usbipdcpp/virtual_device/SimpleVirtualDeviceHandler.h"
 #include "usbipdcpp/virtual_device/network_backends/EthernetEchoBackend.h"
-// TunBackend 仅 Linux 内核提供 /dev/net/tun（含 Android/termux），Windows/macOS 不编译
+// TunBackend Only Linux kernel provides /dev/net/tun (including Android/termux), Windows/macOS does not compile
 #if defined(__linux__) || defined(__ANDROID__)
 #include "usbipdcpp/virtual_device/network_backends/TunBackend.h"
 #endif
@@ -19,7 +19,7 @@ using namespace usbipdcpp;
 
 namespace {
 
-/// 解析 "02:10:83:00:00:01" 形式 MAC 地址
+/// Parse "02:10:83:00:00:01" form MAC address
 std::array<std::uint8_t, 6> parse_mac(const std::string &s) {
     auto hex_val = [](char c) -> int {
         if (c >= '0' && c <= '9') return c - '0';
@@ -29,20 +29,20 @@ std::array<std::uint8_t, 6> parse_mac(const std::string &s) {
     };
     std::array<std::uint8_t, 6> mac{};
     if (s.size() != 17) {
-        throw std::runtime_error("MAC 地址格式应为 02:10:83:00:00:01");
+        throw std::runtime_error("MAC address format should be 02:10:83:00:00:01");
     }
     for (int i = 0; i < 6; i++) {
         int hi = hex_val(s[i * 3]);
         int lo = hex_val(s[i * 3 + 1]);
         if (hi < 0 || lo < 0 || (i < 5 && s[i * 3 + 2] != ':')) {
-            throw std::runtime_error("MAC 地址格式应为 02:10:83:00:00:01");
+            throw std::runtime_error("MAC address format should be 02:10:83:00:00:01");
         }
         mac[i] = static_cast<std::uint8_t>((hi << 4) | lo);
     }
     return mac;
 }
 
-/// 解析 "192.168.53.1" 形式 IPv4 地址
+/// Parse "192.168.53.1" form IPv4 address
 std::array<std::uint8_t, 4> parse_ipv4(const std::string &s) {
     std::array<std::uint8_t, 4> ip{};
     std::size_t pos = 0;
@@ -50,13 +50,13 @@ std::array<std::uint8_t, 4> parse_ipv4(const std::string &s) {
         int v = 0;
         auto [ptr, ec] = std::from_chars(s.data() + pos, s.data() + s.size(), v);
         if (ec != std::errc() || v < 0 || v > 255 || (i < 3 && (ptr == s.data() + s.size() || *ptr != '.'))) {
-            throw std::runtime_error("IPv4 地址格式应为 192.168.53.1");
+            throw std::runtime_error("IPv4 address format should be 192.168.53.1");
         }
         ip[i] = static_cast<std::uint8_t>(v);
         pos = static_cast<std::size_t>(ptr - s.data()) + (i < 3 ? 1 : 0);
     }
     if (pos != s.size()) {
-        throw std::runtime_error("IPv4 地址格式应为 192.168.53.1");
+        throw std::runtime_error("IPv4 address format should be 192.168.53.1");
     }
     return ip;
 }
@@ -69,7 +69,7 @@ int main(int argc, char **argv) {
             ("ip", "Device-side IPv4 address", cxxopts::value<std::string>()->default_value("192.168.53.1"))
             ("tcp-port", "Device-side TCP echo port", cxxopts::value<std::uint16_t>()->default_value("5000"))
 #if defined(__linux__) || defined(__ANDROID__)
-            // Linux/Android 才有 /dev/net/tun（TunBackend），其他平台不注册该选项
+            // /dev/net/tun (TunBackend) is only available on Linux/Android, and other platforms do not register this option.
             ("tun", "Use Linux TUN backend instead of user-space echo: route the virtual NIC into this host's kernel "
                     "network stack (needs root); value = interface name (e.g. usbip%d)",
              cxxopts::value<std::string>())
@@ -86,9 +86,9 @@ int main(int argc, char **argv) {
 
     StringPool string_pool;
 
-    // 后端：默认 echo 模式纯用户态应答 ARP/ICMP/TCP（无需 root）；--tun 模式把
-    // 虚拟网卡接入本机内核协议栈（需 root，仅 Linux）。handler 持有其指针，
-    // 须活得比设备久
+    // backend: default echo mode pure user mode response ARP/ICMP/TCP (no root required); --tun mode
+    // virtual network card is connected to the local kernel protocol stack (root required, Linux only). handler holds its pointer,
+    // must live longer than the device
     std::unique_ptr<NetworkBackend> backend;
 #if defined(__linux__) || defined(__ANDROID__)
     if (result.count("tun")) {
@@ -104,20 +104,20 @@ int main(int argc, char **argv) {
         backend = std::make_unique<EthernetEchoBackend>(mac, ip, tcp_port);
     }
 
-    // ECM 双接口：通信接口（中断 IN 通知）+ 数据接口（alt0 空 / alt1 双 bulk）
+    // ECM dual interface: communication interface (interrupt IN notification) + data interface (alt0 empty / alt1 double bulk)
     std::vector<UsbInterface> interfaces = {
             EcmCommunicationInterfaceHandler::make_interface(0x83),
             EcmDataInterfaceHandler::make_interface(0x81, 0x02),
     };
 
-    // IAD 复合设备需在设备级声明 CDC 类（对齐 mock_cdc_acm 的用法）
+    // IAD composite device needs to declare the CDC class at the device level (aligned with the usage of mock_cdc_acm)
     auto device = UsbDevice::make(busid, 0x1234, 0x56E1, std::move(interfaces),
                                   1, 1, static_cast<std::uint8_t>(ClassCode::CDC), "/usbipdcpp/mock_ecm");
-    // 接口从 0 连续编号：按下标依次填 interface_number（多接口设备的 bInterfaceNumber 依赖它）
+    // interfaces are numbered consecutively from 0: fill in interface_number in sequence according to the subscript (bInterfaceNumber of multi-interface devices depends on it)
     device->assign_interface_numbers();
     auto comm = device->interfaces[0].with_handler<EcmCommunicationInterfaceHandler>(string_pool, mac);
     auto data = device->interfaces[1].with_handler<EcmDataInterfaceHandler>(string_pool, backend.get());
-    // 通信接口描述符的 Union 引用数据接口号（bSlaveInterface0），装配时关联
+    // The Union of  communication interface descriptor refers to the data interface number (bSlaveInterface0), which is associated during assembly
     comm->set_data_handler(data.get());
     device->with_handler<SimpleVirtualDeviceHandler>(string_pool)->setup_interface_handlers();
 
@@ -127,7 +127,7 @@ int main(int argc, char **argv) {
     asio::ip::tcp::endpoint endpoint{asio::ip::tcp::v4(), port};
 
     if (auto ec = server.start(endpoint); ec) {
-        SPDLOG_ERROR("服务器启动失败：{}", ec.message());
+        SPDLOG_ERROR("Server startup failed: {}", ec.message());
         return 1;
     }
 
@@ -145,7 +145,7 @@ int main(int argc, char **argv) {
                 ip[0], ip[1], ip[2], ip[0], ip[1], ip[2], ip[3], ip[0], ip[1], ip[2], ip[3], tcp_port);
     SPDLOG_INFO("Running... (Ctrl+C / SIGTERM / Enter to stop)");
 
-    // 帧统计线程：每 5 秒打印一次收发统计
+    // frame statistics thread: print sending and receiving statistics every 5 seconds
     std::atomic<bool> running{true};
     std::thread stat_thread([&]() {
         auto last_tx = backend->tx_frames();

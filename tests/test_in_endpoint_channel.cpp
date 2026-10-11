@@ -15,10 +15,10 @@ using namespace usbipdcpp;
 
 namespace {
 
-// 测试通道：记录发出的应答，模拟消息模式缓冲（整条消费）。
-// push/push_blocking/push_locked 的实现与真实 MessageInChannel 逐行一致
-// （成员同名 pending/max_pending_，仅 try_send_one/reply_empty 里"用 session
-// 提交应答"改为记录到 sent）；debug_front 是测试专用观察窗口（真实无此 API）
+// Test channel: records sent responses, simulates message-mode buffering (consume entire message).
+// push/push_blocking/push_locked implementations match real MessageInChannel line for line
+// (members have identical names pending/max_pending_; only "submit response through session" in try_send_one/reply_empty
+// is replaced by recording to sent); debug_front is a test-only observation point (no such API in the real channel)
 class RecordingChannel : public InEndpointChannelBase<RecordingChannel> {
 public:
     struct Sent {
@@ -28,10 +28,10 @@ public:
     };
 
     std::vector<Sent> sent;
-    std::function<data_type(std::uint32_t)> pull; // 可选 pull，模拟派生类 override
+    std::function<data_type(std::uint32_t)> pull; // Optional pull, simulating a derived-class override
     int pull_calls = 0;
 
-    // 与真实 MessageInChannel 同 API：set_max_pending_messages / size（测试只走公开接口）
+    // Same API as real MessageInChannel: set_max_pending_messages / size (tests use only the public interface)
     void set_max_pending_messages(std::size_t max_pending) {
         std::lock_guard lock(this->channel_mutex);
         max_pending_ = max_pending;
@@ -42,25 +42,25 @@ public:
         return pending.size();
     }
 
-    /// 测试专用：查看缓冲最旧一条的内容（真实通道无此 API）
+    /// For testing only: inspect the oldest buffered message (no such API in the real channel)
     data_type debug_front() const {
         std::lock_guard lock(this->channel_mutex);
         return pending.empty() ? data_type{} : pending.front();
     }
 
-    // ===== 以下与真实 MessageInChannel 的实现逐行一致（仅成员名不需要改，
-    // 本来就是同名）=====
+    // ===== The following matches the real MessageInChannel implementation line for line (member names need no changes,
+    // as they are already identical) =====
 
     bool push(data_type data, bool drop_oldest = true) {
         std::lock(this->channel_mutex, this->requests_mutex);
         std::lock_guard lock1(this->channel_mutex, std::adopt_lock);
         std::lock_guard lock2(this->requests_mutex, std::adopt_lock);
-        // 断连后不再接收：返回 false 告诉调用者本次未发送成功（数据会在下次
-        // 连接被清空，白攒；对齐 write_nb 断连返回 0 的语义）
+        // Stop receiving after disconnection: return false to tell the caller this send failed (data would be cleared on the next
+        // connection, accumulating uselessly; matches write_nb returning 0 on disconnection)
         if (this->disconnected) {
             return false;
         }
-        // 满且调用者不丢旧：不入队，告诉调用者满了
+        // Full and caller does not drop old messages: do not enqueue; tell caller it is full
         if (!drop_oldest && max_pending_ != 0 && pending.size() >= max_pending_) {
             return false;
         }
@@ -86,9 +86,9 @@ public:
             return false;
         }
         if (max_pending_ != 0 && pending.size() >= max_pending_) {
-            return false; // 等待超时仍满
+            return false; // Still full after wait timeout
         }
-        // 空位就绪：补 requests 锁入队并推进挂起请求（与 push 同锁序）
+        // Space available: additionally lock requests, enqueue, and advance pending requests (same lock order as push)
         std::lock_guard lock2(this->requests_mutex);
         push_locked(std::move(data));
         this->try_send_pending_locked();
@@ -96,7 +96,7 @@ public:
     }
 
     void push_locked(data_type data) {
-        // 缓冲超限丢最旧（保持最新消息语义）
+        // Buffer over limit: drop oldest (keep-latest-message semantics)
         if (max_pending_ != 0 && pending.size() >= max_pending_) {
             pending.pop_front();
         }
@@ -112,18 +112,18 @@ public:
     }
 
     void try_send_one(std::uint8_t ep, std::uint32_t seqnum, std::uint32_t length, TransferHandle transfer) {
-        // 取最旧一条按长度截断；与真实一致的部分（真实此处 set_transfer_data +
-        // session 提交应答，桩改为记录 sent）
+        // Take the oldest message, truncated to length; part matching real implementation (real code here sets transfer data via set_transfer_data +
+        // submits the response through session; stub records sent instead)
         auto &front = pending.front();
         auto send_len = std::min(front.size(), static_cast<std::size_t>(length));
         sent.push_back({seqnum, static_cast<std::uint32_t>(send_len),
                         data_type(front.begin(), front.begin() + send_len)});
         pending.pop_front();
-        this->space_cv.notify_one(); // 腾出空位，唤醒阻塞的 push_blocking
+        this->space_cv.notify_one(); // Free a slot, waking blocked push_blocking
     }
 
     void reply_empty(std::uint32_t seqnum, TransferHandle /*transfer*/) {
-        // 挤出的挂起请求：真实此处 session 提交空应答（0 字节），桩改为记录
+        // Evicted pending request: real code here submits an empty response (0 bytes) through session; stub records it instead
         sent.push_back({seqnum, 0, {}});
     }
 
@@ -134,7 +134,7 @@ public:
 
     void send_pulled_locked(std::uint8_t ep, std::uint32_t seqnum, std::uint32_t length, TransferHandle transfer,
                             data_type pulled) {
-        // 与 MessageInChannel 一致：整条入缓冲后由本次请求消费
+        // Matches MessageInChannel: buffer the entire message, then consume it through this request
         push_locked(std::move(pulled));
         try_send_one(ep, seqnum, length, std::move(transfer));
     }
@@ -144,7 +144,7 @@ private:
     std::size_t max_pending_ = 0;
 };
 
-// 字节流分片变体通道：RingBuffer 缓冲，按请求长度分片消费（模拟 ByteStreamInChannel）
+// Byte-stream fragmentation variant: RingBuffer buffering, consumed in request-length fragments (simulates ByteStreamInChannel)
 class ShardChannel : public InEndpointChannelBase<ShardChannel> {
 public:
     struct Sent {
@@ -154,10 +154,10 @@ public:
 
     std::vector<Sent> sent;
     RingBuffer buffer{64 * 1024};
-    std::function<data_type(std::uint32_t)> pull; // 可选 pull，模拟 try_pull_data
+    std::function<data_type(std::uint32_t)> pull; // Optional pull, simulating try_pull_data
     int pull_calls = 0;
 
-    // 与真实 ByteStreamInChannel 同 API：size（缓冲中待发字节数）
+    // Same API as real ByteStreamInChannel: size (number of buffered bytes awaiting transmission)
     std::size_t size() const {
         std::lock_guard lock(this->channel_mutex);
         return buffer.size();
@@ -176,16 +176,16 @@ public:
     }
 
     void try_send_one(std::uint8_t ep, std::uint32_t seqnum, std::uint32_t length, TransferHandle transfer) {
-        // 按请求长度分片取出，剩余留在缓冲
+        // Extract a request-length fragment, leaving the remainder buffered
         std::size_t send_len = std::min(buffer.size(), static_cast<std::size_t>(length));
         data_type data(send_len);
         buffer.read(data.data(), send_len);
         sent.push_back({seqnum, static_cast<std::uint32_t>(send_len)});
-        space_cv.notify_one(); // 腾出空位，唤醒阻塞的写者
+        space_cv.notify_one(); // Free space, waking blocked writers
     }
 
     void reply_empty(std::uint32_t seqnum, TransferHandle /*transfer*/) {
-        // 挤出的挂起请求：记录空完成（0 字节），transfer 析构释放
+        // Evicted pending request: record empty completion (0 bytes); transfer destruction releases it
         sent.push_back({seqnum, 0});
     }
 
@@ -196,7 +196,7 @@ public:
 
     void send_pulled_locked(std::uint8_t ep, std::uint32_t seqnum, std::uint32_t length, TransferHandle transfer,
                             data_type pulled) {
-        // 与 ByteStreamInChannel 一致：本次请求优先发 min 部分，剩余入缓冲
+        // Matches ByteStreamInChannel: this request first sends the min portion, buffering the remainder
         std::size_t send_len = std::min(pulled.size(), static_cast<std::size_t>(length));
         sent.push_back({seqnum, static_cast<std::uint32_t>(send_len)});
         if (pulled.size() > send_len) {
@@ -213,10 +213,10 @@ public:
     }
 };
 
-// 构造一个传输句柄（op 为进程级单例：队列中残留请求的 handle 可能在测试结束、
-// channel 析构时才销毁，静态 op 保证它始终有效，不依赖局部变量生命周期）
+// Construct a transfer handle (op is a process-wide singleton: handles of requests left in the queue may be destroyed only at test end,
+// when channel is destroyed; static op guarantees validity independently of local-variable lifetime)
 struct TransferMaker {
-    static inline GenericTransferOperator op;  // 无状态，多线程并发 free 安全
+    static inline GenericTransferOperator op;  // Stateless; concurrent free from multiple threads is safe
     TransferHandle make() {
         return TransferHandle(new GenericTransfer{}, &op);
     }
@@ -229,11 +229,11 @@ TEST(TestInEndpointChannel, RequestPendsThenPushAnswers) {
     channel.on_new_connection();
     TransferMaker maker;
 
-    // 无数据：请求挂起
+    // No data: request pending
     channel.on_in_request(0x81, 10, 8, maker.make());
     EXPECT_TRUE(channel.sent.empty());
 
-    // 数据到达：匹配挂起请求并应答
+    // Data arrives: match pending request and respond
     channel.push({1, 2, 3, 4, 5});
     ASSERT_EQ(channel.sent.size(), 1u);
     EXPECT_EQ(channel.sent[0].seqnum, 10u);
@@ -260,12 +260,12 @@ TEST(TestInEndpointChannel, MessageTruncatedToRequestLength) {
     TransferMaker maker;
 
     channel.push({1, 2, 3, 4, 5});
-    channel.on_in_request(0x81, 30, 3, maker.make()); // 请求只要 3 字节
+    channel.on_in_request(0x81, 30, 3, maker.make()); // Request needs only 3 bytes
 
     ASSERT_EQ(channel.sent.size(), 1u);
     EXPECT_EQ(channel.sent[0].length, 3u);
     EXPECT_EQ(channel.sent[0].data, (data_type{1, 2, 3}));
-    EXPECT_EQ(channel.size(), 0u); // 整条消费，剩余丢弃（消息语义）
+    EXPECT_EQ(channel.size(), 0u); // Consume entire message, discarding remainder (message semantics)
 }
 
 TEST(TestInEndpointChannel, SameEndpointFifoOrder) {
@@ -273,7 +273,7 @@ TEST(TestInEndpointChannel, SameEndpointFifoOrder) {
     channel.on_new_connection();
     TransferMaker maker;
 
-    // 同端点两个请求先后挂起，数据逐条到达：先到的请求先应答
+    // Two requests on the same endpoint become pending in order; data arrives message by message: respond to the earlier request first
     channel.on_in_request(0x81, 1, 8, maker.make());
     channel.on_in_request(0x81, 2, 8, maker.make());
     channel.push({0x01});
@@ -289,11 +289,11 @@ TEST(TestInEndpointChannel, PendingRequestBlocksLaterBufferedRequest) {
     channel.on_new_connection();
     TransferMaker maker;
 
-    // 同端点已有挂起请求时，即使缓冲有数据新请求也必须排队（FIFO）
+    // When an endpoint already has pending requests, a new request must queue even if data is buffered (FIFO)
     channel.on_in_request(0x81, 1, 8, maker.make());
-    channel.push({0x01});       // 应答请求 1
-    channel.push({0x02});       // 无挂起请求了，入缓冲
-    channel.on_in_request(0x81, 2, 8, maker.make()); // 缓冲有数据 → 立即应答
+    channel.push({0x01});       // Respond to request 1
+    channel.push({0x02});       // No more pending requests; buffer it
+    channel.on_in_request(0x81, 2, 8, maker.make()); // Buffered data → respond immediately
 
     ASSERT_EQ(channel.sent.size(), 2u);
     EXPECT_EQ(channel.sent[0].seqnum, 1u);
@@ -307,7 +307,7 @@ TEST(TestInEndpointChannel, MaxPendingDropsOldest) {
     channel.set_max_pending_messages(2);
     TransferMaker maker;
 
-    // 无请求时推入 3 条：第 1 条被丢（保持最新消息语义）
+    // Push 3 messages without requests: message 1 dropped (keep-latest-message semantics)
     channel.push({0x01});
     channel.push({0x02});
     channel.push({0x03});
@@ -322,7 +322,7 @@ TEST(TestInEndpointChannel, PullProducesDataOnRequest) {
     channel.on_new_connection();
     TransferMaker maker;
 
-    // pull 模型：请求到达且无缓冲数据时，回调现场生成数据
+    // Pull model: when a request arrives without buffered data, the callback generates data on the spot
     channel.pull = [](std::uint32_t length) { return data_type{0x42}; };
     channel.on_in_request(0x81, 50, 8, maker.make());
 
@@ -338,7 +338,7 @@ TEST(TestInEndpointChannel, PullDataTruncatedToRequestLength) {
     channel.on_new_connection();
     TransferMaker maker;
 
-    // pull 生成的整包数据经缓冲流转：请求只取前 4 字节，整条消费
+    // An entire packet generated by pull passes through the buffer: request takes only the first 4 bytes, consuming the entire message
     channel.pull = [](std::uint32_t length) { return data_type{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}; };
     channel.on_in_request(0x81, 51, 4, maker.make());
 
@@ -353,19 +353,19 @@ TEST(TestInEndpointChannel, PullNotCalledWhenSameEndpointHasPending) {
     channel.on_new_connection();
     TransferMaker maker;
 
-    // pull 返回空（无数据可现场生成）
+    // pull returns empty (no data available to generate on the spot)
     channel.pull = [](std::uint32_t length) { return data_type{}; };
 
-    // 请求 A：pull 被调但无数据 → 请求挂起
+    // Request A: pull invoked but no data → request pending
     channel.on_in_request(0x81, 1, 8, maker.make());
     EXPECT_EQ(channel.pull_calls, 1);
-    // 同端点请求 B 到达：同端点已有挂起，不应再调 pull
+    // Same-endpoint request B arrives: already pending on that endpoint; should not invoke pull again
     channel.on_in_request(0x81, 2, 8, maker.make());
     EXPECT_EQ(channel.pull_calls, 1);
-    // 不同端点请求 C：可以调 pull
+    // Different-endpoint request C: may invoke pull
     channel.on_in_request(0x82, 3, 8, maker.make());
     EXPECT_EQ(channel.pull_calls, 2);
-    // A 仍是挂起状态（pull 空数据未消费请求）
+    // A remains pending (empty pull data did not consume the request)
     EXPECT_TRUE(channel.sent.empty());
 }
 
@@ -374,7 +374,7 @@ TEST(TestInEndpointChannel, ByteStreamPullPrefersCurrentRequest) {
     channel.on_new_connection();
     TransferMaker maker;
 
-    // pull 生成 10 字节，请求只要 4：本次请求发满 4，剩余 6 留在缓冲
+    // pull generates 10 bytes; request needs only 4: send all 4 for this request, leave 6 buffered
     channel.pull = [](std::uint32_t length) { return data_type{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}; };
     channel.on_in_request(0x81, 70, 4, maker.make());
 
@@ -383,7 +383,7 @@ TEST(TestInEndpointChannel, ByteStreamPullPrefersCurrentRequest) {
     EXPECT_EQ(channel.sent[0].length, 4u);
     EXPECT_EQ(channel.size(), 6u);
 
-    // 后续请求消费剩余部分
+    // Subsequent request consumes the remainder
     channel.on_in_request(0x81, 71, 8, maker.make());
     ASSERT_EQ(channel.sent.size(), 2u);
     EXPECT_EQ(channel.sent[1].length, 6u);
@@ -395,7 +395,7 @@ TEST(TestInEndpointChannel, ByteStreamPullAllSentWhenFits) {
     channel.on_new_connection();
     TransferMaker maker;
 
-    // pull 数据 ≤ 请求长度：全部发走，缓冲不残留
+    // pull data ≤ request length: send all, leaving nothing buffered
     channel.pull = [](std::uint32_t length) { return data_type{1, 2, 3}; };
     channel.on_in_request(0x81, 72, 8, maker.make());
 
@@ -405,25 +405,25 @@ TEST(TestInEndpointChannel, ByteStreamPullAllSentWhenFits) {
 }
 
 TEST(TestInEndpointChannel, ByteStreamChannelLifecycle) {
-    // 真实字节流通道：实例化 + 连接生命周期 + 写读，不触发 session 使用
-    // （完整挂起-应答路径由端到端测试覆盖）
+    // Real byte-stream channel: instantiation + connection lifecycle + write/read, without triggering session use
+    // (full pending-response path covered by end-to-end tests)
     ByteStreamInChannel channel;
 
     channel.set_capacity(1024);
     EXPECT_EQ(channel.capacity(), 1024u);
     EXPECT_EQ(channel.size(), 0u);
 
-    // 初始断连：write_nb 直接拒绝
+    // Initially disconnected: write_nb rejects directly
     const std::uint8_t data[] = {1, 2, 3};
     EXPECT_EQ(channel.write_nb(data, 3), 0u);
 
-    // 连接后可写，查询正确
+    // Writable after connection; queries correct
     channel.on_new_connection();
     EXPECT_EQ(channel.write_nb(data, 3), 3u);
     EXPECT_EQ(channel.size(), 3u);
     EXPECT_EQ(channel.available(), 1021u);
 
-    // 断连清空缓冲
+    // Disconnection clears buffer
     channel.on_disconnection();
     EXPECT_EQ(channel.size(), 0u);
 }
@@ -433,7 +433,7 @@ TEST(TestInEndpointChannel, EmptyMessagePushed) {
     channel.on_new_connection();
     TransferMaker maker;
 
-    // 空消息：应答 0 字节（与主机请求语义一致，请求被消费）
+    // Empty message: respond with 0 bytes (consistent with host-request semantics; request consumed)
     channel.push({});
     channel.on_in_request(0x81, 60, 8, maker.make());
 
@@ -448,7 +448,7 @@ TEST(TestInEndpointChannel, MultipleEndpointsIndependentFifo) {
     channel.on_new_connection();
     TransferMaker maker;
 
-    // 0x81 两个请求、0x82 一个请求：同端点各自 FIFO
+    // Two requests for 0x81, one for 0x82: independent FIFO on each endpoint
     channel.on_in_request(0x81, 1, 8, maker.make());
     channel.on_in_request(0x82, 2, 8, maker.make());
     channel.on_in_request(0x81, 3, 8, maker.make());
@@ -457,7 +457,7 @@ TEST(TestInEndpointChannel, MultipleEndpointsIndependentFifo) {
     channel.push({0x03});
 
     ASSERT_EQ(channel.sent.size(), 3u);
-    // 0x81 的两个请求必须按 1 → 3 顺序（可能被 0x82 的请求穿插，但互相不乱序）
+    // The two 0x81 requests must follow order 1 → 3 (0x82 request may interleave, but they do not reorder relative to each other)
     std::vector<std::uint32_t> order;
     for (auto &s: channel.sent) {
         if (s.seqnum == 1 || s.seqnum == 3) {
@@ -467,7 +467,7 @@ TEST(TestInEndpointChannel, MultipleEndpointsIndependentFifo) {
     ASSERT_EQ(order.size(), 2u);
     EXPECT_EQ(order[0], 1u);
     EXPECT_EQ(order[1], 3u);
-    // 0x82 的请求也被应答
+    // The 0x82 request also receives a response
     bool ep82_served = false;
     for (auto &s: channel.sent) {
         ep82_served |= (s.seqnum == 2);
@@ -480,7 +480,7 @@ TEST(TestInEndpointChannel, ManyPendingRequestsServedInOrder) {
     channel.on_new_connection();
     TransferMaker maker;
 
-    // 10 个请求全部挂起，再逐条 push：必须按入队顺序全部应答
+    // All 10 requests pending, then push messages individually: all must receive responses in enqueue order
     for (std::uint32_t i = 1; i <= 10; i++) {
         channel.on_in_request(0x81, i, 8, maker.make());
     }
@@ -500,7 +500,7 @@ TEST(TestInEndpointChannel, ByteStreamShardingAcrossRequests) {
     channel.on_new_connection();
     TransferMaker maker;
 
-    // 写入 100 字节，请求 64 → 答 64 剩 36；再请求 → 答 36（分片语义）
+    // Write 100 bytes, request 64 → respond 64, leave 36; request again → respond 36 (fragmentation semantics)
     data_type payload(100, 0xAB);
     channel.write(payload.data(), payload.size());
     channel.on_in_request(0x81, 1, 64, maker.make());
@@ -518,13 +518,13 @@ TEST(TestInEndpointChannel, LengthZeroRequestDoesNotConsumeStreamData) {
     channel.on_new_connection();
     TransferMaker maker;
 
-    // 字节流模式：length=0 的请求应答 0 字节，缓冲数据保留给后续请求
+    // Byte-stream mode: length=0 request receives 0 bytes, retaining buffered data for subsequent requests
     data_type payload(10, 0xAB);
     channel.write(payload.data(), payload.size());
     channel.on_in_request(0x81, 1, 0, maker.make());
     ASSERT_EQ(channel.sent.size(), 1u);
     EXPECT_EQ(channel.sent[0].length, 0u);
-    EXPECT_NE(channel.size(), 0u); // 缓冲数据未被消费
+    EXPECT_NE(channel.size(), 0u); // Buffered data not consumed
 
     channel.on_in_request(0x81, 2, 64, maker.make());
     ASSERT_EQ(channel.sent.size(), 2u);
@@ -537,12 +537,12 @@ TEST(TestInEndpointChannel, LengthZeroRequestConsumesOneMessage) {
     channel.on_new_connection();
     TransferMaker maker;
 
-    // 消息模式：length=0 的请求应答 0 字节，但仍消费一条消息（消息语义）
+    // Message mode: length=0 request receives 0 bytes but still consumes one message (message semantics)
     channel.push({1, 2, 3, 4, 5});
     channel.on_in_request(0x81, 1, 0, maker.make());
     ASSERT_EQ(channel.sent.size(), 1u);
     EXPECT_EQ(channel.sent[0].length, 0u);
-    EXPECT_EQ(channel.size(), 0u); // 消息被消费
+    EXPECT_EQ(channel.size(), 0u); // Message consumed
 
     channel.push({0x07});
     channel.on_in_request(0x81, 2, 8, maker.make());
@@ -555,7 +555,7 @@ TEST(TestInEndpointChannel, RequestsOutnumberMessages) {
     channel.on_new_connection();
     TransferMaker maker;
 
-    // 3 个请求挂起，只来 1 条消息：应答 1 个，其余继续挂起
+    // 3 requests pending, only 1 message arrives: respond to 1, leave the others pending
     channel.on_in_request(0x81, 1, 8, maker.make());
     channel.on_in_request(0x81, 2, 8, maker.make());
     channel.on_in_request(0x81, 3, 8, maker.make());
@@ -563,7 +563,7 @@ TEST(TestInEndpointChannel, RequestsOutnumberMessages) {
 
     ASSERT_EQ(channel.sent.size(), 1u);
     EXPECT_EQ(channel.sent[0].seqnum, 1u);
-    // 剩余请求可被后续数据应答
+    // Remaining requests can receive responses from subsequent data
     channel.push({0x02});
     channel.push({0x03});
     ASSERT_EQ(channel.sent.size(), 3u);
@@ -576,7 +576,7 @@ TEST(TestInEndpointChannel, PullNotCalledWhenBufferHasData) {
     channel.on_new_connection();
     TransferMaker maker;
 
-    // 缓冲有数据时请求直接应答，不调 pull（pull 只在缓冲空时兜底）
+    // Buffered data produces a direct response without invoking pull (pull is a fallback only when the buffer is empty)
     channel.pull = [](std::uint32_t length) { return data_type{0x42}; };
     channel.push({0x01});
     channel.on_in_request(0x81, 1, 8, maker.make());
@@ -593,7 +593,7 @@ TEST(TestInEndpointChannel, DoubleDisconnectionIdempotent) {
 
     channel.on_in_request(0x81, 1, 8, maker.make());
     channel.on_disconnection();
-    channel.on_disconnection(); // 重复断连幂等，不崩溃不清错东西
+    channel.on_disconnection(); // Repeated disconnection is idempotent; no crash or incorrect clearing
 
     EXPECT_FALSE(channel.cancel_pending(1));
     EXPECT_EQ(channel.size(), 0u);
@@ -609,7 +609,7 @@ TEST(TestInEndpointChannel, ByteStreamHangingRequestServedByWrite) {
     channel.on_new_connection();
     TransferMaker maker;
 
-    // 请求先挂起，数据后到：write 匹配挂起请求
+    // Request pending first, data arrives later: write matches the pending request
     channel.on_in_request(0x81, 1, 64, maker.make());
     data_type payload(10, 0xCD);
     channel.write(payload.data(), payload.size());
@@ -628,10 +628,10 @@ TEST(TestInEndpointChannel, CancelPendingRequest) {
     channel.on_in_request(0x82, 61, 8, maker.make());
 
     EXPECT_TRUE(channel.cancel_pending(60));
-    EXPECT_FALSE(channel.cancel_pending(60)); // 已取消
+    EXPECT_FALSE(channel.cancel_pending(60)); // Already canceled
     EXPECT_FALSE(channel.cancel_pending(999));
 
-    // 剩一个请求仍可被应答
+    // One remaining request can still receive a response
     channel.push({0x01});
     ASSERT_EQ(channel.sent.size(), 1u);
     EXPECT_EQ(channel.sent[0].seqnum, 61u);
@@ -647,14 +647,14 @@ TEST(TestInEndpointChannel, DisconnectionClearsEverything) {
     ASSERT_EQ(channel.sent.size(), 1u);
 
     channel.on_disconnection();
-    // 队列与缓冲清空
+    // Queue and buffer cleared
     EXPECT_FALSE(channel.cancel_pending(70));
     EXPECT_EQ(channel.size(), 0u);
-    // 断连后 push 不再匹配（无挂起请求，数据入缓冲但不发送）
+    // After disconnection, push no longer matches requests (none pending; data buffered but not sent)
     channel.push({0x02});
     EXPECT_EQ(channel.sent.size(), 1u);
 
-    // 重新连接：缓冲清空，恢复可用（请求挂起后可正常应答）
+    // Reconnect: buffer cleared, operation restored (pending requests can receive responses normally)
     channel.on_new_connection();
     EXPECT_EQ(channel.size(), 0u);
     channel.on_in_request(0x81, 71, 8, maker.make());
@@ -664,24 +664,24 @@ TEST(TestInEndpointChannel, DisconnectionClearsEverything) {
     EXPECT_EQ(channel.sent[1].data, (data_type{0x03}));
 }
 
-// ===== 并发场景：请求侧（receiver 线程）与数据侧（业务线程）竞争 =====
+// ===== Concurrency: request side (receiver thread) competes with data side (application thread) =====
 
 TEST(TestInEndpointChannel, ConcurrentPushAndRequestsNoLostRequests) {
     constexpr int kRequests = 500;
 
-    // maker 必须先于 channel 声明（后析构）：队列里可能残留挂起的 transfer，
-    // channel 析构时还要用它释放；op 无状态且 delete 线程安全，可跨线程共享
+    // maker must be declared before channel (destroyed later): pending transfers may remain queued,
+    // and channel destruction still needs it to release them; op is stateless and delete is thread-safe, so it may be shared across threads
     TransferMaker maker;
     RecordingChannel channel;
     channel.on_new_connection();
 
-    // 请求线程：连续发 IN 请求（模拟 session receiver 线程）
+    // Request thread: send IN requests continuously (simulate session receiver thread)
     std::thread requester([&]() {
         for (int i = 0; i < kRequests; i++) {
             channel.on_in_request(0x81, static_cast<std::uint32_t>(i), 8, maker.make());
         }
     });
-    // 数据线程：连续推入消息（模拟业务线程）
+    // Data thread: push messages continuously (simulate application thread)
     std::thread pusher([&]() {
         for (int i = 0; i < kRequests; i++) {
             channel.push(data_type{static_cast<std::uint8_t>(i)});
@@ -690,8 +690,8 @@ TEST(TestInEndpointChannel, ConcurrentPushAndRequestsNoLostRequests) {
     requester.join();
     pusher.join();
 
-    // 线程退出先后不定：请求线程可能晚于数据线程结束，最后一批请求可能挂起
-    // 等数据。为挂起的请求补数据，验证「数据持续供给时请求不丢、不重复」
+    // Thread exit order is unspecified: request thread may end after data thread; the final batch of requests may stay pending
+    // awaiting data. Supply data for pending requests, verifying "with continuous data supply, requests are neither lost nor duplicated"
     std::vector<int> counts(kRequests, 0);
     for (auto &s: channel.sent) {
         ASSERT_LT(s.seqnum, kRequests);
@@ -704,7 +704,7 @@ TEST(TestInEndpointChannel, ConcurrentPushAndRequestsNoLostRequests) {
         }
     }
 
-    // 每个请求恰好应答一次（组件不得丢请求、不得重复应答）
+    // Exactly one response per request (component must neither lose requests nor respond twice)
     ASSERT_EQ(channel.sent.size(), kRequests);
     for (int i = 0; i < kRequests; i++) {
         EXPECT_EQ(counts[i], 1) << "seqnum " << i;
@@ -715,7 +715,7 @@ TEST(TestInEndpointChannel, ConcurrentByteStreamWriteAndRequests) {
     constexpr int kRequests = 200;
     constexpr std::size_t kBytesPerWrite = 10;
 
-    // maker 必须先于 channel 声明（后析构），理由同 ConcurrentPushAndRequestsNoLostRequests
+    // maker must be declared before channel (destroyed later), for the same reason as ConcurrentPushAndRequestsNoLostRequests
     TransferMaker maker;
     ShardChannel channel;
     channel.on_new_connection();
@@ -734,8 +734,8 @@ TEST(TestInEndpointChannel, ConcurrentByteStreamWriteAndRequests) {
     requester.join();
     writer.join();
 
-    // 线程退出先后不定：尾部请求可能挂起等数据。补写数据后验证：
-    // 请求不丢、字节流总量守恒（写入 2000 字节全部被消费，缓冲清空）
+    // Thread exit order is unspecified: final requests may await data. Write supplementary data and verify:
+    // no lost requests and conservation of total byte-stream volume (all 2000 written bytes consumed, buffer cleared)
     std::vector<int> counts(kRequests, 0);
     std::size_t total_sent = 0;
     for (auto &s: channel.sent) {
@@ -743,7 +743,7 @@ TEST(TestInEndpointChannel, ConcurrentByteStreamWriteAndRequests) {
         counts[s.seqnum]++;
         total_sent += s.length;
     }
-    // 补充写入后每个请求恰好应答一次
+    // After supplementary writes, each request receives exactly one response
     std::size_t topped_up = 0;
     for (int i = 0; i < kRequests; i++) {
         if (counts[i] == 0) {
@@ -757,8 +757,8 @@ TEST(TestInEndpointChannel, ConcurrentByteStreamWriteAndRequests) {
     for (int i = 0; i < kRequests; i++) {
         EXPECT_EQ(counts[i], 1) << "seqnum " << i;
     }
-    // 数据守恒：sent 总字节 + 缓冲剩余 == 总写入（原始 + 补写）。
-    // 注意补写的数据可能部分滞留缓冲（补写时队列已空），不能断言缓冲清空
+    // Data conservation: total sent bytes + buffered remainder == total written (original + supplementary).
+    // Note that some supplementary data may remain buffered (queue already empty when written); cannot assert an empty buffer
     std::size_t total_sent_after = 0;
     for (auto &s: channel.sent) {
         total_sent_after += s.length;
@@ -786,12 +786,12 @@ TEST(TestInEndpointChannel, ConcurrentDisconnectAndPushNoCrash) {
     disconnecter.join();
     running = false;
     pusher.join();
-    // 不崩溃即可；断连后请求不会被应答（数据只进缓冲）
+    // No crash is sufficient; requests receive no response after disconnection (data only enters buffer)
     EXPECT_LE(channel.sent.size(), 1u);
 }
 
 TEST(TestInEndpointChannel, ConcurrentRequestsAndDisconnect) {
-    // maker 必须先于 channel 声明（后析构），理由同 ConcurrentPushAndRequestsNoLostRequests
+    // maker must be declared before channel (destroyed later), for the same reason as ConcurrentPushAndRequestsNoLostRequests
     TransferMaker maker;
     RecordingChannel channel;
     channel.on_new_connection();
@@ -812,20 +812,20 @@ TEST(TestInEndpointChannel, ConcurrentRequestsAndDisconnect) {
     disconnecter.join();
     running = false;
     requester.join();
-    // 不崩溃即可
+    // No crash is sufficient
 }
 
-// ===== 真实 ByteStreamInChannel 的阻塞写路径（write 两阶段：等空间 → 写 → 应答） =====
-// 这些测试不触发 try_send_one（不产生应答），因此不需要真实 Session：
-// "阻塞写被宿主 IN 请求取走唤醒" 依赖 session->submit_ret_submit，由端到端
-// （Pipe → ByteStreamInChannel）测试覆盖。
+// ===== Real ByteStreamInChannel blocking-write path (write in two phases: wait for space → write → respond) =====
+// These tests do not trigger try_send_one (produce no responses), so no real Session is needed:
+// "Blocking write awakened when host IN requests retrieve data" depends on session->submit_ret_submit and is covered by end-to-end
+// (Pipe → ByteStreamInChannel) tests.
 
 TEST(TestInEndpointChannel, RealByteStreamBlockingWriteSucceedsWhenSpaceAvailable) {
     ByteStreamInChannel channel;
     channel.set_capacity(16);
     channel.on_new_connection();
 
-    // 缓冲空：阻塞写直接填满不阻塞
+    // Buffer empty: blocking write fills it directly without blocking
     std::uint8_t payload[8] = {1, 2, 3, 4, 5, 6, 7, 8};
     auto n = channel.write(payload, 8);
     EXPECT_EQ(n, 8u);
@@ -839,16 +839,16 @@ TEST(TestInEndpointChannel, RealByteStreamBlockingWriteUnblockedByDisconnect) {
     channel.on_new_connection();
 
     std::uint8_t payload[32] = {};
-    // 先占 8 字节：write(32) 前 8 字节能进缓冲，剩余 24 阻塞等空间
+    // Occupy 8 bytes first: write(32) can buffer its first 8 bytes; remaining 24 block awaiting space
     EXPECT_EQ(channel.write_nb(payload, 8), 8u);
 
     std::uint32_t written = 0xFFFFFFFF;
     std::thread writer([&]() {
         written = channel.write(payload, 32);
     });
-    // 等写者进入等待（已写 8、剩 24 阻塞）
+    // Wait for writer to enter waiting state (8 written, remaining 24 blocked)
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    // 断连：space_cv 唤醒阻塞写者，返回已写入量（8），不再继续
+    // Disconnect: space_cv wakes blocked writer, returning amount already written (8), without continuing
     channel.on_disconnection();
     writer.join();
     EXPECT_EQ(written, 8u);
@@ -860,7 +860,7 @@ TEST(TestInEndpointChannel, RealByteStreamBlockingWriteTimesOut) {
     channel.on_new_connection();
 
     std::uint8_t payload[32] = {};
-    // 占满 16 字节，无宿主取走：阻塞超时返回 0
+    // Occupy all 16 bytes, no host retrieval: blocking timeout returns 0
     EXPECT_EQ(channel.write_nb(payload, 16), 16u);
     EXPECT_EQ(channel.available(), 0u);
 
@@ -868,9 +868,9 @@ TEST(TestInEndpointChannel, RealByteStreamBlockingWriteTimesOut) {
     auto n = channel.write(payload, 32, 30);
     auto waited = std::chrono::steady_clock::now() - t0;
     EXPECT_EQ(n, 0u);
-    // 确实阻塞了约 30ms（而非立即返回）
+    // Actually blocked for about 30ms (rather than returning immediately)
     EXPECT_GE(waited, std::chrono::milliseconds(20));
-    EXPECT_EQ(channel.size(), 16u);  // 已占数据未被写者改动
+    EXPECT_EQ(channel.size(), 16u);  // Writer did not modify existing data
 }
 
 TEST(TestInEndpointChannel, PendingLimitEvictsOldestWithEmptyReply) {
@@ -879,7 +879,7 @@ TEST(TestInEndpointChannel, PendingLimitEvictsOldestWithEmptyReply) {
     TransferMaker maker;
     channel.set_max_pending_requests(2);
 
-    // 3 个请求全部无数据挂起：第 3 个到达时第 1 个被挤出，应答空完成（0 字节）
+    // 3 requests pending without data: when request 3 arrives, evict request 1 and respond with empty completion (0 bytes)
     channel.on_in_request(0x81, 1, 8, maker.make());
     channel.on_in_request(0x81, 2, 8, maker.make());
     channel.on_in_request(0x81, 3, 8, maker.make());
@@ -888,7 +888,7 @@ TEST(TestInEndpointChannel, PendingLimitEvictsOldestWithEmptyReply) {
     EXPECT_EQ(channel.sent[0].seqnum, 1u);
     EXPECT_EQ(channel.sent[0].length, 0u);
 
-    // 数据到达：应答剩余的请求 2、3（FIFO 顺序）
+    // Data arrives: respond to remaining requests 2, 3 (FIFO order)
     channel.push({0xAA, 0xBB});
     channel.push({0xCC, 0xDD});
     ASSERT_EQ(channel.sent.size(), 3u);
@@ -903,12 +903,12 @@ TEST(TestInEndpointChannel, PushRejectsWhenFullIfNotDropping) {
     channel.on_new_connection();
     channel.set_max_pending_messages(1);
 
-    EXPECT_TRUE(channel.push({0x01}));          // 有空位，入队成功
-    // 满了且要求不丢旧：返回 false，缓冲不变
+    EXPECT_TRUE(channel.push({0x01}));          // Space available; enqueue succeeds
+    // Full and old messages must be retained: return false, buffer unchanged
     EXPECT_FALSE(channel.push({0x02}, false));
     ASSERT_EQ(channel.size(), 1u);
     EXPECT_EQ(channel.debug_front(), (data_type{0x01}));
-    // 丢最旧模式：入队成功，旧消息被挤出
+    // Drop-oldest mode: enqueue succeeds, old message evicted
     EXPECT_TRUE(channel.push({0x03}));
     ASSERT_EQ(channel.size(), 1u);
     EXPECT_EQ(channel.debug_front(), (data_type{0x03}));
@@ -919,14 +919,14 @@ TEST(TestInEndpointChannel, PushBlockingWaitsForSpace) {
     channel.on_new_connection();
     TransferMaker maker;
     channel.set_max_pending_messages(1);
-    channel.push({0x01}); // 占满唯一空位
+    channel.push({0x01}); // Occupy the only slot
 
     bool pushed = false;
     std::thread writer([&]() { pushed = channel.push_blocking({0x02}); });
 
-    // 等写者进入阻塞（缓冲仍满），主机请求取走消息腾出空位
+    // Wait for writer to block (buffer still full); host request retrieves message, freeing a slot
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    channel.on_in_request(0x81, 9, 8, maker.make()); // 缓冲有数据 → 立即应答取走
+    channel.on_in_request(0x81, 9, 8, maker.make()); // Buffered data → respond immediately, retrieving it
 
     writer.join();
     EXPECT_TRUE(pushed);
@@ -935,16 +935,16 @@ TEST(TestInEndpointChannel, PushBlockingWaitsForSpace) {
 }
 
 TEST(TestInEndpointChannel, PushBlockingInterruptedByDisconnection) {
-    // 缓冲满时阻塞推入，断连必须打断等待并返回 false（space_cv 唤醒 + disconnected 检查）
+    // Blocking push into a full buffer: disconnection must interrupt the wait and return false (space_cv wakeup + disconnected check)
     RecordingChannel channel;
     channel.on_new_connection();
     channel.set_max_pending_messages(1);
-    channel.push({0x01}); // 占满唯一空位
+    channel.push({0x01}); // Occupy the only slot
 
     bool pushed = true;
     std::thread writer([&]() { pushed = channel.push_blocking({0x02}); });
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(50)); // 确保已阻塞
+    std::this_thread::sleep_for(std::chrono::milliseconds(50)); // Ensure it is blocked
     channel.on_disconnection();
     writer.join();
     EXPECT_FALSE(pushed);
@@ -972,8 +972,8 @@ TEST(TestInEndpointChannel, ShardPendingLimitEvictsOldestWithEmptyReply) {
 }
 
 TEST(TestInEndpointChannel, ConcurrentPushAndRequestsMatchAll) {
-    // 多线程同时推数据 + 多线程同时发请求：每个请求最终都被应答，应答数据
-    // 与对应 push 的消息一致（双锁保证无丢失无错配，TSan 下验证无竞态）
+    // Multiple threads push data concurrently + multiple threads issue requests concurrently: every request eventually receives a response, whose data
+    // matches the corresponding pushed message (two locks prevent loss/mismatches; TSan verifies absence of races)
     RecordingChannel channel;
     channel.on_new_connection();
     TransferMaker maker;
@@ -982,7 +982,7 @@ TEST(TestInEndpointChannel, ConcurrentPushAndRequestsMatchAll) {
     constexpr int REQUESTERS = 4;
     constexpr int PER_THREAD = 20;
 
-    // 先挂 16 个请求（每个 64 字节）：设备侧 16 条消息逐条应答
+    // First leave 16 requests pending (64 bytes each): device-side 16 messages respond individually
     std::atomic<int> next_seq{1};
     std::vector<std::thread> requesters;
     for (int t = 0; t < REQUESTERS; t++) {
@@ -992,8 +992,8 @@ TEST(TestInEndpointChannel, ConcurrentPushAndRequestsMatchAll) {
             }
         });
     }
-    // 同时 16 条消息逐个推入（每条内容带序号标签）；t 必须按值捕获
-    //（[&] 引用捕获会与主线程循环递增竞态，TSan 实测命中；i 是 lambda 内局部）
+    // Concurrently push 16 messages individually (each tagged with a sequence number); t must be captured by value
+    //([&] reference capture races with the main thread's loop increment, observed under TSan; i is local to the lambda)
     std::vector<std::thread> pushers;
     for (int t = 0; t < PUSHERS; t++) {
         pushers.emplace_back([&, t]() {
@@ -1009,9 +1009,9 @@ TEST(TestInEndpointChannel, ConcurrentPushAndRequestsMatchAll) {
         th.join();
     }
 
-    // 80 条消息全部被应答（每请求一条；消息按请求长度截断，长度 ≤ 2 字节）
+    // All 80 messages received responses (one per request; messages truncated to request length, length ≤ 2 bytes)
     ASSERT_EQ(channel.sent.size(), REQUESTERS * PER_THREAD);
-    // 每条应答的 seqnum 覆盖 1..80（无丢失无重复）
+    // Each response seqnum covers 1..80 (no loss or duplication)
     std::vector<int> seqs;
     for (auto &s: channel.sent) {
         seqs.push_back(static_cast<int>(s.seqnum));
@@ -1020,12 +1020,12 @@ TEST(TestInEndpointChannel, ConcurrentPushAndRequestsMatchAll) {
     for (int i = 0; i < REQUESTERS * PER_THREAD; i++) {
         EXPECT_EQ(seqs[static_cast<std::size_t>(i)], i + 1);
     }
-    EXPECT_EQ(channel.size(), 0u); // 全部消费完，无残留
+    EXPECT_EQ(channel.size(), 0u); // All consumed, no leftovers
 }
 
 TEST(TestInEndpointChannel, ConcurrentPushBlockingWriters) {
-    // 上限 1：4 个写者并发阻塞推入，宿主逐个取走腾空位；全部入队成功且顺序
-    // 与应答顺序一致（TSan 下验证等待/唤醒无竞态）
+    // Limit 1: 4 writers concurrently push blocking; host retrieves individually to free slots; all enqueue successfully and their order
+    // matches response order (TSan verifies wait/wakeup without races)
     RecordingChannel channel;
     channel.on_new_connection();
     TransferMaker maker;
@@ -1041,7 +1041,7 @@ TEST(TestInEndpointChannel, ConcurrentPushBlockingWriters) {
             }
         });
     }
-    // 宿主逐个取走（4 条消息需 4 个请求）
+    // Host retrieves individually (4 messages require 4 requests)
     for (int i = 0; i < WRITERS; i++) {
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
         channel.on_in_request(0x81, static_cast<std::uint32_t>(i + 1), 8, maker.make());
@@ -1056,8 +1056,8 @@ TEST(TestInEndpointChannel, ConcurrentPushBlockingWriters) {
 }
 
 TEST(TestInEndpointChannel, ConcurrentPendingLimitKeepsQueueBounded) {
-    // 上限 2：多线程并发发请求，队列始终 ≤2，被挤出的请求全部以空完成（0 字节）
-    // 应答（TSan 下验证挤最旧与入队的并发安全）
+    // Limit 2: multiple threads issue requests concurrently; queue always ≤2; all evicted requests receive empty completion (0 bytes)
+    // responses (TSan verifies concurrency safety of dropping oldest and enqueueing)
     RecordingChannel channel;
     channel.on_new_connection();
     TransferMaker maker;
@@ -1078,12 +1078,12 @@ TEST(TestInEndpointChannel, ConcurrentPendingLimitKeepsQueueBounded) {
         th.join();
     }
 
-    // 100 个请求：98 个被挤出（答 0 长度），2 个仍在挂起
+    // 100 requests: 98 evicted (0-length responses), 2 remain pending
     ASSERT_EQ(channel.sent.size(), THREADS * PER_THREAD - 2);
     for (auto &s: channel.sent) {
         EXPECT_EQ(s.length, 0u);
     }
-    // 挂起队列恰为最后两个 seqnum
+    // Pending queue contains exactly the last two seqnums
     channel.push({0x01, 0x02});
     channel.push({0x03, 0x04});
     ASSERT_EQ(channel.sent.size(), THREADS * PER_THREAD);
@@ -1092,8 +1092,8 @@ TEST(TestInEndpointChannel, ConcurrentPendingLimitKeepsQueueBounded) {
 }
 
 TEST(TestInEndpointChannel, ConcurrentPushAndDisconnection) {
-    // push 与断连并发：push 要么在断连前入队成功（随后被断连清空），要么
-    // 断连检查返回 false——不残留、不崩（TSan 验证）
+    // push concurrent with disconnection: either push enqueues before disconnection (then cleared by disconnection), or
+    // the disconnection check returns false—no leftovers, no crash (verified by TSan)
     RecordingChannel channel;
     channel.on_new_connection();
 
@@ -1111,20 +1111,20 @@ TEST(TestInEndpointChannel, ConcurrentPushAndDisconnection) {
         }
         stop.store(true);
     });
-    // 等 pusher 开始入队后断连（与 push 并发竞争）
+    // Disconnect after pusher starts enqueueing (concurrent competition with push)
     while (!started.load() && !stop.load()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     channel.on_disconnection();
     pusher.join();
 
-    // 断连后无残留（断连前入队的被清空，断连后的 push 返回 false 不入队）
+    // No leftovers after disconnection (earlier enqueues cleared; later pushes return false without enqueueing)
     EXPECT_EQ(channel.size(), 0u);
 }
 
 TEST(TestInEndpointChannel, ConcurrentUnlinkAndRequests) {
-    // cancel_pending（主机 UNLINK）与 on_in_request 并发：被取消的请求从队列
-    // 移除（不再应答），未被取消的继续挂起等数据——不重复应答、不崩（TSan 验证）
+    // cancel_pending (host UNLINK) concurrent with on_in_request: canceled requests are removed from the queue
+    // (no further response); uncanceled requests remain pending awaiting data—no duplicate responses, no crash (verified by TSan)
     RecordingChannel channel;
     channel.on_new_connection();
     TransferMaker maker;
@@ -1146,11 +1146,11 @@ TEST(TestInEndpointChannel, ConcurrentUnlinkAndRequests) {
     stop.store(true);
     requester.join();
 
-    // 取消的请求数不超过已发出的请求数；数据到达后剩余请求被应答
+    // Canceled request count does not exceed issued count; remaining requests receive responses when data arrives
     EXPECT_LE(cancelled, next_seq.load() - 1);
     channel.push({0x01});
     EXPECT_FALSE(channel.sent.empty());
-    // 每个应答 seqnum 唯一（无重复应答）
+    // Every response seqnum is unique (no duplicate responses)
     std::vector<int> seqs;
     for (auto &s: channel.sent) {
         seqs.push_back(static_cast<int>(s.seqnum));
@@ -1160,8 +1160,8 @@ TEST(TestInEndpointChannel, ConcurrentUnlinkAndRequests) {
 }
 
 TEST(TestInEndpointChannel, ConcurrentRequestAndDisconnection) {
-    // 请求入队与断连并发：断连清队列时不丢/不崩，请求后到的不残留
-    // （requests_mutex 保护，TSan 下验证无竞态）
+    // Request enqueueing concurrent with disconnection: no loss/crash while disconnection clears queue; later requests leave no leftovers
+    // (protected by requests_mutex; TSan verifies absence of races)
     RecordingChannel channel;
     channel.on_new_connection();
     TransferMaker maker;
@@ -1180,7 +1180,7 @@ TEST(TestInEndpointChannel, ConcurrentRequestAndDisconnection) {
     stop.store(true);
     requester.join();
 
-    // 断连后队列与缓冲都被清空；再 push 返回 false（断连后不接收），无残留
+    // After disconnection, queue and buffer cleared; further push returns false (not receiving after disconnection), no leftovers
     EXPECT_FALSE(channel.push({0x01}));
     EXPECT_TRUE(channel.sent.empty());
     EXPECT_EQ(channel.size(), 0u);

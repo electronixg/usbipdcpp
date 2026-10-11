@@ -1,6 +1,6 @@
-// Microsoft OS 1.0 描述符测试：0xEE 签名串（"MSFT100"）与 Compatible ID 特征
-// 描述符。Windows 枚举设备时先用 0xEE 字符串探测 MS OS 支持，再以
-// bMS_VendorCode 请求 Compatible ID 加载内置驱动（如 RNDIS → rndismp）
+// Microsoft OS 1.0 descriptor tests: 0xEE signature string ("MSFT100") and Compatible ID feature
+// descriptor. During enumeration, Windows first probes MS OS support with the 0xEE string, then
+// requests Compatible ID using bMS_VendorCode to load a built-in driver (e.g. RNDIS → rndismp)
 
 #include <gtest/gtest.h>
 
@@ -24,7 +24,7 @@ using namespace usbipdcpp::test;
 
 namespace {
 
-// 把 protected 的协议处理方法提到 public，测试直接投递控制请求
+// Expose protected protocol handlers as public so tests can submit control requests directly
 class TestableMsOsHandler : public MSOSSimpleVirtualDeviceHandler {
 public:
     using MSOSSimpleVirtualDeviceHandler::MSOSSimpleVirtualDeviceHandler;
@@ -32,9 +32,9 @@ public:
     using MSOSSimpleVirtualDeviceHandler::handle_non_standard_request_type_control_urb;
 };
 
-// 带设备级 MS OS 支持的设备（对齐 examples/mock_rndis 的绑定方式）
+// Device with device-level MS OS support (matching binding in examples/mock_rndis)
 struct MsOsFixture {
-    // 传输分配器：必须声明在 stub 之前（成员逆序析构，op 后死）
+    // Transfer allocator: must be declared before stub (members destroyed in reverse order; op dies later)
     GenericTransferOperator op;
     StringPool pool;
     CaptureResponder stub;
@@ -52,12 +52,12 @@ struct MsOsFixture {
                                  static_cast<std::uint8_t>(ClassCode::CDC));
         dev = device->with_handler<TestableMsOsHandler>(pool).get();
         dev->setup_interface_handlers();
-        // 绑定响应器：接口 handler 没挂不碍事（on_new_connection 跳过无
-        // handler 的接口），失败场景不在本测试范围，错误留存在 ec 成员
+        // Bind responder: unattached interface handlers are harmless (on_new_connection skips interfaces without
+        // handlers); failures outside this test's scope; error retained in ec member
         dev->on_new_connection(stub, ec);
     }
 
-    // 找 seqnum 对应的 RET_SUBMIT（找不到返回 nullptr）
+    // Find RET_SUBMIT for seqnum (return nullptr if not found)
     const UsbIpResponse::UsbIpRetSubmit *find_submit(std::uint32_t seqnum) const {
         for (auto &s : stub.submits) {
             if (s.header.seqnum == seqnum) {
@@ -68,7 +68,7 @@ struct MsOsFixture {
     }
 };
 
-// 投递一个 IN 方向设备级控制请求（MS OS Compatible ID 请求的形状）
+// Submit an IN-direction device-level control request (shaped as an MS OS Compatible ID request)
 void deliver_ms_os_request(MsOsFixture &fx, std::uint32_t seqnum, const SetupPacket &setup) {
     auto submit = make_cmd_submit(fx.op, seqnum, 0x80, UsbIpDirection::In, setup.length, setup);
     fx.dev->handle_non_standard_request_type_control_urb(
@@ -77,7 +77,7 @@ void deliver_ms_os_request(MsOsFixture &fx, std::uint32_t seqnum, const SetupPac
     ASSERT_FALSE(fx.ec);
 }
 
-// 标准 MS OS Compatible ID 请求：Vendor|Device|IN(0xC0) + bRequest=0x01 +
+// Standard MS OS Compatible ID request: Vendor|Device|IN(0xC0) + bRequest=0x01 +
 // wValue=0x0000 + wIndex=0x0004 + wLength=40
 SetupPacket make_compat_id_request(std::uint8_t request = MS_OS_DEFAULT_VENDOR_CODE, std::uint16_t value = 0,
                                    std::uint16_t index = MS_OS_COMPAT_ID_WINDEX, std::uint16_t length = 40) {
@@ -86,19 +86,19 @@ SetupPacket make_compat_id_request(std::uint8_t request = MS_OS_DEFAULT_VENDOR_C
 
 } // namespace
 
-// ========== 0xEE 签名串（GET_DESCRIPTOR String） ==========
+// ========== 0xEE signature string (GET_DESCRIPTOR String) ==========
 
 TEST(TestMsOsHandler, SpecialStringNotConfiguredFallsThrough) {
-    // 未配置 Compatible ID = 不提供 MS OS 描述符：0xEE 走默认（nullopt）
+    // Compatible ID unconfigured = no MS OS descriptors: 0xEE uses default (nullopt)
     MsOsFixture fx;
     EXPECT_EQ(fx.dev->get_special_string_descriptor(MS_OS_STRING_INDEX), std::nullopt);
     EXPECT_EQ(fx.dev->get_special_string_descriptor(1), std::nullopt);
 }
 
 TEST(TestMsOsHandler, SpecialStringReturnsMsftSignature) {
-    // 配置后 0xEE 返回 18 字节签名串：bLength=18、type=0x03 STRING、
-    // "MSFT100" UTF-16LE、bMS_VendorCode、bPad=0（对齐内核 composite.c
-    // usb_os_string 的布局）
+    // Once configured, 0xEE returns an 18-byte signature string: bLength=18, type=0x03 STRING,
+    // "MSFT100" UTF-16LE, bMS_VendorCode, bPad=0 (matching kernel composite.c
+    // usb_os_string layout)
     MsOsFixture fx;
     fx.dev->set_ms_os_compatible_id("RNDIS");
 
@@ -113,12 +113,12 @@ TEST(TestMsOsHandler, SpecialStringReturnsMsftSignature) {
     EXPECT_TRUE(std::equal(expected_sig.begin(), expected_sig.end(), desc->begin() + 2));
     EXPECT_EQ((*desc)[16], MS_OS_DEFAULT_VENDOR_CODE);
     EXPECT_EQ((*desc)[17], 0u);
-    // 其他索引不受影响
+    // Other indices unaffected
     EXPECT_EQ(fx.dev->get_special_string_descriptor(1), std::nullopt);
 }
 
 TEST(TestMsOsHandler, SpecialStringUsesCustomVendorCode) {
-    // set_ms_os_vendor_code 后签名串里的 bMS_VendorCode 跟着变
+    // After set_ms_os_vendor_code, bMS_VendorCode in signature string changes accordingly
     MsOsFixture fx;
     fx.dev->set_ms_os_compatible_id("RNDIS");
     fx.dev->set_ms_os_vendor_code(0x21);
@@ -128,11 +128,11 @@ TEST(TestMsOsHandler, SpecialStringUsesCustomVendorCode) {
     EXPECT_EQ((*desc)[16], 0x21u);
 }
 
-// ========== Compatible ID 特征描述符（Vendor 请求） ==========
+// ========== Compatible ID feature descriptor (Vendor request) ==========
 
 TEST(TestMsOsHandler, CompatIdRequestReturnsDescriptor) {
-    // 完整请求 → 40 字节描述符（16 头 + 24 功能节），字段对齐内核
-    // composite.c fill_ext_compat 的布局
+    // Full request → 40-byte descriptor (16-byte header + 24-byte function section), fields match kernel
+    // composite.c fill_ext_compat layout
     MsOsFixture fx;
     fx.dev->set_ms_os_compatible_id("RNDIS");
 
@@ -144,14 +144,14 @@ TEST(TestMsOsHandler, CompatIdRequestReturnsDescriptor) {
 
     auto data = ret_submit_data(*ret);
     ASSERT_EQ(data.size(), 40u);
-    // 头：dwLength=40、bcdVersion=0x0100、wIndex=0x0004、bCount=1、Reserved[7]=0
+    // Header: dwLength=40, bcdVersion=0x0100, wIndex=0x0004, bCount=1, Reserved[7]=0
     EXPECT_EQ(read_le32_at(data, 0), 40u);
     EXPECT_EQ(read_le16_at(data, 4), 0x0100u);
     EXPECT_EQ(read_le16_at(data, 6), 0x0004u);
     EXPECT_EQ(data[8], 1u);
     EXPECT_TRUE(std::all_of(data.begin() + 9, data.begin() + 16, [](std::uint8_t b) { return b == 0; }));
-    // 功能节：bFirstInterface=0、Reserved1=0x01（对齐内核固定值）、
-    // CompatibleID="RNDIS"+3 个 0、SubCompatibleID 全 0、Reserved2 全 0
+    // Function section: bFirstInterface=0, Reserved1=0x01 (matching kernel fixed value),
+    // CompatibleID="RNDIS"+3 zeros, SubCompatibleID all zero, Reserved2 all zero
     EXPECT_EQ(data[16], 0u);
     EXPECT_EQ(data[17], 0x01u);
     const std::string compat(reinterpret_cast<const char *>(data.data() + 18), 8);
@@ -160,7 +160,7 @@ TEST(TestMsOsHandler, CompatIdRequestReturnsDescriptor) {
 }
 
 TEST(TestMsOsHandler, CompatIdNotConfiguredStalls) {
-    // 未配置 Compatible ID：整个 MS OS 支持关闭，请求走父类 EPIPE
+    // Compatible ID unconfigured: all MS OS support disabled; request uses parent-class EPIPE
     MsOsFixture fx;
     deliver_ms_os_request(fx, 1, make_compat_id_request());
     const auto *ret = fx.find_submit(1);
@@ -170,7 +170,7 @@ TEST(TestMsOsHandler, CompatIdNotConfiguredStalls) {
 }
 
 TEST(TestMsOsHandler, CompatIdWrongIndexStalls) {
-    // wIndex ≠ 0x0004（如 Extended Properties 的 0x0005）：非本类职责，EPIPE
+    // wIndex ≠ 0x0004 (e.g. Extended Properties 0x0005): outside this class's responsibility, EPIPE
     MsOsFixture fx;
     fx.dev->set_ms_os_compatible_id("RNDIS");
     deliver_ms_os_request(fx, 1, make_compat_id_request(MS_OS_DEFAULT_VENDOR_CODE, 0, 0x0005));
@@ -178,7 +178,7 @@ TEST(TestMsOsHandler, CompatIdWrongIndexStalls) {
 }
 
 TEST(TestMsOsHandler, CompatIdWrongValueStalls) {
-    // wValue 低字节非 0（1 = Extended Properties 请求）：不支持，EPIPE
+    // Nonzero low byte of wValue (1 = Extended Properties request): unsupported, EPIPE
     MsOsFixture fx;
     fx.dev->set_ms_os_compatible_id("RNDIS");
     deliver_ms_os_request(fx, 1, make_compat_id_request(MS_OS_DEFAULT_VENDOR_CODE, 1));
@@ -186,7 +186,7 @@ TEST(TestMsOsHandler, CompatIdWrongValueStalls) {
 }
 
 TEST(TestMsOsHandler, CompatIdOutDirectionStalls) {
-    // OUT 方向（0x40 而非 0xC0）：Compatible ID 只可能是 IN 请求，EPIPE
+    // OUT direction (0x40 rather than 0xC0): Compatible ID can only be an IN request, EPIPE
     MsOsFixture fx;
     fx.dev->set_ms_os_compatible_id("RNDIS");
     SetupPacket setup = make_compat_id_request();
@@ -196,7 +196,7 @@ TEST(TestMsOsHandler, CompatIdOutDirectionStalls) {
 }
 
 TEST(TestMsOsHandler, CompatIdWrongRequestStalls) {
-    // bRequest ≠ bMS_VendorCode（如 0x00 未定义请求）：EPIPE
+    // bRequest ≠ bMS_VendorCode (e.g. undefined request 0x00): EPIPE
     MsOsFixture fx;
     fx.dev->set_ms_os_compatible_id("RNDIS");
     deliver_ms_os_request(fx, 1, make_compat_id_request(0x00));
@@ -204,7 +204,7 @@ TEST(TestMsOsHandler, CompatIdWrongRequestStalls) {
 }
 
 TEST(TestMsOsHandler, CompatIdUsesCustomVendorCode) {
-    // 自定义 bMS_VendorCode：请求号匹配时正常响应，旧请求号 EPIPE
+    // Custom bMS_VendorCode: respond normally to matching request number; old number gets EPIPE
     MsOsFixture fx;
     fx.dev->set_ms_os_compatible_id("RNDIS");
     fx.dev->set_ms_os_vendor_code(0x21);
@@ -217,7 +217,7 @@ TEST(TestMsOsHandler, CompatIdUsesCustomVendorCode) {
 }
 
 TEST(TestMsOsHandler, CompatIdTruncatedByBufferLength) {
-    // 主机 wLength 小于 40（按缓冲截断，对齐 get_string_descriptor 的截断行为）
+    // Host wLength less than 40 (truncate to buffer, matching get_string_descriptor truncation behavior)
     MsOsFixture fx;
     fx.dev->set_ms_os_compatible_id("RNDIS");
     deliver_ms_os_request(fx, 1, make_compat_id_request(MS_OS_DEFAULT_VENDOR_CODE, 0, MS_OS_COMPAT_ID_WINDEX, 20));
@@ -229,8 +229,8 @@ TEST(TestMsOsHandler, CompatIdTruncatedByBufferLength) {
 }
 
 TEST(TestMsOsHandler, CompatIdIncludesSubCompatibleId) {
-    // SubCompatibleID：Windows 驱动匹配可能依赖它（rndismp 按
-    // MS_SUBCOMP_5162001 匹配，见 rndiscmp.inf），空值导致匹配失败
+    // SubCompatibleID: Windows driver matching may depend on it (rndismp matches
+    // MS_SUBCOMP_5162001; see rndiscmp.inf); empty value causes matching failure
     MsOsFixture fx;
     fx.dev->set_ms_os_compatible_id("RNDIS");
     fx.dev->set_ms_os_sub_compatible_id("5162001");
@@ -244,8 +244,8 @@ TEST(TestMsOsHandler, CompatIdIncludesSubCompatibleId) {
     EXPECT_EQ(sub, std::string("5162001\0", 8));
 }
 
-// 编译期断言：RndisMsOsDeviceHandler 的配置 setter 已被 using 隐藏为 private
-// （RNDIS 预设是功能定义的一部分，不允许外部改动）
+// Compile-time assertion: RndisMsOsDeviceHandler configuration setters hidden as private via using
+// (RNDIS preset is part of the functional definition; external changes not allowed)
 template <typename T, typename = void>
 struct CanCallSetCompatibleId : std::false_type {};
 template <typename T>
@@ -253,9 +253,9 @@ struct CanCallSetCompatibleId<T, std::void_t<decltype(std::declval<T &>().set_ms
         : std::true_type {};
 
 TEST(TestMsOsHandler, RndisDeviceHandlerPresets) {
-    // RndisMsOsDeviceHandler（final）预设 RNDIS + 5162001（功能定义的一部分），
-    // RNDIS 设备装配一行搞定；完整 Compatible ID 响应字节由
-    // CompatIdIncludesSubCompatibleId（基类手配同值）覆盖
+    // RndisMsOsDeviceHandler (final) presets RNDIS + 5162001 (part of the functional definition),
+    // assembling an RNDIS device in one line; complete Compatible ID response bytes covered by
+    // CompatIdIncludesSubCompatibleId (base class manually configured with same values)
     MsOsFixture fx;
     RndisMsOsDeviceHandler rndis{*fx.device, fx.pool};
     EXPECT_EQ(rndis.get_ms_os_compatible_id(), "RNDIS");

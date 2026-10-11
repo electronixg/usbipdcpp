@@ -16,24 +16,24 @@ struct USBIPDCPP_API UsbInterface {
     std::uint8_t interface_subclass;
     std::uint8_t interface_protocol;
 
-    /// USB 规范接口号（bInterfaceNumber），SET_INTERFACE 的 wIndex 用它匹配。
-    /// 默认 0 与数组下标一致（虚拟设备接口从 0 连续编号）；
-    /// libusb 后端绑定真实设备时按配置描述符填充（跳号设备下标≠接口号）
+    /// USB specification interface number (bInterfaceNumber), the wIndex of SET_INTERFACE is matched with it.
+    /// Default 0 is consistent with the array index (virtual device interfaces are numbered consecutively from 0);
+    /// The libusb backend fills this from the configuration descriptor when binding a physical device (for devices with numbering gaps, index ≠ interface number)
     std::uint8_t interface_number = 0;
 
-    /// 本接口所属功能（接口组）的 IAD，功能的首个接口设置它：配置描述符
-    /// 生成时内插在所属接口描述符之前，bFirstInterface 按本接口的
-    /// interface_number 回填。非序列化字段（devlist 协议只发 4 字节
-    /// 类/子类/协议），不进 to_bytes/from_socket
+    /// IAD for the function (interface group) to which this interface belongs, set on the function's first interface: during configuration descriptor
+    /// generation, insert it before the corresponding interface descriptor and fill bFirstInterface from this interface's
+    /// interface_number. A nonserialized field (the devlist protocol sends only 4 bytes of
+    /// class/subclass/protocol information), excluded from to_bytes/from_socket
     std::optional<IadDesc> interface_association_descriptor;
 
     std::uint8_t current_altsetting = 0;
 
-    /// 所有 alternate setting 的端点列表，[altsetting] = 该 alt 的端点
+    /// The endpoint list of all alternate settings, [altsetting] = the endpoint of this alt
     std::vector<std::vector<UsbEndpoint>> endpoints;
 
     [[nodiscard]] const std::vector<UsbEndpoint> &current_endpoints() const {
-        // 无端点接口（如纯控制接口）返回空列表，防止 endpoints[0] 越界
+        // Interfaces without endpoints (such as pure control interfaces) return an empty list to prevent endpoints[0] from going out of bounds
         static const std::vector<UsbEndpoint> no_endpoints;
         return endpoints.empty()
                        ? no_endpoints
@@ -49,12 +49,12 @@ struct USBIPDCPP_API UsbInterface {
     std::shared_ptr<VirtualInterfaceHandler> handler;
 
     /**
-     * @brief 绑定接口处理器（handler 构造持本接口引用）
-     * @note 只允许对地址不会变动的 UsbInterface 调用：handler 保存对 *this 的
-     *       引用，接口对象一旦被拷贝/移动/容器扩容，引用即悬垂。正确用法是
-     *       设备创建完成后（接口已入 device->interfaces、地址稳定）调用
-     *       device->interfaces[i].with_handler<T>(...)；make_interface 等工厂
-     *       函数内部禁止调用（见 VirtualInterfaceHandler 类文档）
+     * @brief Bind an interface handler (the handler constructor retains a reference to this interface)
+     * @note Only calls to UsbInterface whose address will not change are allowed: handler saves the reference to *this
+     *       reference, once the interface object is copied/moved/container expanded, the reference will be dangling. The correct usage is
+     *       is called after the device is created (the interface has been entered into device->interfaces and the address is stable)
+     *       device->interfaces[i].with_handler<T>(...); make_interface and other factories
+     *       function internal calls are prohibited (see VirtualInterfaceHandler class documentation)
      */
     template<typename T, typename... Args>
     std::shared_ptr<T> with_handler(Args &&...args) {

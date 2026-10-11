@@ -15,7 +15,7 @@
 
 namespace usbipdcpp {
 
-/// PROBE/COMMIT 协商结构体（UVC 1.5, 48 字节）
+/// PROBE/COMMIT negotiation struct (UVC 1.5, 48 bytes)
 struct UvcStreamingControl {
     std::uint16_t bmHint = 0;
     std::uint8_t bFormatIndex = 1;
@@ -49,7 +49,7 @@ struct UvcStreamingControl {
 
 class UvcVideoStreamingHandler;
 
-/// VideoControl 接口处理器 — 处理 PU 属性查询/设置 + 与 VS 接口协同
+/// VideoControl interface handler: PU property queries/settings + coordination with the VS interface
 class USBIPDCPP_API UvcVideoControlHandler : public VirtualInterfaceHandler {
 public:
     explicit UvcVideoControlHandler(UsbInterface &handle_interface, StringPool &string_pool);
@@ -84,15 +84,15 @@ private:
     UvcVideoStreamingHandler *vs_handler_ = nullptr;
 
     /**
-     * @brief 状态通知通道（消息模式，中断 IN 端点）
+     * @brief Status notification channel (message mode, interrupt IN endpoint)
      *
-     * 封装「挂起-应答」：主机中断 IN 请求先挂起，send_vc_status() 推入
-     * 状态事件时匹配应答（UVC 1.5 状态通知，6 字节）
+     * Encapsulates "suspend-response": suspend host interrupt IN requests first, then match responses when send_vc_status() pushes
+     * status events (UVC 1.5 status notification, 6 bytes)
      */
     MessageInChannel status_channel;
 };
 
-/// VideoStreaming 接口处理器 — PROBE/COMMIT + ISO 流推送
+/// VideoStreaming interface handler: PROBE/COMMIT + ISO stream push
 class USBIPDCPP_API UvcVideoStreamingHandler : public VirtualInterfaceHandler {
 public:
     UvcVideoStreamingHandler(UsbInterface &handle_interface, StringPool &string_pool,
@@ -123,7 +123,7 @@ public:
         vc_handler_ = handler;
     }
 
-    /// VC handler 通知停止流（Video Power Mode off 等场景）
+    /// VC handler requests stream stop (Video Power Mode off, etc.)
     void notify_stop_streaming() {
         streaming_ = false;
     }
@@ -139,34 +139,34 @@ private:
     bool committed_ = false;
     bool streaming_ = false;
 
-    // 帧缓冲
+    // Frame buffer
     std::vector<std::uint8_t> frame_buffer_;
     std::size_t frame_offset_ = 0;
     bool current_fid_ = false;
 
-    // 帧时钟：本帧开始时刻 + 协商帧间隔。对齐真实摄像头语义——帧率由帧时钟
-    // 决定，不随主机消费速度漂移：
-    // - 带宽不足（一帧传不完一个帧间隔）：丢帧切最新帧，画面实时只是帧率低
-    // - 带宽富余（帧传完还没到帧间隔）：空包等下一帧，避免快放
-    // 首帧前为 epoch（now 恒 ≥ 它 + 间隔），保证开流第一帧立即开始
+    // Frame clock: current frame start time + negotiated frame interval. Matches physical camera semantics: the frame clock determines
+    // frame rate, which does not drift with the host's consumption speed:
+    // - Insufficient bandwidth (cannot transfer a frame within one frame interval): drop frames and switch to the latest frame; the image stays current, but frame rate is lower
+    // - Excess bandwidth (frame transferred before the frame interval ends): send empty packets to await the next frame, avoiding accelerated playback
+    // Before the first frame, use epoch (now is always ≥ it + interval), ensuring the first frame starts immediately when streaming begins
     std::chrono::steady_clock::time_point frame_started_at_{};
     std::chrono::microseconds frame_interval_{};
 };
 
-/// UVC 设备辅助类 — 在 device 上装配 UVC 功能（VC + VS 接口 handler、互相关联、IAD）
+/// UVC device helper: assemble UVC functionality on device (VC + VS interface handlers, mutual associations, IAD)
 class USBIPDCPP_API UvcDeviceHelper {
 public:
     /**
-     * @brief 在 device 上装配 UVC 功能（VC + VS 两个相邻接口）
-     * @param device 目标设备（接口必须已在 device->interfaces 中，地址稳定）
-     * @param vc_interface_number UVC 功能首个接口（VC）的 interface_number；
-     *        VS 按 interface_number = vc_interface_number + 1 在
-     *        device->interfaces 中查找（IAD 要求功能接口编号连续，与数组
-     *        下标无关——复合设备里 UVC 接口可能不在 interfaces 开头）。
-     *        设备里其他接口的 handler 不受影响（只绑定 VC/VS 两个接口）
-     * @param string_pool 字符串池
-     * @param source 视频源
-     * @return 出错时的错误码（如 VC/VS 接口缺失），成功返回默认构造（无错误）
+     * @brief Assemble UVC functionality on device (two adjacent VC + VS interfaces)
+     * @param device Target device (interfaces must already be in device->interfaces, with stable addresses)
+     * @param vc_interface_number interface_number of the UVC function's first interface (VC);
+     *        find VS by interface_number = vc_interface_number + 1 in
+     *        device->interfaces (IAD requires consecutive function interface numbers, independent of array
+     *        indices: in composite devices UVC interfaces may not be at the beginning of interfaces).
+     *        Other interface handlers on the device are unaffected (only bind the two VC/VS interfaces)
+     * @param string_pool String pool
+     * @param source Video source
+     * @return Error code on failure (such as missing VC/VS interfaces), default-constructed on success (no error)
      */
     static std::error_code setup(std::shared_ptr<UsbDevice> device, std::uint8_t vc_interface_number,
                                  StringPool &string_pool, std::unique_ptr<VideoSource> source);

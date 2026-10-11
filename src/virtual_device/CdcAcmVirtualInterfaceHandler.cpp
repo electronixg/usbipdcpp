@@ -11,9 +11,9 @@ namespace usbipdcpp {
 CdcAcmCommunicationInterfaceHandler::CdcAcmCommunicationInterfaceHandler(UsbInterface &handle_interface,
                                                                          StringPool &string_pool) :
     VirtualInterfaceHandler(handle_interface, string_pool) {
-    // 通知通道待发缓存上限 30 条：串口状态通知低频（状态变化才发一条），
-    // 正常使用缓存几乎不会超过个位数；30 条是防主机长期不读时内存堆积的
-    // 兜底，同时保留足够余量不丢低频通知（超限丢最旧）
+    // The notification channel's pending buffer is capped at 30 entries: serial-state notifications are infrequent (one per state change),
+    // and normal use rarely buffers more than a single-digit number. The 30-entry cap guards against memory accumulation when the host does not read for a long time,
+    // while leaving enough headroom not to lose infrequent notifications (drop the oldest when exceeding the limit)
     notification_channel.set_max_pending_messages(30);
 }
 
@@ -27,7 +27,7 @@ void CdcAcmCommunicationInterfaceHandler::handle_non_standard_request_type_contr
         auto request = static_cast<CdcAcmRequest>(setup_packet.request);
 
         if (!setup_packet.is_out()) {
-            // IN 请求
+            // IN request
             auto *trx = GenericTransfer::from_handle(transfer.get());
             switch (request) {
                 case CdcAcmRequest::GetLineCoding: {
@@ -49,7 +49,7 @@ void CdcAcmCommunicationInterfaceHandler::handle_non_standard_request_type_contr
                     seqnum, status, static_cast<std::uint32_t>(trx->actual_length), std::move(transfer)));
         }
         else {
-            // OUT 请求
+            // OUT request
             auto *trx = GenericTransfer::from_handle(transfer.get());
             auto &out_data = trx->data;
             switch (request) {
@@ -67,7 +67,7 @@ void CdcAcmCommunicationInterfaceHandler::handle_non_standard_request_type_contr
                     on_set_control_line_state(state);
                     control_signal_state_ = state;
                     SPDLOG_DEBUG("SET_CONTROL_LINE_STATE: DTR={}, RTS={}", state.dtr, state.rts);
-                    // 通知数据接口 RTS 状态变化
+                    // Notify the data interface of an RTS state change
                     if (data_handler_) {
                         data_handler_->on_rts_changed(state.rts);
                     }
@@ -84,13 +84,13 @@ void CdcAcmCommunicationInterfaceHandler::handle_non_standard_request_type_contr
                     status = static_cast<std::uint32_t>(UrbStatusType::StatusEPIPE);
                 }
             }
-            // transfer 析构时自动释放
+            // transfer is released automatically on destruction
             responder->submit_ret_submit(
                     UsbIpResponse::UsbIpRetSubmit::create_ret_submit_with_status_and_no_data(seqnum, status, 0));
         }
     }
     else {
-        // 非 CDC 类请求，交给子类处理
+        // Non-CDC class request; delegate to the subclass
         handle_non_cdc_request_type_control_urb(seqnum, ep, transfer_flags, transfer_buffer_length, setup_packet,
                                                 std::move(transfer), ec);
     }
@@ -101,29 +101,29 @@ void CdcAcmCommunicationInterfaceHandler::handle_interrupt_transfer(std::uint32_
                                                                     std::uint32_t transfer_buffer_length,
                                                                     TransferHandle transfer, std::error_code &ec) {
     if (ep.is_in()) {
-        // 通道内部处理：缓冲有通知立即应答，否则挂起请求等待
-        // send_serial_state_notification() 推入
+        // Handled within the channel: reply immediately if a notification is buffered; otherwise suspend the request until
+        // send_serial_state_notification() pushes one
         notification_channel.on_in_request(ep.address, seqnum, transfer_buffer_length, std::move(transfer));
     }
     else {
-        // 中断 OUT：CDC ACM 通常不使用
-        // transfer 析构时自动释放
+        // Interrupt OUT: normally unused by CDC ACM
+        // transfer is released automatically on destruction
         SPDLOG_WARN("CDC ACM communication interface received unexpected interrupt OUT");
         responder->submit_ret_submit(UsbIpResponse::UsbIpRetSubmit::create_ret_submit_epipe_without_data(seqnum, 0));
     }
 }
 
 data_type CdcAcmCommunicationInterfaceHandler::get_class_specific_descriptor() {
-    // CDC ACM 类特定描述符
+    // CDC ACM class-specific descriptors
     data_type descriptor;
 
     // Header Functional Descriptor
     CdcHeaderFunctionalDesc{0x05, CS_INTERFACE, 0x00, 0x0110 /* bcdCDC: 1.10 */}.append_to(descriptor);
 
     // Call Management Functional Descriptor
-    // bDataInterface 是数据接口号：装配时由 set_data_handler 关联，从数据
-    // handler 的 get_interface() 取（复合设备里通信接口不从接口 0 起，硬编码
-    // 1 会让主机驱动找不到数据接口）。未关联时退回 1（单设备形态 COMM=0 → DATA=1）
+    // bDataInterface is the data interface number: associated by set_data_handler during assembly, obtained from the data
+    // handler's get_interface() (a composite device's communication interface does not start at interface 0; hardcoding
+    // 1 prevents the host driver from finding the data interface). Fall back to 1 when unassociated (single-device form COMM=0 -> DATA=1)
     CdcCallManagementDesc{0x05, CS_INTERFACE, 0x01,
                           0x00, // bmCapabilities
                           data_handler_ ? static_cast<std::uint8_t>(data_handler_->get_interface().interface_number) : std::uint8_t{1}}
@@ -136,7 +136,7 @@ data_type CdcAcmCommunicationInterfaceHandler::get_class_specific_descriptor() {
 
     // Union Functional Descriptor
     CdcUnionFunctionalDesc{0x05, CS_INTERFACE, 0x06,
-                           get_interface().interface_number, // bMasterInterface: 本接口
+                           get_interface().interface_number, // bMasterInterface: this interface
                            data_handler_ ? static_cast<std::uint8_t>(data_handler_->get_interface().interface_number) : std::uint8_t{1}}
             .append_to(descriptor);
 
@@ -144,23 +144,23 @@ data_type CdcAcmCommunicationInterfaceHandler::get_class_specific_descriptor() {
 }
 
 void CdcAcmCommunicationInterfaceHandler::on_set_line_coding(const LineCoding &coding) {
-    // 默认空实现，子类可重写
+    // Default empty implementation; subclasses may override
 }
 
 void CdcAcmCommunicationInterfaceHandler::on_set_control_line_state(const ControlSignalState &state) {
-    // 默认空实现，子类可重写
+    // Default empty implementation; subclasses may override
 }
 
 void CdcAcmCommunicationInterfaceHandler::on_send_break(std::uint16_t duration) {
-    // 默认空实现，子类可重写
+    // Default empty implementation; subclasses may override
 }
 
 void CdcAcmCommunicationInterfaceHandler::handle_non_cdc_request_type_control_urb(
         std::uint32_t seqnum, const UsbEndpoint &ep, std::uint32_t transfer_flags, std::uint32_t transfer_buffer_length,
         const SetupPacket &setup_packet, TransferHandle transfer, std::error_code &ec) {
-    // 默认返回错误，子类可重写以处理非 CDC 请求
+    // Return an error by default; subclasses may override to handle non-CDC requests
     SPDLOG_WARN("Unhandled request type 0x{:x} in CDC ACM communication interface", setup_packet.calc_request_type());
-    // transfer 析构时自动释放
+    // transfer is released automatically on destruction
     responder->submit_ret_submit(UsbIpResponse::UsbIpRetSubmit::create_ret_submit_epipe_without_data(seqnum, 0));
 }
 
@@ -168,27 +168,27 @@ void CdcAcmCommunicationInterfaceHandler::send_serial_state_notification(std::ui
     SerialStateNotification notification;
     notification.data = state_bits;
 
-    // 通道内部处理：有挂起请求直接应答，否则入缓冲（上限 1 条：只保留最新）
+    // Handled within the channel: reply directly to a pending request; otherwise buffer (limit 1: keep only the newest)
     notification_channel.push(notification.to_bytes());
 }
 
 void CdcAcmCommunicationInterfaceHandler::on_new_connection(TransferResponder &current_session, std::error_code &ec) {
-    // 父类先设 session 指针（通道应答请求要用），再绑定通道并重置断连状态
+    // The parent sets the session pointer first (needed for channel responses), then bind the channel and reset disconnection state
     VirtualInterfaceHandler::on_new_connection(current_session, ec);
     notification_channel.on_new_connection(&current_session);
 }
 
 void CdcAcmCommunicationInterfaceHandler::on_disconnection(std::error_code &ec) {
-    // 先清通道（缓冲 + 挂起请求，TransferHandle 析构自动释放），再调父类清 session
+    // Clear the channel first (buffer + pending requests; TransferHandle destruction releases automatically), then let the parent clear session
     notification_channel.on_disconnection();
     VirtualInterfaceHandler::on_disconnection(ec);
 }
 
 void CdcAcmCommunicationInterfaceHandler::handle_unlink_seqnum(std::uint32_t unlink_seqnum, std::uint32_t cmd_seqnum) {
     bool cancelled = notification_channel.cancel_pending(unlink_seqnum);
-    // 从队列中真的取消了待处理 URB → 回 -ECONNRESET（URB 被取消，且不再发
-    // RET_SUBMIT，请求已从队列移除）；找不到（URB 已完成/不存在）→ 回 0。
-    // 与内核 stub_tx.c 及本项目 LibusbDeviceHandler 的 unlink 范本一致
+    // If a pending URB was actually cancelled from the queue, return -ECONNRESET (URB cancelled, with no further
+    // RET_SUBMIT because the request was removed); if not found (URB completed/nonexistent), return 0.
+    // Matches the unlink pattern in kernel stub_tx.c and this project's LibusbDeviceHandler
     responder->submit_ret_unlink(UsbIpResponse::UsbIpRetUnlink::create_ret_unlink(
             cmd_seqnum, cancelled ? static_cast<std::uint32_t>(UrbStatusType::StatusECONNRESET) : 0));
 }
@@ -197,38 +197,38 @@ void CdcAcmCommunicationInterfaceHandler::handle_unlink_seqnum(std::uint32_t unl
 
 CdcAcmDataInterfaceHandler::CdcAcmDataInterfaceHandler(UsbInterface &handle_interface, StringPool &string_pool) :
     VirtualInterfaceHandler(handle_interface, string_pool) {
-    // pull 回调：主机请求数据且缓冲/队列都空时调用子类的 on_data_requested
-    // 现场生成数据。通道在锁内调用（与原来 handle_bulk_transfer 的双锁内
-    // 调用语义一致），故回调里不能调用 send_data 等函数（会死锁）
+    // pull callback: when the host requests data and both buffer/queue are empty, call the subclass's on_data_requested
+    // to generate data on demand. The channel calls it under its lock (matching the previous semantics of calling under both locks
+    // in handle_bulk_transfer), so the callback must not call send_data or similar functions (would deadlock)
     in_channel.set_pull_callback([this](std::uint32_t length) {
         return on_data_requested(static_cast<std::uint16_t>(length));
     });
 }
 
 void CdcAcmDataInterfaceHandler::on_new_connection(TransferResponder &current_session, std::error_code &ec) {
-    // 父类先设 session 指针（通道应答请求要用），再绑定通道并重置断连状态
+    // The parent sets the session pointer first (needed for channel responses), then bind the channel and reset disconnection state
     VirtualInterfaceHandler::on_new_connection(current_session, ec);
     in_channel.on_new_connection(&current_session);
     out_channel.on_new_connection(&current_session);
 }
 
 void CdcAcmDataInterfaceHandler::on_disconnection(std::error_code &ec) {
-    // 先清通道（缓冲 + 挂起请求，TransferHandle 析构时自动释放；唤醒阻塞
-    // 的写者/取者让它们按断连返回），再调父类清 session
+    // Clear the channel first (buffer + pending requests; TransferHandle destruction releases automatically; wake blocked
+    // writers/takers to return as disconnected), then let the parent clear session
     out_channel.on_disconnection();
     in_channel.on_disconnection();
     VirtualInterfaceHandler::on_disconnection(ec);
 }
 
 void CdcAcmDataInterfaceHandler::handle_unlink_seqnum(std::uint32_t unlink_seqnum, std::uint32_t cmd_seqnum) {
-    // 挂起请求分散在 IN/OUT 两通道里，逐个尝试取消
+    // Pending requests are distributed across the IN/OUT channels; try cancelling each in turn
     bool cancelled = in_channel.cancel_pending(unlink_seqnum);
     if (!cancelled) {
         cancelled = out_channel.cancel_pending(unlink_seqnum);
     }
-    // 从队列中真的取消了待处理 URB → 回 -ECONNRESET（URB 被取消，且不再发
-    // RET_SUBMIT，请求已从队列移除）；找不到（URB 已完成/不存在）→ 回 0。
-    // 与内核 stub_tx.c 及本项目 LibusbDeviceHandler 的 unlink 范本一致
+    // If a pending URB was actually cancelled from the queue, return -ECONNRESET (URB cancelled, with no further
+    // RET_SUBMIT because the request was removed); if not found (URB completed/nonexistent), return 0.
+    // Matches the unlink pattern in kernel stub_tx.c and this project's LibusbDeviceHandler
     responder->submit_ret_unlink(UsbIpResponse::UsbIpRetUnlink::create_ret_unlink(
             cmd_seqnum, cancelled ? static_cast<std::uint32_t>(UrbStatusType::StatusECONNRESET) : 0));
 }
@@ -238,15 +238,15 @@ void CdcAcmDataInterfaceHandler::handle_bulk_transfer(std::uint32_t seqnum, cons
                                                       std::uint32_t transfer_buffer_length, TransferHandle transfer,
                                                       std::error_code &ec) {
     if (ep.is_in()) {
-        // Bulk IN：主机请求数据。通道内部处理：缓冲有数据立即应答，否则先
-        // pull（on_data_requested 现场生成），再不行挂起请求等待 send_data
+        // Bulk IN: the host requests data. Handled within the channel: reply immediately if data is buffered; otherwise first
+        // pull (on_data_requested generates on demand), then suspend the request waiting for send_data if still unavailable
         in_channel.on_in_request(ep.address, seqnum, transfer_buffer_length, std::move(transfer));
     }
     else {
-        // Bulk OUT：先给子类当场消费机会（如把数据生成响应塞给 IN 方向）。
-        // true=已处理，立即应答；false=未处理，请求挂起入通道（主机 NAK 背压），
-        // 子类之后用 take_out() 取出数据并应答。false 时子类必须保证 data 未被
-        // 移动（挂起的请求里数据仍在）
+        // Bulk OUT: first allow the subclass to consume immediately (e.g. generate a response from the data and push it to IN).
+        // true=handled, reply immediately; false=unhandled, suspend the request in the channel (host NAK backpressure);
+        // the subclass later takes data with take_out() and replies. When returning false, the subclass must ensure data has not been
+        // moved (data remains in the suspended request)
         auto *trx = GenericTransfer::from_handle(transfer.get());
         auto received_size = static_cast<std::uint32_t>(trx->data.size());
         if (on_data_received(std::move(trx->data))) {
@@ -262,35 +262,35 @@ void CdcAcmDataInterfaceHandler::handle_bulk_transfer(std::uint32_t seqnum, cons
 void CdcAcmDataInterfaceHandler::handle_non_standard_request_type_control_urb(
         std::uint32_t seqnum, const UsbEndpoint &ep, std::uint32_t transfer_flags, std::uint32_t transfer_buffer_length,
         const SetupPacket &setup_packet, TransferHandle transfer, std::error_code &ec) {
-    // 数据接口通常不处理类特定控制请求
+    // The data interface normally does not handle class-specific control requests
     SPDLOG_WARN("CDC ACM data interface received unexpected control request");
-    // transfer 析构时自动释放
+    // transfer is released automatically on destruction
     responder->submit_ret_submit(UsbIpResponse::UsbIpRetSubmit::create_ret_submit_epipe_without_data(seqnum, 0));
 }
 
 data_type CdcAcmDataInterfaceHandler::get_class_specific_descriptor() {
-    // 数据接口没有类特定描述符
+    // The data interface has no class-specific descriptors
     return {};
 }
 
 bool CdcAcmDataInterfaceHandler::on_data_received(data_type &&data) {
-    // 默认行为：总是消费并立即应答（未 override 的子类保持原"总是接收"语义）
+    // Default behavior: always consume and reply immediately (subclasses without overrides retain the original always-receive semantics)
     return true;
 }
 
 data_type CdcAcmDataInterfaceHandler::on_data_requested(std::uint16_t length) {
-    // 默认返回空，子类可重写
+    // Return empty by default; subclasses may override
     return {};
 }
 
 void CdcAcmDataInterfaceHandler::on_rts_changed(bool rts) {
-    // 默认空实现，子类可重写
+    // Default empty implementation; subclasses may override
 }
 
-// ===== send_data 实现 =====
+// ===== send_data implementation =====
 
 std::size_t CdcAcmDataInterfaceHandler::send_data(const std::uint8_t *data, std::size_t size) {
-    // 非阻塞写入通道（满时只写入可用空间，断连返回 0），内部会应答挂起请求
+    // Nonblocking write to the channel (write only available space when full; return 0 on disconnection); internally responds to pending requests
     return in_channel.write_nb(data, size);
 }
 
@@ -308,7 +308,7 @@ std::size_t CdcAcmDataInterfaceHandler::send_data(std::string_view data) {
 
 std::size_t CdcAcmDataInterfaceHandler::send_data_blocking(const std::uint8_t *data, std::size_t size,
                                                            std::uint32_t timeout_ms) {
-    // 阻塞写入通道：缓冲满时等待宿主取走（timeout_ms=0 无限等），断连返回已写入量
+    // Blocking channel write: wait for the host to take data when full (timeout_ms=0 waits indefinitely); return the amount written on disconnection
     return in_channel.write(data, size, timeout_ms);
 }
 
@@ -332,10 +332,10 @@ std::optional<OutEndpointChannel::Pending> CdcAcmDataInterfaceHandler::try_take_
     return out_channel.try_take();
 }
 
-// ===== 缓冲区配置 =====
+// ===== Buffer configuration =====
 
 void CdcAcmDataInterfaceHandler::set_tx_buffer_capacity(std::size_t capacity) {
-    // 通道内部锁保护缓冲；水位线随容量联动（默认 3/4 与 1/4）
+    // The channel's internal lock protects the buffer; watermarks track capacity (default 3/4 and 1/4)
     in_channel.set_capacity(capacity);
     in_high_watermark_ = capacity * 3 / 4;
     in_low_watermark_ = capacity / 4;
@@ -354,7 +354,7 @@ std::size_t CdcAcmDataInterfaceHandler::get_tx_buffer_available() const {
     return in_channel.available();
 }
 
-// ===== 流控状态 =====
+// ===== Flow-control state =====
 
 void CdcAcmDataInterfaceHandler::set_cts(bool cts) {
     if (comm_handler_) {
@@ -367,7 +367,7 @@ bool CdcAcmDataInterfaceHandler::get_rts() const {
     if (comm_handler_) {
         return comm_handler_->get_control_signal_state().rts;
     }
-    return true; // 默认允许发送
+    return true; // Allow sending by default
 }
 
 void CdcAcmDataInterfaceHandler::set_comm_handler(CdcAcmCommunicationInterfaceHandler *handler) {

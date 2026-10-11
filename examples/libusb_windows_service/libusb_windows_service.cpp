@@ -1,8 +1,8 @@
-// usbipdcpp Windows 服务示例
-// 安装: sc create UsbipdcppServer binPath= "path\to\libusb_windows_service.exe [port]"
-// 启动: sc start UsbipdcppServer
-// 停止: sc stop UsbipdcppServer
-// 删除: sc delete UsbipdcppServer
+// usbipdcpp Windows service example
+// installation: sc create UsbipdcppServer binPath= "path\to\libusb_windows_service.exe [port]"
+// Start: sc start UsbipdcppServer
+// Stop: sc stop UsbipdcppServer
+// Delete: sc delete UsbipdcppServer
 
 
 #include "usbipdcpp/LibusbHandler/LibusbServer.h"
@@ -51,7 +51,7 @@ void WINAPI service_main(DWORD argc, LPWSTR *argv) {
     g_status.dwControlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN;
     SetServiceStatus(g_status_handle, &g_status);
 
-    // 初始化 libusb
+    // initialize libusb
     if (libusb_init(nullptr) != 0) {
         g_status.dwCurrentState = SERVICE_STOPPED;
         g_status.dwWin32ExitCode = ERROR_SERVICE_SPECIFIC_ERROR;
@@ -59,14 +59,14 @@ void WINAPI service_main(DWORD argc, LPWSTR *argv) {
         return;
     }
 
-    // 创建服务器并启动
+    // Create server and start
     LibusbServerConfig config{};
     config.auto_bind_hotplug = true;
     LibusbServer server(config);
 
     asio::ip::tcp::endpoint endpoint(asio::ip::tcp::v4(), g_port);
     if (auto ec = server.start(endpoint); ec) {
-        SPDLOG_ERROR("服务器启动失败：{}", ec.message());
+        SPDLOG_ERROR("Server startup failed: {}", ec.message());
         g_status.dwCurrentState = SERVICE_STOPPED;
         g_status.dwWin32ExitCode = ERROR_SERVICE_SPECIFIC_ERROR;
         SetServiceStatus(g_status_handle, &g_status);
@@ -77,10 +77,10 @@ void WINAPI service_main(DWORD argc, LPWSTR *argv) {
     g_status.dwCurrentState = SERVICE_RUNNING;
     SetServiceStatus(g_status_handle, &g_status);
 
-    // 阻塞等待 SCM 停止信号
+    // Blocked waiting for SCM stop signal
     g_stop_sem.acquire();
 
-    // 清理
+    // Cleanup
     server.stop();
     libusb_exit(nullptr);
 
@@ -89,7 +89,7 @@ void WINAPI service_main(DWORD argc, LPWSTR *argv) {
 }
 
 int main(int argc, char **argv) {
-    // 支持命令行参数指定端口，如 libusb_windows_service.exe 3240
+    // supports command line parameters to specify the port, such as libusb_windows_service.exe 3240
     if (argc > 1) {
         g_port = static_cast<uint16_t>(std::stoi(argv[1]));
     }

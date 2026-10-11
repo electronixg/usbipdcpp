@@ -2,7 +2,7 @@
 
 A C++ library for creating usbip servers
 
-> [中文文档](README.zh.md)
+> [Additional documentation](README.zh.md)
 
 ## Features
 

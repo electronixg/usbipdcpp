@@ -11,7 +11,7 @@
 
 namespace usbipdcpp {
 
-/// 键盘修饰键掩码
+/// Keyboard modifier mask
 namespace KeyboardModifier {
     constexpr std::uint8_t LeftCtrl = 0x01;
     constexpr std::uint8_t LeftShift = 0x02;
@@ -23,7 +23,7 @@ namespace KeyboardModifier {
     constexpr std::uint8_t RightGUI = 0x80;
 } // namespace KeyboardModifier
 
-/// 键盘 LED 状态掩码
+/// Keyboard LED state mask
 namespace KeyboardLED {
     constexpr std::uint8_t NumLock = 0x01;
     constexpr std::uint8_t CapsLock = 0x02;
@@ -33,19 +33,19 @@ namespace KeyboardLED {
 } // namespace KeyboardLED
 
 /**
- * @brief USB HID 键盘虚拟设备处理器（含 Consumer Control 媒体键）
+ * @brief USB HID keyboard virtual device handler (including Consumer Control media keys)
  *
- * 实现标准 USB HID 引导键盘协议 + Consumer Page 媒体控制，使用 Report ID 分隔两个独立报告：
- * - Report ID 1：标准键盘 8 字节报告（兼容 Boot Protocol）
- * - Report ID 2：Consumer Control 2 字节报告（单次触发后自动清零）
+ * Implements the standard USB HID boot keyboard protocol + Consumer Page media control, using Report IDs to separate two independent reports:
+ * - Report ID 1: standard 8-byte keyboard report (Boot Protocol compatible)
+ * - Report ID 2: 2-byte Consumer Control report (automatically zeroed after one trigger)
  *
- * 支持：最多 6 键 + 8 修饰键、媒体键、LED 状态接收。
+ * Supports: up to 6 keys + 8 modifiers, media keys, LED state reception.
  *
- * @note 端点 max_packet_size 至少需 9 字节（Report ID 1 的完整报告）
+ * @note Endpoint max_packet_size must be at least 9 bytes (complete Report ID 1 report)
  */
 class USBIPDCPP_API KeyboardHandler : public HidVirtualInterfaceHandler {
 public:
-    /// 同时按下的最大按键数（不含修饰键）
+    /// Maximum simultaneously pressed keys (excluding modifiers)
     static constexpr std::size_t MAX_KEYS = 6;
     static constexpr std::uint8_t REPORT_ID_KEYBOARD = 1;
     static constexpr std::uint8_t REPORT_ID_CONSUMER = 2;
@@ -54,11 +54,11 @@ public:
     ~KeyboardHandler() override = default;
 
     /**
-     * @brief 创建标准的 HID 键盘接口（描述符模板，未绑定 handler）
+     * @brief Create a standard HID keyboard interface (descriptor template, no handler bound)
      *
-     * 接口定义：HID 类、Boot 键盘子类/协议（03/01/01），一个中断 IN 端点。
-     * @param in_ep 中断 IN 端点地址（设备→主机，键盘/媒体键报告）
-     * @return 未绑定 handler 的 UsbInterface
+     * Interface definition: HID class, Boot keyboard subclass/protocol (03/01/01), one interrupt IN endpoint.
+     * @param in_ep Interrupt IN endpoint address (device→host, keyboard/media-key reports)
+     * @return UsbInterface with unbound handler
      */
     static UsbInterface make_interface(std::uint8_t in_ep) {
         UsbInterface i{
@@ -67,13 +67,13 @@ public:
                 .interface_protocol = 0x01, // Keyboard
                 .endpoints = {{UsbEndpoint{.address = in_ep,
                                            .attributes = static_cast<std::uint8_t>(EndpointAttributes::Interrupt),
-                                           .max_packet_size = 16, // Report ID 1 完整报告需 ≥9 字节
+                                           .max_packet_size = 16, // Complete Report ID 1 report requires ≥9 bytes
                                            .interval = 10}}},
         };
         return i;
     }
 
-    // ========== HidVirtualInterfaceHandler 接口实现 ==========
+    // ========== HidVirtualInterfaceHandler interface implementation ==========
 
     void on_new_connection(TransferResponder &current_session, error_code &ec) override;
     void on_disconnection(error_code &ec) override;
@@ -88,68 +88,68 @@ public:
                                std::uint32_t *p_status) override;
     void request_set_idle(std::uint8_t speed, std::uint32_t *p_status) override;
 
-    // ========== 按键 API ==========
+    // ========== Key API ==========
 
     /**
-     * @brief 按下一个键
-     * @param keycode USB HID 按键码（如 0x04 = A, 0x28 = Enter）
+     * @brief Press a key
+     * @param keycode USB HID keycode (such as 0x04 = A, 0x28 = Enter)
      *
-     * 若按键已按下或已满 6 键则忽略。
+     * Ignore if the key is already pressed or all 6 slots are occupied.
      */
     void press_key(std::uint8_t keycode);
 
     /**
-     * @brief 释放一个键
-     * @param keycode USB HID 按键码
+     * @brief Release a key
+     * @param keycode USB HID keycode
      */
     void release_key(std::uint8_t keycode);
 
-    /// 释放所有按键和修饰键
+    /// Release all keys and modifiers
     void release_all();
 
     /**
-     * @brief 同时按下多个键
-     * @param keycodes 按键码列表
+     * @brief Press multiple keys simultaneously
+     * @param keycodes Keycode list
      *
-     * 超过 MAX_KEYS 则只取前 6 个。
+     * If exceeding MAX_KEYS, use only the first 6.
      */
     void press_keys(std::initializer_list<std::uint8_t> keycodes);
 
-    /// 查询某键是否正在按下
+    /// Query whether a key is currently pressed
     [[nodiscard]] bool is_key_pressed(std::uint8_t keycode) const;
 
-    // ========== 修饰键 API ==========
+    // ========== Modifier API ==========
 
-    /// 设置修饰键（按位或 KeyboardModifier 常量）
+    /// Set modifiers (bitwise OR of KeyboardModifier constants)
     void set_modifier(std::uint8_t mask);
 
-    /// 清除指定修饰键
+    /// Clear specified modifiers
     void clear_modifier(std::uint8_t mask);
 
-    /// 获取当前修饰键状态
+    /// Get current modifier state
     [[nodiscard]] std::uint8_t get_modifier() const;
 
-    // ========== 媒体键 API（Consumer Control） ==========
+    // ========== Media key API (Consumer Control) ==========
 
     /**
-     * @brief 发送媒体键，单次触发后自动释放
-     * @param usage USB Consumer Page Usage ID（如 HIDConsumer::PlayPause）
+     * @brief Send a media key, automatically releasing it after one trigger
+     * @param usage USB Consumer Page Usage ID (such as HIDConsumer::PlayPause)
      */
     void press_media_key(std::uint16_t usage);
 
-    // ========== LED 状态 ==========
+    // ========== LED state ==========
 
-    /// 获取主机设置的 LED 状态（按位与 KeyboardLED 常量）
+    /// Get host-set LED state (bitwise AND with KeyboardLED constants)
     [[nodiscard]] std::uint8_t get_led_status() const;
 
-    /// 等待客户端连接，timeout_ms 为负表示无限等待
+    /// Wait for a client connection; negative timeout_ms means wait indefinitely
     bool wait_for_client(int timeout_ms = -1);
 
 private:
     struct KeyboardState {
         std::uint8_t modifier = 0;
         std::array<std::uint8_t, MAX_KEYS> keys{};
-        std::uint16_t consumer_usage = 0; // Consumer Page Usage ID，0=无操作
+        std::uint16_t consumer_usage = 0; // Consumer Page Usage ID, 0=no action
 
         bool operator==(const KeyboardState &) const = default;
     };

@@ -10,9 +10,9 @@
 namespace usbipdcpp {
 
 namespace {
-// 把字节流偏移处的内容 memcpy 进 packed 结构体：入站 RNDIS 消息是紧贴缓冲的
-// 字节序列，直接 reinterpret_cast 访问 packed 成员会触发 UBSan 的
-// misaligned 报告，memcpy 到对齐的本地对象再字段访问是安全做法
+// memcpy the content at the byte-stream offset into a packed struct: incoming RNDIS messages are byte sequences directly in
+// the buffer; accessing packed members directly through reinterpret_cast triggers UBSan
+// misaligned reports. memcpy into an aligned local object before field access is safe
 template <typename T>
 bool copy_msg(const data_type &data, std::size_t offset, T &out) {
     if (offset + sizeof(T) > data.size()) {
@@ -22,24 +22,24 @@ bool copy_msg(const data_type &data, std::size_t offset, T &out) {
     return true;
 }
 
-// u32 值序列化成 4 字节小端（OID 查询返回数据用）
+// Serialize a u32 value as 4 little-endian bytes (for OID query return data)
 data_type le32_bytes(std::uint32_t v) {
     data_type d;
     vector_append_to_le(d, v);
     return d;
 }
 
-// 组装 INDICATE 状态消息（MEDIA_CONNECT / MEDIA_DISCONNECT，20 字节）
+// Assemble an INDICATE status message (MEDIA_CONNECT / MEDIA_DISCONNECT, 20 bytes)
 data_type make_indicate(RndisStatus status) {
     data_type resp;
     RndisIndicateStatusMsg{rndis_msg(RndisMessageType::Indicate), 20, rndis_status(status), 0, 0}.append_to(resp);
     return resp;
 }
 
-// 包 RNDIS_MSG_PACKET 头（44B）：MessageType=1、MessageLength=44+size、
-// DataOffset=36（数据从字节 44 起）、DataLength=size、其余 0。
-// 总长是 maxpacket(64) 倍数时补 1 字节防 ZLP（对齐内核 u_ether.c：RNDIS
-// 不允许 ZLP；MessageLength 不含填充，主机按消息长度拆包后尾字节被 trim）
+// Wrap with a RNDIS_MSG_PACKET header (44B): MessageType=1, MessageLength=44+size,
+// DataOffset=36 (data starts at byte 44), DataLength=size, others 0.
+// If total length is a multiple of maxpacket(64), pad 1 byte to prevent ZLP (matching kernel u_ether.c: RNDIS
+// disallows ZLP; MessageLength excludes padding, and the host trims the trailing byte after splitting by message length)
 data_type wrap_rndis_packet(const std::uint8_t *data, std::size_t size) {
     data_type wrapped;
     wrapped.reserve(44 + size + 1);
@@ -53,32 +53,32 @@ data_type wrap_rndis_packet(const std::uint8_t *data, std::size_t size) {
     return wrapped;
 }
 
-// 解析主机发来的 RNDIS_MSG_PACKET 消息流，剥头取出以太网帧列表。
-// 一次 bulk OUT 传输可能聚合多条消息（后一条紧跟前一条的 message_length
-// 之后），每条消息可能有填充、OOB 字段非 0——按消息长度定位边界、
-// 按 DataOffset/DataLength 取帧，OOB 直接忽略（对齐内核 rndis_rm_hdr
-// 与 rndis_host.c 的 rndis_rx_fixup）。帧长 < 14 字节（以太网头）丢弃
+// Parse the host's RNDIS_MSG_PACKET message stream, stripping headers to obtain the Ethernet frame list.
+// One bulk OUT transfer may aggregate multiple messages (each starts immediately after the previous message's message_length);
+// each message may have padding and nonzero OOB fields. Locate boundaries by message length,
+// extract frames by DataOffset/DataLength, and ignore OOB directly (matching kernel rndis_rm_hdr
+// and rndis_host.c rndis_rx_fixup). Discard frame lengths < 14 bytes (Ethernet header)
 std::vector<data_type> unwrap_rndis_packets(const data_type &data) {
     std::vector<data_type> frames;
     std::size_t pos = 0;
-    // 主机方向头 24 字节（RNDIS_HOST_HEADER_LEN）：不足则本条及之后都是残渣
+    // Host-direction header is 24 bytes (RNDIS_HOST_HEADER_LEN); if insufficient, this and all following content are fragments
     while (pos + RNDIS_HOST_HEADER_LEN <= data.size()) {
-        // 按指针只读头字段（对齐内核 rndis_rm_hdr 的 skb->data 转换）——
-        // 主机只发前 24 字节，memcpy 整个 44 字节结构体会越界（ASan 实测）
+        // Read only header fields through pointers (matching kernel rndis_rm_hdr's skb->data conversion):
+        // the host sends only the first 24 bytes, so memcpy of the entire 44-byte struct goes out of bounds (observed with ASan)
         const auto *ph = reinterpret_cast<const RndisPacketHeader *>(data.data() + pos);
-        // 消息长度非法或超出传输边界：本条及之后丢弃
+        // Invalid message length or exceeding transfer boundaries: discard this and all following messages
         if (ph->message_length < RNDIS_HOST_HEADER_LEN || pos + ph->message_length > data.size()) {
             break;
         }
         if (ph->message_type != rndis_msg(RndisMessageType::Packet)) {
-            break; // 数据面出现非包消息：异常主机，丢弃
+            break; // Non-packet message on the data plane: abnormal host; discard
         }
-        std::size_t frame_off = pos + data_start_offset(*ph); // 数据起始（消息内偏移算法见头文件）
+        std::size_t frame_off = pos + data_start_offset(*ph); // Data start (see the header for the within-message offset calculation)
         std::size_t frame_len = ph->data_length;
         if (frame_off + frame_len > data.size()) {
             break;
         }
-        if (frame_len >= 14) { // 以太网头最小长度（对齐内核 u_ether 的 ETH_HLEN 校验）
+        if (frame_len >= 14) { // Minimum Ethernet header length (matching kernel u_ether's ETH_HLEN validation)
             frames.emplace_back(data.begin() + static_cast<std::ptrdiff_t>(frame_off),
                                 data.begin() + static_cast<std::ptrdiff_t>(frame_off + frame_len));
         }
@@ -95,7 +95,7 @@ RndisCommunicationInterfaceHandler::RndisCommunicationInterfaceHandler(
         UsbSpeed speed) :
     VirtualInterfaceHandler(handle_interface, string_pool),
     mac_address_(mac_address), interface_number_(handle_interface.interface_number) {
-    // LINK_SPEED 上报（单位 100bps，对齐内核 f_rndis.c 的 bitrate()/100）
+    // Report LINK_SPEED (units of 100bps, matching kernel f_rndis.c bitrate()/100)
     switch (speed) {
         case UsbSpeed::Full:
             link_speed_100bps_ = 97'280; // 19×64×1×1000×8 bps
@@ -110,31 +110,31 @@ RndisCommunicationInterfaceHandler::RndisCommunicationInterfaceHandler(
             link_speed_100bps_ = 42'500'000; // 4.25 Gbps
             break;
         default:
-            link_speed_100bps_ = 0; // Low/Wireless/Unknown：不上报速度
+            link_speed_100bps_ = 0; // Low/Wireless/Unknown: do not report speed
             break;
     }
-    // 通知通道待发缓存上限 30 条：RESPONSE_AVAILABLE 通知只在响应入队时发
-    // 一条（握手期间个位数），30 条是防主机长期不读时内存堆积的兜底
+    // The notification channel's pending buffer is capped at 30 entries: one RESPONSE_AVAILABLE notification is issued when a response is
+    // queued (single-digit count during handshake); 30 guards against memory accumulation if the host does not read for a long time
     notification_channel.set_max_pending_messages(30);
 }
 
 UsbInterface RndisCommunicationInterfaceHandler::make_interface(std::uint8_t interrupt_in_ep) {
-    // 对齐内核 f_rndis.c 的控制接口：COMM 类 + ACM 子类 + Vendor 协议。
-    // 不用微软 RNDIS 专有描述符——Windows 与 Linux rndis_host 都按
-    // 02/02/FF 匹配（rndis_host.c 的 id_table）
+    // Match kernel f_rndis.c's control interface: COMM class + ACM subclass + Vendor protocol.
+    // Do not use Microsoft's proprietary RNDIS descriptors; Windows and Linux rndis_host both match
+    // 02/02/FF (rndis_host.c's id_table)
     UsbInterface i{
             .interface_class = static_cast<std::uint8_t>(ClassCode::CDC),
-            .interface_subclass = 0x02, // ACM（RNDIS 借 ACM 外壳匹配）
+            .interface_subclass = 0x02, // ACM (RNDIS uses the ACM wrapper for matching)
             .interface_protocol = 0xFF, // Vendor
             .endpoints = {{UsbEndpoint{.address = interrupt_in_ep,
                                        .attributes = static_cast<std::uint8_t>(EndpointAttributes::Interrupt),
-                                       .max_packet_size = 8, // 状态端点最小 8 字节（cdc_ether 绑定硬性要求）
-                                       .interval = 32}}}, // 对齐内核 fs_control_intf_ep（Full speed）
+                                       .max_packet_size = 8, // Status endpoint minimum 8 bytes (mandatory for cdc_ether binding)
+                                       .interval = 32}}}, // Match kernel fs_control_intf_ep (Full speed)
     };
-    // IAD：RNDIS 是双接口功能（通信+数据），Windows 靠它把设备识别为复合
-    // 设备并做 MS OS 描述符探测（对齐内核 f_rndis.c 的 rndis_iad_descriptor：
-    // bFunctionClass=CDC、bFunctionSubClass=ETHERNET(0x06)、bInterfaceCount=2）。
-    // bFirstInterface 由配置描述符生成时按所属接口的 interface_number 回填
+    // IAD: RNDIS is a two-interface function (communication+data); Windows uses it to recognize a composite
+    // device and probe MS OS descriptors (matching kernel f_rndis.c's rndis_iad_descriptor:
+    // bFunctionClass=CDC,bFunctionSubClass=ETHERNET(0x06),bInterfaceCount=2).
+    // bFirstInterface is filled from its owning interface's interface_number when generating the configuration descriptor
     i.interface_association_descriptor = IadDesc::make(
             2, static_cast<std::uint8_t>(ClassCode::CDC), 0x06 /* USB_CDC_SUBCLASS_ETHERNET */);
     return i;
@@ -145,25 +145,25 @@ void RndisCommunicationInterfaceHandler::handle_non_standard_request_type_contro
         const SetupPacket &setup_packet, TransferHandle transfer, std::error_code &ec) {
     auto type = static_cast<RequestType>(setup_packet.calc_request_type());
     if (type != RequestType::Class) {
-        // 非类请求（标准请求已被基类分发，这里兜底）
-        SPDLOG_WARN("RNDIS 通信接口收到非类控制请求 0x{:x}", setup_packet.calc_request_type());
+        // Non-class request (standard requests were already dispatched by the base class; this is the fallback)
+        SPDLOG_WARN("RNDIS communication interface received non-class control request 0x{:x}", setup_packet.calc_request_type());
         responder->submit_ret_submit(UsbIpResponse::UsbIpRetSubmit::create_ret_submit_epipe_without_data(seqnum, 0));
         return;
     }
 
     auto request = static_cast<CdcAcmRequest>(setup_packet.request);
     if (request == CdcAcmRequest::SendEncapsulatedCommand && setup_packet.is_out()) {
-        // 主机送入一条 RNDIS 命令（数据阶段 = 整条消息），解析并排队响应；
-        // 响应由主机稍后 GET_ENCAPSULATED_RESPONSE 取走（对齐内核 f_rndis.c
-        // 的 rndis_setup：命令经 ep0 OUT 完整接收后在 completion 里解析）
+        // The host supplies one RNDIS command (data stage = entire message); parse and queue a response;
+        // the host retrieves the response later through GET_ENCAPSULATED_RESPONSE (matching kernel f_rndis.c's
+        // rndis_setup: parse the command in completion after receiving it fully through ep0 OUT)
         auto *trx = GenericTransfer::from_handle(transfer.get());
         process_rndis_message(trx->data);
         responder->submit_ret_submit(UsbIpResponse::UsbIpRetSubmit::create_ret_submit_with_status_and_no_data(
                 seqnum, static_cast<std::uint32_t>(UrbStatusType::StatusOK), 0));
     }
     else if (request == CdcAcmRequest::GetEncapsulatedResponse && !setup_packet.is_out()) {
-        // 主机取走一条排队响应。队列空回 EPIPE（对齐内核 rndis_setup 的
-        // STALL——主机 rndis_command 会以 40ms 间隔轮询重试）
+        // The host retrieves one queued response. Return EPIPE for an empty queue (matching kernel rndis_setup's
+        // STALL; host rndis_command polls and retries at 40ms intervals)
         auto *trx = GenericTransfer::from_handle(transfer.get());
         if (response_queue_.empty()) {
             responder->submit_ret_submit(UsbIpResponse::UsbIpRetSubmit::create_ret_submit_epipe_without_data(seqnum, 0));
@@ -171,7 +171,7 @@ void RndisCommunicationInterfaceHandler::handle_non_standard_request_type_contro
         else {
             trx->data = std::move(response_queue_.front());
             response_queue_.pop_front();
-            // 响应超过主机缓冲按缓冲截断（主机 wLength 一般 ≥ 1558，正常不会发生）
+            // Truncate responses exceeding the host buffer to its size (host wLength is usually >= 1558, so this normally does not occur)
             if (trx->data.size() > transfer_buffer_length) {
                 trx->data.resize(transfer_buffer_length);
             }
@@ -180,7 +180,7 @@ void RndisCommunicationInterfaceHandler::handle_non_standard_request_type_contro
         }
     }
     else {
-        SPDLOG_WARN("RNDIS 通信接口收到意外控制请求 0x{:x} dir={}", setup_packet.request,
+        SPDLOG_WARN("RNDIS communication interface received unexpected control request 0x{:x} dir={}", setup_packet.request,
                     setup_packet.is_out() ? "OUT" : "IN");
         responder->submit_ret_submit(UsbIpResponse::UsbIpRetSubmit::create_ret_submit_epipe_without_data(seqnum, 0));
     }
@@ -191,38 +191,38 @@ void RndisCommunicationInterfaceHandler::handle_interrupt_transfer(std::uint32_t
                                                                    std::uint32_t transfer_buffer_length,
                                                                    TransferHandle transfer, std::error_code &ec) {
     if (ep.is_in()) {
-        // 通道内部处理：缓冲有通知立即应答，否则挂起请求等待响应入队时推入
+        // Handled within the channel: reply immediately if a notification is buffered; otherwise suspend until response enqueue pushes one
         notification_channel.on_in_request(ep.address, seqnum, transfer_buffer_length, std::move(transfer));
     }
     else {
-        // 中断 OUT：RNDIS 不使用（对齐 ECM 的处理）
-        SPDLOG_WARN("RNDIS 通信接口收到意外中断 OUT");
+        // Interrupt OUT: unused by RNDIS (matching ECM handling)
+        SPDLOG_WARN("RNDIS communication interface received unexpected interrupt OUT");
         responder->submit_ret_submit(UsbIpResponse::UsbIpRetSubmit::create_ret_submit_epipe_without_data(seqnum, 0));
     }
 }
 
 data_type RndisCommunicationInterfaceHandler::get_class_specific_descriptor() {
-    // Header + CallManagement + ACM + Union（对齐内核 f_rndis.c 的
-    // rndis_control_intf 描述符组合，CDC 通用结构体复用 CdcAcmConstants）
+    // Header + CallManagement + ACM + Union (matching kernel f_rndis.c's
+    // rndis_control_intf descriptor combination; reuse CdcAcmConstants for common CDC structures)
     data_type descriptor;
 
     CdcHeaderFunctionalDesc{0x05, CS_INTERFACE, 0x00, 0x0110 /* bcdCDC: 1.10 */}.append_to(descriptor);
 
-    // bDataInterface 是数据接口号：装配时由 set_data_handler 关联，从数据
-    // handler 的 get_interface() 取（复合设备里通信接口不从接口 0 起，硬编码
-    // 1 会让主机驱动找不到数据接口）。未关联时退回 1（单设备形态 COMM=0 → DATA=1）
+    // bDataInterface is the data interface number: associated by set_data_handler during assembly, obtained from the data
+    // handler's get_interface() (a composite device's communication interface does not start at interface 0; hardcoding
+    // 1 prevents the host driver finding the data interface). Fall back to 1 when unassociated (single-device form COMM=0 -> DATA=1)
     CdcCallManagementDesc{0x05, CS_INTERFACE, 0x01,
-                          0x00, // bmCapabilities: 数据接口不处理呼叫管理
+                          0x00, // bmCapabilities: the data interface does not handle call management
                           data_handler_ ? static_cast<std::uint8_t>(data_handler_->get_interface().interface_number) : std::uint8_t{1}}
             .append_to(descriptor);
 
     CdcAcmFunctionalDesc{0x04, CS_INTERFACE, 0x02,
-                         0x00} // bmCapabilities 必须为 0：cdc_ether 主机驱动
-            // 检查非 0 判定"不是真 RNDIS"拒绝绑定（cdc_ether.c:225-235）
+                         0x00} // bmCapabilities must be 0: the cdc_ether host driver
+            // treats nonzero as not genuine RNDIS and rejects binding (cdc_ether.c:225-235)
             .append_to(descriptor);
 
     CdcUnionFunctionalDesc{0x05, CS_INTERFACE, 0x06,
-                           get_interface().interface_number, // bMasterInterface: 本接口
+                           get_interface().interface_number, // bMasterInterface: this interface
                            data_handler_ ? static_cast<std::uint8_t>(data_handler_->get_interface().interface_number) : std::uint8_t{1}}
             .append_to(descriptor);
 
@@ -232,11 +232,11 @@ data_type RndisCommunicationInterfaceHandler::get_class_specific_descriptor() {
 void RndisCommunicationInterfaceHandler::process_rndis_message(const data_type &msg) {
     RndisMessageHeader hdr{};
     if (!copy_msg(msg, 0, hdr)) {
-        SPDLOG_WARN("RNDIS 消息过短: {} 字节", msg.size());
+        SPDLOG_WARN("RNDIS message too short: {} bytes", msg.size());
         return;
     }
     if (hdr.message_length < sizeof(RndisMessageHeader) || hdr.message_length > msg.size()) {
-        SPDLOG_WARN("RNDIS 消息长度非法: 声明 {} 实收 {}", hdr.message_length, msg.size());
+        SPDLOG_WARN("Invalid RNDIS message length: declared {} received {}", hdr.message_length, msg.size());
         return;
     }
 
@@ -255,13 +255,13 @@ void RndisCommunicationInterfaceHandler::process_rndis_message(const data_type &
                            0 /* AFListSize */}
                     .append_to(resp);
             enqueue_response(std::move(resp));
-            // 链路 up 通知：对齐内核 rndis_open 的 rndis_signal_connect。
-            // 虚拟设备初始化完成即链路可用（Windows 依赖此通知确认连接）
+            // Link-up notification: match kernel rndis_open's rndis_signal_connect.
+            // The link is available once virtual device initialization completes (Windows relies on this notification to confirm connection)
             enqueue_response(make_indicate(RndisStatus::MediaConnect));
             break;
         }
         case RndisMessageType::Halt:
-            // HALT 不响应（对齐 rndis.c：主机解绑/断开时的告别消息，状态复位）
+            // Do not respond to HALT (matching rndis.c: farewell message on host unbinding/disconnection; reset state)
             reset_device_state();
             break;
         case RndisMessageType::Query: {
@@ -270,13 +270,13 @@ void RndisCommunicationInterfaceHandler::process_rndis_message(const data_type &
                 return;
             }
             data_type payload = query_oid(query.oid);
-            // 未知/不支持 OID 回 NOT_SUPPORTED 的 QUERY_C（不能 stall 控制请求）
+            // For unknown/unsupported OIDs return QUERY_C with NOT_SUPPORTED (do not stall the control request)
             auto status = payload.empty() ? RndisStatus::NotSupported : RndisStatus::Success;
             data_type resp;
             RndisQueryCmplt{rndis_msg(RndisMessageType::QueryComplete),
                             static_cast<std::uint32_t>(24 + payload.size()), query.request_id,
                             rndis_status(status), static_cast<std::uint32_t>(payload.size()),
-                            16 /* InformationBufferOffset: 数据紧跟 24 字节头 */}
+                            16 /* InformationBufferOffset: data immediately follows the 24-byte header */}
                     .append_to(resp);
             resp.insert(resp.end(), payload.begin(), payload.end());
             enqueue_response(std::move(resp));
@@ -287,7 +287,7 @@ void RndisCommunicationInterfaceHandler::process_rndis_message(const data_type &
             if (!copy_msg(msg, 0, set)) {
                 return;
             }
-            // 输入缓冲起点 = 消息第 8 字节 + offset（对齐内核 rndis.c 偏移约定）
+            // Input buffer start = message byte 8 + offset (matching kernel rndis.c's offset convention)
             std::size_t buf_off = 8 + set.information_buffer_offset;
             RndisStatus status = RndisStatus::NotSupported;
             switch (set.oid) {
@@ -298,22 +298,22 @@ void RndisCommunicationInterfaceHandler::process_rndis_message(const data_type &
                     }
                     std::uint32_t filter_le{};
                     std::memcpy(&filter_le, msg.data() + buf_off, 4);
-                    packet_filter_ = static_cast<std::uint16_t>(filter_le); // 低 16 位为过滤位图
-                    // 对齐 rndis.c：filter≠0 → DATA_INITIALIZED（carrier on 开始
-                    // 收发），filter==0 → 回 INITIALIZED（carrier off）
+                    packet_filter_ = static_cast<std::uint16_t>(filter_le); // Low 16 bits are the filter bitmap
+                    // Match rndis.c: filter!=0 -> DATA_INITIALIZED (carrier on, begin
+                    // sending/receiving); filter==0 -> return to INITIALIZED (carrier off)
                     state_ = packet_filter_ != 0 ? RndisState::DataInitialized : RndisState::Initialized;
                     SPDLOG_DEBUG("RNDIS SET_CURRENT_PACKET_FILTER: 0x{:04x}", packet_filter_);
                     status = RndisStatus::Success;
                     break;
                 }
                 case OID_802_3_MULTICAST_LIST:
-                    // 直接接受（忽略内容，对齐内核 gen_ndis_set_resp 的默认接受）
-                    SPDLOG_DEBUG("RNDIS SET_802_3_MULTICAST_LIST 接受");
+                    // Accept directly (ignore contents, matching kernel gen_ndis_set_resp's default acceptance)
+                    SPDLOG_DEBUG("RNDIS SET_802_3_MULTICAST_LIST accepted");
                     status = RndisStatus::Success;
                     break;
                 default:
-                    // 其余 OID 不支持（对齐内核 SET 未知 OID 回 NOT_SUPPORTED）
-                    SPDLOG_WARN("RNDIS 不支持 SET OID 0x{:08X}", set.oid);
+                    // Other OIDs unsupported (matching kernel SET returning NOT_SUPPORTED for unknown OIDs)
+                    SPDLOG_WARN("RNDIS SET OID 0x{:08X} unsupported", set.oid);
                     break;
             }
             data_type resp;
@@ -323,7 +323,7 @@ void RndisCommunicationInterfaceHandler::process_rndis_message(const data_type &
             break;
         }
         case RndisMessageType::Reset:
-            // 对齐 rndis.c：清空未取走的响应队列，回 RESET_C（AddressingReset=1）
+            // Match rndis.c: clear unretrieved response queue and return RESET_C (AddressingReset=1)
             response_queue_.clear();
             {
                 data_type resp;
@@ -334,8 +334,8 @@ void RndisCommunicationInterfaceHandler::process_rndis_message(const data_type &
             }
             break;
         case RndisMessageType::Keepalive: {
-            // KEEPALIVE 只有 12 字节头，request_id 在头里（对齐 rndis.c：
-            // 主机（Windows）每 5 秒发一次，回 KEEPALIVE_C SUCCESS）
+            // KEEPALIVE has only a 12-byte header with request_id in it (matching rndis.c:
+            // host (Windows) sends every 5 seconds; return KEEPALIVE_C SUCCESS)
             RndisMessageHeader ka{};
             if (!copy_msg(msg, 0, ka)) {
                 return;
@@ -348,18 +348,18 @@ void RndisCommunicationInterfaceHandler::process_rndis_message(const data_type &
             break;
         }
         default:
-            // 未知消息类型：丢弃不响应（对齐 rndis.c 默认分支）
-            SPDLOG_WARN("未知 RNDIS 消息类型 0x{:08X}", hdr.message_type);
+            // Unknown message type: discard without response (matching rndis.c's default branch)
+            SPDLOG_WARN("Unknown RNDIS message type 0x{:08X}", hdr.message_type);
             break;
     }
 }
 
 data_type RndisCommunicationInterfaceHandler::query_oid(std::uint32_t oid) {
-    // OID 表对齐内核 rndis.c 的 oid_supported_list 与 rndis_query_response；
-    // 返回空表示不支持（组装 NOT_SUPPORTED 的 QUERY_C）
+    // The OID table matches kernel rndis.c's oid_supported_list and rndis_query_response;
+    // returning empty means unsupported (assemble QUERY_C with NOT_SUPPORTED)
     switch (oid) {
         case OID_GEN_SUPPORTED_LIST: {
-            // 支持列表 = 除统计 OID（XMIT_OK/RCV_OK/…）外的全部（对齐内核）
+            // Supported list = all except statistics OIDs (XMIT_OK/RCV_OK/...), matching the kernel
             const std::uint32_t list[] = {
                     OID_GEN_SUPPORTED_LIST,       OID_GEN_HARDWARE_STATUS,  OID_GEN_MEDIA_SUPPORTED,
                     OID_GEN_MEDIA_IN_USE,         OID_GEN_MAXIMUM_FRAME_SIZE, OID_GEN_LINK_SPEED,
@@ -371,26 +371,26 @@ data_type RndisCommunicationInterfaceHandler::query_oid(std::uint32_t oid) {
             };
             data_type buf;
             for (auto supported : list) {
-                vector_append_to_le(buf, supported); // 每条 4 字节
+                vector_append_to_le(buf, supported); // 4 bytes per entry
             }
             return buf;
         }
         case OID_GEN_HARDWARE_STATUS:
-            return le32_bytes(0); // 硬件就绪
+            return le32_bytes(0); // Hardware ready
         case OID_GEN_MEDIA_SUPPORTED:
         case OID_GEN_MEDIA_IN_USE:
             return le32_bytes(RNDIS_MEDIUM_802_3);
         case OID_GEN_MAXIMUM_FRAME_SIZE:
-            return le32_bytes(1500); // netdev mtu（对齐内核）
+            return le32_bytes(1500); // netdev mtu (matching the kernel)
         case OID_GEN_LINK_SPEED:
             return le32_bytes(link_speed_100bps_);
         case OID_GEN_TRANSMIT_BLOCK_SIZE:
         case OID_GEN_RECEIVE_BLOCK_SIZE:
             return le32_bytes(1500);
         case OID_GEN_VENDOR_ID:
-            return le32_bytes(0); // 厂商 OUI 低 24 位（示例未配置）
+            return le32_bytes(0); // Low 24 bits of vendor OUI (unconfigured in the example)
         case OID_GEN_VENDOR_DESCRIPTION:
-            return le32_bytes(0); // 未配置厂商描述：对齐内核返回空描述
+            return le32_bytes(0); // No configured vendor description: match the kernel by returning an empty description
         case OID_GEN_VENDOR_DRIVER_VERSION:
             return le32_bytes(1);
         case OID_GEN_CURRENT_PACKET_FILTER:
@@ -398,7 +398,7 @@ data_type RndisCommunicationInterfaceHandler::query_oid(std::uint32_t oid) {
         case OID_GEN_MAXIMUM_TOTAL_SIZE:
             return le32_bytes(RNDIS_MAX_TOTAL_SIZE);
         case OID_GEN_MEDIA_CONNECT_STATUS:
-            return le32_bytes(0); // CONNECTED：usbip 连接即链路 up
+            return le32_bytes(0); // CONNECTED: usbip connection means link up
         case OID_GEN_MAC_OPTIONS:
             return le32_bytes(RNDIS_MAC_OPTIONS_SERIALIZED_FULL_DUPLEX);
         case OID_GEN_PHYSICAL_MEDIUM:
@@ -408,16 +408,16 @@ data_type RndisCommunicationInterfaceHandler::query_oid(std::uint32_t oid) {
         case OID_GEN_XMIT_ERROR:
         case OID_GEN_RCV_ERROR:
         case OID_GEN_RCV_NO_BUFFER:
-            return le32_bytes(0); // 统计（示例不收集）
+            return le32_bytes(0); // Statistics (not collected by the example)
         case OID_802_3_PERMANENT_ADDRESS:
         case OID_802_3_CURRENT_ADDRESS: {
-            // 6 字节二进制 MAC（Linux 主机绑定强制查询 PERMANENT_ADDRESS，
-            // 失败则绑定失败——rndis_host.c generic_rndis_bind）
+            // 6-byte binary MAC (Linux host binding mandates querying PERMANENT_ADDRESS;
+            // failure prevents binding: rndis_host.c generic_rndis_bind)
             return {mac_address_[0], mac_address_[1], mac_address_[2], mac_address_[3], mac_address_[4],
                     mac_address_[5]};
         }
         case OID_802_3_MULTICAST_LIST:
-            return le32_bytes(0xE0000000); // 组播基址
+            return le32_bytes(0xE0000000); // Multicast base address
         case OID_802_3_MAXIMUM_LIST_SIZE:
             return le32_bytes(1);
         case OID_802_3_MAC_OPTIONS:
@@ -427,16 +427,16 @@ data_type RndisCommunicationInterfaceHandler::query_oid(std::uint32_t oid) {
         case OID_802_3_XMIT_MORE_COLLISIONS:
             return le32_bytes(0);
         default:
-            return {}; // 未知 OID → NOT_SUPPORTED
+            return {}; // Unknown OID -> NOT_SUPPORTED
     }
 }
 
 void RndisCommunicationInterfaceHandler::enqueue_response(data_type &&response) {
     if (response_queue_.size() >= RNDIS_RESPONSE_QUEUE_LIMIT) {
-        response_queue_.pop_front(); // 防恶意主机堆积：丢最旧
+        response_queue_.pop_front(); // Prevent malicious host accumulation: drop the oldest
     }
     response_queue_.push_back(std::move(response));
-    // 通知主机有响应可读（对齐内核 resp_avail 回调：中断 IN 发 8 字节 {1,0}）
+    // Notify the host a response is available (matching kernel resp_avail callback: interrupt IN sends 8 bytes {1,0})
     notification_channel.push(make_rndis_response_available_notification());
 }
 
@@ -447,16 +447,16 @@ void RndisCommunicationInterfaceHandler::reset_device_state() {
 }
 
 void RndisCommunicationInterfaceHandler::on_new_connection(TransferResponder &current_session, std::error_code &ec) {
-    // 父类先设 session 指针（通道应答请求要用），再绑定通道并重置断连状态。
-    // 新客户端是全新的 RNDIS 会话：状态机从 UNINITIALIZED 开始
+    // The parent sets the session pointer first (needed for channel responses), then bind the channel and reset disconnection state.
+    // A new client starts a fresh RNDIS session: the state machine starts at UNINITIALIZED
     VirtualInterfaceHandler::on_new_connection(current_session, ec);
     reset_device_state();
     notification_channel.on_new_connection(&current_session);
 }
 
 void RndisCommunicationInterfaceHandler::on_disconnection(std::error_code &ec) {
-    // 先清通道（缓冲 + 挂起请求，TransferHandle 析构自动释放）并复位状态机，
-    // 再调父类清 session
+    // Clear the channel first (buffer + pending requests; TransferHandle destruction releases automatically) and reset the state machine,
+    // then let the parent clear session
     notification_channel.on_disconnection();
     reset_device_state();
     VirtualInterfaceHandler::on_disconnection(ec);
@@ -464,8 +464,8 @@ void RndisCommunicationInterfaceHandler::on_disconnection(std::error_code &ec) {
 
 void RndisCommunicationInterfaceHandler::handle_unlink_seqnum(std::uint32_t unlink_seqnum, std::uint32_t cmd_seqnum) {
     bool cancelled = notification_channel.cancel_pending(unlink_seqnum);
-    // 从队列中真的取消了待处理 URB → 回 -ECONNRESET（URB 被取消，且不再发
-    // RET_SUBMIT，请求已从队列移除）；找不到（URB 已完成/不存在）→ 回 0
+    // If a pending URB was actually cancelled from the queue, return -ECONNRESET (URB cancelled, with no further
+    // RET_SUBMIT because the request was removed); if not found (URB completed/nonexistent), return 0
     responder->submit_ret_unlink(UsbIpResponse::UsbIpRetUnlink::create_ret_unlink(
             cmd_seqnum, cancelled ? static_cast<std::uint32_t>(UrbStatusType::StatusECONNRESET) : 0));
 }
@@ -477,8 +477,8 @@ RndisDataInterfaceHandler::RndisDataInterfaceHandler(UsbInterface &handle_interf
                                                      RndisCommunicationInterfaceHandler *comm) :
     VirtualInterfaceHandler(handle_interface, string_pool), backend_(backend), comm_(comm) {
     if (backend_) {
-        // 注入发帧回调：后端产生帧时包 RNDIS 头再经通道推给主机
-        // （通道线程安全，任意线程可调）
+        // Inject the frame-send callback: wrap backend-produced frames with RNDIS headers, then push to the host through the channel
+        // (the channel is thread-safe, callable from any thread)
         backend_->set_send_to_host([this](const std::uint8_t *data, std::size_t size) {
             in_channel.push(wrap_rndis_packet(data, size));
         });
@@ -486,9 +486,9 @@ RndisDataInterfaceHandler::RndisDataInterfaceHandler(UsbInterface &handle_interf
 }
 
 UsbInterface RndisDataInterfaceHandler::make_interface(std::uint8_t in_ep, std::uint8_t out_ep) {
-    // 对齐内核 f_rndis.c 的 rndis_data_intf：只有 alt0（无 NOP altsetting，
-    // 这是 RNDIS 相对 ECM 的优势——RNDIS 用 OID 包过滤器控制收发，不需要
-    // 通过 altsetting 切换数据面）
+    // Match kernel f_rndis.c's rndis_data_intf: only alt0 (no NOP altsetting;
+    // this is RNDIS's advantage over ECM: RNDIS controls sending/receiving with an OID packet filter, without needing
+    // altsetting switches for the data plane)
     UsbInterface i{
             .interface_class = static_cast<std::uint8_t>(ClassCode::CDCData),
             .interface_subclass = 0x00,
@@ -510,16 +510,16 @@ void RndisDataInterfaceHandler::handle_bulk_transfer(std::uint32_t seqnum, const
                                                      std::uint32_t transfer_buffer_length, TransferHandle transfer,
                                                      std::error_code &ec) {
     if (ep.is_in()) {
-        // Bulk IN：主机请求帧。通道内部处理：缓冲有帧立即应答（一条消息 =
-        // 一帧 RNDIS_MSG_PACKET，帧比请求短发短包），否则挂起等待
+        // Bulk IN: the host requests a frame. Handled within the channel: reply immediately if a frame is buffered (one message =
+        // one RNDIS_MSG_PACKET frame; send a short packet if shorter than the request), otherwise suspend and wait
         SPDLOG_TRACE("[RNDIS] IN req seq={} len={} buf={}", seqnum, transfer_buffer_length, in_channel.size());
         in_channel.on_in_request(ep.address, seqnum, transfer_buffer_length, std::move(transfer));
     }
     else {
-        // Bulk OUT：主机发来 RNDIS_MSG_PACKET 消息流。有 backend 解析剥头后
-        // 逐帧交给网络侧消费并立即应答；否则先给子类当场消费机会（true=已
-        // 处理），都不行挂起入通道（NAK 背压），子类之后用 take_frame() 取出
-        // 数据并应答（挂起的是原始消息，不做剥头）
+        // Bulk OUT: the host sends a RNDIS_MSG_PACKET message stream. If backend exists, parse and strip headers, then
+        // give each frame to the network side for consumption and reply immediately. Otherwise let the subclass consume immediately (true=
+        // handled); if neither works, suspend in the channel (NAK backpressure), and the subclass later takes
+        // data with take_frame() and responds (the original message is suspended without stripping headers)
         auto *trx = GenericTransfer::from_handle(transfer.get());
         auto received_size = static_cast<std::uint32_t>(trx->data.size());
         SPDLOG_TRACE("[RNDIS] OUT raw={} bytes", received_size);
@@ -541,7 +541,7 @@ void RndisDataInterfaceHandler::handle_bulk_transfer(std::uint32_t seqnum, const
             }
         }
         if (consumed) {
-            // 解析失败（无有效帧）也正常应答：对齐内核丢包但不 stall URB
+            // Reply normally even if parsing fails (no valid frames): match the kernel dropping packets without stalling the URB
             responder->submit_ret_submit(
                     UsbIpResponse::UsbIpRetSubmit::create_ret_submit_ok_without_data(seqnum, received_size));
         }
@@ -554,24 +554,24 @@ void RndisDataInterfaceHandler::handle_bulk_transfer(std::uint32_t seqnum, const
 void RndisDataInterfaceHandler::handle_non_standard_request_type_control_urb(
         std::uint32_t seqnum, const UsbEndpoint &ep, std::uint32_t transfer_flags, std::uint32_t transfer_buffer_length,
         const SetupPacket &setup_packet, TransferHandle transfer, std::error_code &ec) {
-    // 数据接口没有类特定控制请求（RNDIS 控制走通信接口的封装命令）
-    SPDLOG_WARN("RNDIS 数据接口收到意外控制请求");
+    // The data interface has no class-specific control requests (RNDIS control uses encapsulated commands on the communication interface)
+    SPDLOG_WARN("RNDIS data interface received unexpected control request");
     responder->submit_ret_submit(UsbIpResponse::UsbIpRetSubmit::create_ret_submit_epipe_without_data(seqnum, 0));
 }
 
 data_type RndisDataInterfaceHandler::get_class_specific_descriptor() {
-    // 数据接口没有类特定描述符（对齐内核 rndis_data_intf）
+    // The data interface has no class-specific descriptors (matching kernel rndis_data_intf)
     return {};
 }
 
 bool RndisDataInterfaceHandler::on_frame_received(data_type &&frame) {
-    // 默认行为：总是消费并立即应答（未 override 的子类保持"总是接收"语义）
+    // Default behavior: always consume and reply immediately (subclasses without overrides retain always-receive semantics)
     return true;
 }
 
 std::size_t RndisDataInterfaceHandler::send_frame(const std::uint8_t *data, std::size_t size) {
-    // 非阻塞推送（断连时通道内丢弃返回 0），自动包 RNDIS 头；
-    // 返回值是帧长（对齐 ECM 的 send_frame 语义）
+    // Nonblocking push (the channel discards and returns 0 when disconnected), automatically wraps RNDIS headers;
+    // return value is the frame length (matching ECM send_frame semantics)
     if (data == nullptr || size == 0) {
         return 0;
     }
@@ -593,20 +593,20 @@ std::optional<OutEndpointChannel::Pending> RndisDataInterfaceHandler::try_take_f
 }
 
 void RndisDataInterfaceHandler::set_tx_max_pending(std::size_t max_pending) {
-    // 通道内部锁保护缓冲上限
+    // The channel's internal lock protects the buffer limit
     in_channel.set_max_pending_messages(max_pending);
 }
 
 void RndisDataInterfaceHandler::on_new_connection(TransferResponder &current_session, std::error_code &ec) {
-    // 父类先设 session 指针（通道应答请求要用），再绑定通道并重置断连状态
+    // The parent sets the session pointer first (needed for channel responses), then bind the channel and reset disconnection state
     VirtualInterfaceHandler::on_new_connection(current_session, ec);
     in_channel.on_new_connection(&current_session);
     out_channel.on_new_connection(&current_session);
 }
 
 void RndisDataInterfaceHandler::on_disconnection(std::error_code &ec) {
-    // 先清通道（缓冲 + 挂起请求，TransferHandle 析构时自动释放；唤醒阻塞
-    // 的取者让它们按断连返回），后端清缓冲防旧数据残留，再调父类清 session
+    // Clear the channel first (buffer + pending requests; TransferHandle destruction releases automatically; wake blocked
+    // takers to return as disconnected), clear backend buffers to prevent old data remaining, then let the parent clear session
     out_channel.on_disconnection();
     in_channel.on_disconnection();
     if (backend_) {
@@ -616,13 +616,13 @@ void RndisDataInterfaceHandler::on_disconnection(std::error_code &ec) {
 }
 
 void RndisDataInterfaceHandler::handle_unlink_seqnum(std::uint32_t unlink_seqnum, std::uint32_t cmd_seqnum) {
-    // 挂起请求分散在 IN/OUT 两通道里，逐个尝试取消
+    // Pending requests are distributed across the IN/OUT channels; try cancelling each in turn
     bool cancelled = in_channel.cancel_pending(unlink_seqnum);
     if (!cancelled) {
         cancelled = out_channel.cancel_pending(unlink_seqnum);
     }
-    // 从队列中真的取消了待处理 URB → 回 -ECONNRESET（URB 被取消，且不再发
-    // RET_SUBMIT，请求已从队列移除）；找不到（URB 已完成/不存在）→ 回 0
+    // If a pending URB was actually cancelled from the queue, return -ECONNRESET (URB cancelled, with no further
+    // RET_SUBMIT because the request was removed); if not found (URB completed/nonexistent), return 0
     responder->submit_ret_unlink(UsbIpResponse::UsbIpRetUnlink::create_ret_unlink(
             cmd_seqnum, cancelled ? static_cast<std::uint32_t>(UrbStatusType::StatusECONNRESET) : 0));
 }

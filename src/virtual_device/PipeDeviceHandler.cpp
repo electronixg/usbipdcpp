@@ -13,9 +13,9 @@ using namespace usbipdcpp;
 namespace usbipdcpp {
 
 /**
- * @brief 管道接口 handler：接口内所有端点统一转发到设备级 PipeDeviceHandler
- * （数据面状态集中在设备级，read/write 从任意接口拿到统一的数据流）
- * 内部实现类：声明在源文件，头文件的 friend 声明与之匹配
+ * @brief Pipe interface handler: all endpoints in the interface are forwarded uniformly to the device-level PipeDeviceHandler
+ * (data-plane state is centralized at device level; read/write from any interface obtain the unified data stream)
+ * Internal implementation class: declared in the source file, matching the header's friend declaration
  */
 class PipeInterfaceHandler : public VirtualInterfaceHandler {
 public:
@@ -56,7 +56,7 @@ public:
         pipe->on_pipe_unlink(unlink_seqnum, cmd_seqnum);
     }
 
-    // ========== 标准请求回调（未设置的回调用基类默认行为：feature/status 回成功，未实现的查询类回 EPIPE）==========
+    // ========== Standard request callbacks (unset callbacks use base defaults: feature/status succeed; unimplemented query requests return EPIPE) ==========
 
     void request_clear_feature(std::uint16_t feature_selector, std::uint32_t *p_status) override {
         if (pipe->standard_request_handler.clear_feature) {
@@ -127,15 +127,15 @@ public:
     }
 
     [[nodiscard]] data_type get_class_specific_descriptor() override {
-        // 通用管道本身没有类描述符；HID 等需要特定 USB 类的设备通过
-        // set_class_specific_descriptor 提供（如 HID 描述符 0x21）
+        // The generic pipe itself has no class descriptors; devices requiring specific USB classes such as HID provide them through
+        // set_class_specific_descriptor (e.g. HID descriptor 0x21)
         return pipe->class_specific_descriptor;
     }
 
     data_type request_get_descriptor(std::uint8_t type, std::uint8_t language_id, std::uint16_t descriptor_length,
                                      std::uint32_t *p_status) override {
-        // GET_DESCRIPTOR（recipient=接口）：自定义描述符按类型返回（如 HID
-        // 报告描述符 type=0x22），未设置的类型回 EPIPE（基类默认行为）
+        // GET_DESCRIPTOR (recipient=interface): return custom descriptors by type (e.g. HID
+        // report descriptor type=0x22); unset types return EPIPE (base default behavior)
         auto it = pipe->custom_descriptors.find(type);
         if (it != pipe->custom_descriptors.end()) {
             return it->second;
@@ -148,12 +148,12 @@ private:
     void forward_transfer(std::uint32_t seqnum, const UsbEndpoint &ep, std::uint32_t transfer_buffer_length,
                           TransferHandle transfer) {
         if (ep.is_in()) {
-            // IN：主机请求数据，转发设备级（FIFO 匹配或挂起）
+            // IN: the host requests data; forward to device level (FIFO matching or suspension)
             pipe->on_pipe_in_request(ep.address, seqnum, transfer_buffer_length, std::move(transfer));
         }
         else {
-            // OUT：整个请求挂起（数据留在 transfer），设备级 read() 取走时应答
-            // （NAK 背压：业务层不读则主机 URB 挂着，对齐内核 vudc）
+            // OUT: suspend the entire request (data remains in transfer); respond when device-level read() takes it
+            // (NAK backpressure: the host URB remains pending if the application does not read, matching kernel vudc)
             pipe->on_pipe_out_transfer(ep.address, seqnum, std::move(transfer));
         }
     }
@@ -168,10 +168,10 @@ PipeDeviceHandler::PipeDeviceHandler(UsbDevice &handle_device, StringPool &strin
 }
 
 void PipeDeviceHandler::setup_interface_handlers() {
-    // 强制所有接口都改为管道接口 handler：数据面/标准请求统一走管道转发
-    // （read/write 拿到全部端点数据流），不允许混合使用其他接口 handler，
-    // 否则 read/write 会漏掉部分端点。创建放在这个阶段而不是构造函数里，
-    // 因为接口 handler 持有本对象指针，需等对象完整构造
+    // Force all interfaces to pipe interface handlers: data plane/standard requests uniformly use pipe forwarding
+    // (read/write obtain all endpoint data streams); mixing other interface handlers is forbidden,
+    // otherwise read/write misses some endpoints. Create them at this stage rather than in the constructor,
+    // because interface handlers hold a pointer to this object, which must be fully constructed first
     for (auto &intf: handle_device.interfaces) {
         intf.with_handler<PipeInterfaceHandler>(string_pool, this);
     }
@@ -179,14 +179,14 @@ void PipeDeviceHandler::setup_interface_handlers() {
 }
 
 bool PipeDeviceHandler::read(PipeXfer &xfer, std::uint32_t timeout_ms) {
-    // 从各端点 OUT 通道取（挂起的请求取走时应答）。取回的数据包括：
-    // bulk OUT 负载、控制 OUT 数据（带 setup_req）、控制 IN 的纯通知
-    // （带 setup_req、无数据）。取序 = 主机请求的全局到达顺序：内核 vhci
-    // 的 seqnum 全局单调递增，跨端点取 seqnum 最旧的那条（seqnum_newer
-    // 环形比较防回绕，每端点内严格 FIFO）
+    // Take from each endpoint's OUT channel (respond when taking a suspended request). Retrieved data includes:
+    // bulk OUT payloads, control OUT data (with setup_req), and control IN notifications only
+    // (with setup_req, no data). Retrieval order = global host-request arrival order: kernel vhci's
+    // seqnum increases monotonically globally; take the oldest seqnum across endpoints (seqnum_newer
+    // uses circular comparison to handle wraparound; strictly FIFO within each endpoint)
     std::unique_lock lock(pipe_mutex);
     auto take_one = [&]() -> bool {
-        // 找到 seqnum 最旧的通道（全局最旧请求）
+        // Find the channel with the oldest seqnum (globally oldest request)
         OutEndpointChannel *oldest = nullptr;
         for (auto &[ep, ch]: out_channels) {
             auto sn = ch.front_seqnum();
@@ -214,18 +214,18 @@ bool PipeDeviceHandler::read(PipeXfer &xfer, std::uint32_t timeout_ms) {
         if (take_one()) {
             return true;
         }
-        // 等待数据或断连（断连时把已排队的消费完再返回 false）
+        // Wait for data or disconnection (on disconnection, consume already queued data before returning false)
         if (timeout_ms == 0) {
             out_cv.wait(lock);
         }
         else {
             if (out_cv.wait_for(lock, std::chrono::milliseconds(timeout_ms)) == std::cv_status::timeout) {
-                // 超时时刻数据可能恰好入队：跳出循环走统一判断，避免丢数据
+                // Data may be queued exactly at timeout: break out for the common check to avoid losing data
                 break;
             }
         }
     }
-    // 断连或超时：把已排队的数据消费完再返回 false
+    // Disconnection or timeout: consume already queued data before returning false
     if (take_one()) {
         return true;
     }
@@ -234,34 +234,34 @@ bool PipeDeviceHandler::read(PipeXfer &xfer, std::uint32_t timeout_ms) {
 
 std::size_t PipeDeviceHandler::write(const PipeXfer &xfer, std::uint32_t timeout_ms) {
     if (xfer.ep != 0 && (xfer.ep & 0x80) == 0) {
-        // 目标不是 IN 端点（含方向位）也不是控制应答：宿主不会对它发 IN 请求，
-        // 数据会滞留 FIFO，属用户误用，防御性提示
-        SPDLOG_WARN("PipeDeviceHandler::write 目标端点 {:02x} 不是 IN 端点", xfer.ep);
+        // The target is neither an IN endpoint (including direction bit) nor a control response: the host will not send it IN requests,
+        // so data remains in FIFO; this is user misuse, so provide a defensive diagnostic
+        SPDLOG_WARN("PipeDeviceHandler::write target endpoint {:02x} is not an IN endpoint", xfer.ep);
     }
     ByteStreamInChannel *channel;
     {
-        // 只在取通道引用时持 pipe_mutex：阻塞写期间必须释放，否则宿主 IN
-        // 请求路径（on_pipe_in_request 也要 pipe_mutex）无法应答请求腾出
-        // 空间，写者永远等不到唤醒（死锁）
+        // Hold pipe_mutex only when obtaining the channel reference: release it during blocking writes, otherwise the host IN
+        // request path (on_pipe_in_request also needs pipe_mutex) cannot respond and free
+        // space, so the writer never wakes (deadlock)
         std::lock_guard lock(pipe_mutex);
         if (disconnected) {
             return 0;
         }
         channel = &get_in_channel(xfer.ep);
     }
-    // 阻塞写：通道内部等空间（缓冲满时宿主取走，timeout_ms=0 无限等），断连
-    // 返回已写入量。引用稳定性：断连时 on_disconnection 先遍历通道置断连
-    // 标记并唤醒（写者醒来检查断连返回，不再访问通道），之后才清 map
+    // Blocking write: the channel waits internally for space (host takes data when full; timeout_ms=0 waits indefinitely); on disconnection,
+    // return the amount written. Reference stability: on disconnection, on_disconnection first visits channels, sets disconnection
+    // flags, and wakes waiters (writers wake, check disconnection, return, and stop accessing channels), then clears the map
     return channel->write(xfer.data.data(), xfer.data.size(), timeout_ms);
 }
 
 ByteStreamInChannel &PipeDeviceHandler::get_in_channel(std::uint8_t ep_addr) {
-    // 调用者必须已持有 pipe_mutex
+    // The caller must already hold pipe_mutex
     auto it = in_channels.find(ep_addr);
     if (it == in_channels.end()) {
         it = in_channels.try_emplace(ep_addr).first;
         auto &ch = it->second;
-        // 新会话懒创建：容量取当前配置，绑定会话并重置断连状态
+        // Lazy creation for a new session: use current configured capacity, bind session, and reset disconnection state
         ch.set_capacity(fifo_capacity);
         ch.on_new_connection(responder);
     }
@@ -269,12 +269,12 @@ ByteStreamInChannel &PipeDeviceHandler::get_in_channel(std::uint8_t ep_addr) {
 }
 
 OutEndpointChannel &PipeDeviceHandler::get_out_channel(std::uint8_t ep_addr) {
-    // 调用者必须已持有 pipe_mutex
+    // The caller must already hold pipe_mutex
     auto it = out_channels.find(ep_addr);
     if (it == out_channels.end()) {
         it = out_channels.try_emplace(ep_addr).first;
         auto &ch = it->second;
-        // 新会话懒创建：绑定会话并重置断连状态
+        // Lazy creation for a new session: bind session and reset disconnection state
         ch.on_new_connection(responder);
     }
     return it->second;
@@ -294,12 +294,12 @@ void PipeDeviceHandler::set_custom_descriptor(std::uint8_t type, data_type descr
 }
 
 void PipeDeviceHandler::on_new_connection(TransferResponder &current_session, error_code &ec) {
-    // 父类注册 session 并遍历接口建连
+    // The parent registers session and traverses interfaces to connect them
     VirtualDeviceHandler::on_new_connection(current_session, ec);
     if (ec) {
         return;
     }
-    // 新会话从干净状态开始：IN/OUT 通道由端点首次访问时懒重建
+    // A new session starts clean: IN/OUT channels are lazily recreated on first endpoint access
     std::lock_guard lock(pipe_mutex);
     disconnected = false;
     in_channels.clear();
@@ -310,8 +310,8 @@ void PipeDeviceHandler::on_disconnection(error_code &ec) {
     {
         std::lock_guard lock(pipe_mutex);
         disconnected = true;
-        // 每通道清缓冲 + 挂起请求（TransferHandle 析构时自动释放）+ 唤醒
-        // 阻塞的写者让它们以断连返回
+        // For each channel, clear the buffer + pending requests (TransferHandle destruction releases automatically) + wake
+        // blocked writers so they return as disconnected
         for (auto &[ep, ch]: in_channels) {
             ch.on_disconnection();
         }
@@ -321,23 +321,23 @@ void PipeDeviceHandler::on_disconnection(error_code &ec) {
         in_channels.clear();
         out_channels.clear();
     }
-    // 唤醒阻塞的 read，让它以"断连"返回
+    // Wake blocking read so it returns as disconnected
     out_cv.notify_all();
-    // 父类遍历接口 on_disconnection 并清除 session 指针
+    // The parent traverses interfaces for on_disconnection and clears the session pointer
     VirtualDeviceHandler::on_disconnection(ec);
 }
 
 void PipeDeviceHandler::on_pipe_in_request(std::uint8_t ep_addr, std::uint32_t seqnum, std::uint32_t length,
                                            TransferHandle transfer) {
     std::lock_guard lock(pipe_mutex);
-    // 通道内部处理：缓冲有数据立即应答，否则挂起请求等待 write
+    // Handled within the channel: reply immediately if data is buffered; otherwise suspend waiting for write
     get_in_channel(ep_addr).on_in_request(ep_addr, seqnum, length, std::move(transfer));
 }
 
 void PipeDeviceHandler::on_pipe_out_transfer(std::uint8_t ep_addr, std::uint32_t seqnum,
                                              TransferHandle transfer) {
-    // 请求挂起到该端点通道（数据留在 transfer），read() 取走时读出并应答；
-    // 业务层不读则主机该端点 URB 挂着（NAK 背压，逐端点独立），读走后恢复
+    // Suspend the request in this endpoint's channel (data remains in transfer); read and respond when read() takes it;
+    // if the application does not read, the host URB for this endpoint remains pending (NAK backpressure, independent per endpoint), resuming after data is read
     std::lock_guard lock(pipe_mutex);
     get_out_channel(ep_addr).on_out_request(ep_addr, seqnum, std::move(transfer));
     out_cv.notify_all();
@@ -347,12 +347,12 @@ void PipeDeviceHandler::on_pipe_control_request(const SetupPacket &setup, std::u
                                                 std::uint32_t transfer_buffer_length, TransferHandle transfer) {
     std::lock_guard lock(pipe_mutex);
     if (setup.is_out()) {
-        // OUT：数据已随控制传输到达，整体挂起（read() 取走时读数据并应答）
+        // OUT: data has arrived with the control transfer; suspend the entire request (read data and respond when read() takes it)
         get_out_channel(0).on_out_request(0, seqnum, std::move(transfer), setup);
     }
     else {
-        // IN：请求挂起（等 write({ep=0, data}) 应答），并透出 setup 通知业务层：
-        // read() 取到纯通知（带 setup_req、无数据）后知道有控制请求待应答
+        // IN: suspend the request (waiting for write({ep=0, data}) to respond), and expose setup as a notification to the application:
+        // after read() obtains the notification only (with setup_req, no data), it knows a control request awaits a response
         get_in_channel(0).on_in_request(0, seqnum, transfer_buffer_length, std::move(transfer));
         get_out_channel(0).on_out_request(0, seqnum, TransferHandle{}, setup);
     }
@@ -362,8 +362,8 @@ void PipeDeviceHandler::on_pipe_control_request(const SetupPacket &setup, std::u
 void PipeDeviceHandler::on_pipe_unlink(std::uint32_t unlink_seqnum, std::uint32_t cmd_seqnum) {
     bool cancelled = false;
     {
-        // 挂起请求分两处：IN 请求按端点分散在各通道里，OUT 请求同理，
-        // 逐个尝试取消
+        // Pending requests are in two places: IN requests are distributed by endpoint across their channels, as are OUT requests;
+        // try cancelling each in turn
         std::lock_guard lock(pipe_mutex);
         for (auto &[ep, ch]: in_channels) {
             if (ch.cancel_pending(unlink_seqnum)) {
@@ -380,9 +380,9 @@ void PipeDeviceHandler::on_pipe_unlink(std::uint32_t unlink_seqnum, std::uint32_
             }
         }
     }
-    // 从队列中真的取消了待处理 URB → 回 -ECONNRESET（URB 被取消，且不再发
-    // RET_SUBMIT，请求已从队列移除）；找不到（URB 已完成/不存在）→ 回 0。
-    // 与内核 stub_tx.c 及本项目 HID/CdcAcm 的 unlink 范本一致
+    // If a pending URB was actually cancelled from the queue, return -ECONNRESET (URB cancelled, with no further
+    // RET_SUBMIT because the request was removed); if not found (URB completed/nonexistent), return 0.
+    // Matches the unlink pattern in kernel stub_tx.c and this project's HID/CdcAcm
     responder->submit_ret_unlink(UsbIpResponse::UsbIpRetUnlink::create_ret_unlink(
             cmd_seqnum, cancelled ? static_cast<std::uint32_t>(UrbStatusType::StatusECONNRESET) : 0));
 }

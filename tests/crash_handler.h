@@ -1,12 +1,12 @@
 #pragma once
 
-// 进程启动时注册崩溃/异常处理器，崩溃时打印当前线程调用栈，便于 CI 定位
-// 偶发的崩溃现场（Windows 上 gtest 默认崩溃栈为空，Linux Release 无符号时
-// 只有地址）。栈以地址形式打印，配 addr2line（Linux）/ pdb（Windows）离线
-// 符号化。挂起（不崩溃）的现场不在这里覆盖，由 ctest --timeout 定位测试名。
+// Register crash/exception handlers at process startup; print the current thread's call stack on a crash to help CI locate
+// intermittent crash sites (on Windows, gtest's default crash stack is empty; in Linux Release builds without symbols,
+// only addresses are available). Print stack addresses and symbolize them offline using addr2line (Linux) / pdb (Windows).
+// Hangs (without a crash) are not covered here; ctest --timeout identifies the test name.
 //
-// 用法：测试 .cpp 通过 test_utils.h 间接包含本文件；每个测试是独立进程
-// （gtest_discover_tests），静态初始化阶段（main 之前）注册一次。
+// Usage: test .cpp files include this file indirectly via test_utils.h; each test is a separate process
+// (gtest_discover_tests), with registration once during static initialization (before main).
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -21,7 +21,7 @@ inline LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep) {
         std::fprintf(stderr, "  [%u] %p\n", i, stack[i]);
     }
     std::fflush(stderr);
-    return EXCEPTION_EXECUTE_HANDLER; // 交给系统默认处理
+    return EXCEPTION_EXECUTE_HANDLER; // Let the system default handler handle it
 }
 
 inline int install_crash_handler() {
@@ -34,15 +34,15 @@ inline int install_crash_handler() {
 #include <cstdio>
 #include <cstdlib>
 
-// 用 _Unwind_Backtrace 收集返回地址（Itanium C++ ABI，GCC/Clang 编译器运行时
-// 提供，glibc/bionic/musl 全有且无 API 门控），再经 dladdr 解析为模块+文件内
-// 偏移（glibc 2.34+/bionic/macOS 均在 libc 内，无 API 门控），可直接喂 addr2line
+// Collect return addresses using _Unwind_Backtrace (Itanium C++ ABI, supplied by the GCC/Clang compiler runtime,
+// available in glibc/bionic/musl without API gating), then resolve them with dladdr into module + offset within the file
+// (in libc on glibc 2.34+/bionic/macOS, without API gating), ready to feed directly to addr2line
 #include <dlfcn.h>
 #include <unwind.h>
 
 namespace {
 
-/// _Unwind_Backtrace 回调：把返回地址收集进 buffer
+/// _Unwind_Backtrace callback: collect return addresses in buffer
 struct unwind_state {
     void **buffer;
     int count;
@@ -57,7 +57,7 @@ _Unwind_Reason_Code unwind_callback(struct _Unwind_Context *ctx, void *arg) {
     return _URC_NO_REASON;
 }
 
-/// 打印一帧：优先 dladdr 解析（模块+符号名+偏移），失败退化为裸地址
+/// Print one frame: prefer dladdr resolution (module + symbol name + offset), falling back to the raw address on failure
 void print_frame(int index, void *addr) {
     Dl_info info;
     if (dladdr(addr, &info) != 0 && info.dli_fname != nullptr) {
@@ -97,11 +97,11 @@ inline int install_crash_handler() {
 }
 
 #else
-// 其他平台（无 _WIN32 / Unix 宏）：退化为不注册，崩溃由系统默认处理
+// Other platforms (without _WIN32 / Unix macros): fall back to no registration; the system handles crashes by default
 inline int install_crash_handler() {
     return 0;
 }
 #endif
 
-// 静态初始化阶段注册（C++17 inline 变量，每个进程执行一次）
+// Register during static initialization (C++17 inline variable, executed once per process)
 inline int g_crash_handler_installed = install_crash_handler();

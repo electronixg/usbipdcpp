@@ -1,108 +1,108 @@
-# e2e 端到端测试
+# e2e end-to-end tests
 
-本目录的测试脚本在 WSL2（Ubuntu）中运行：启动 mock 服务器 → 本地 usbip 客户端
-attach → 验证虚拟设备行为（网络/串口/块设备/HID/音频/视频）。
+Test scripts in this directory run under WSL2 (Ubuntu): start mock server → local usbip client
+attach → verify virtual-device behavior (network/serial/block device/HID/audio/video).
 
-> **建议**：有条件者尽量在虚拟机里跑这套测试（WSL2 的 /dev 里直接就有
-> Windows 的物理硬盘，一样可能造成破坏），避免测试中的设备枚举、网络改动、
-> 块设备操作影响物理机上的日常环境。
+> **Recommendation**: Run this test suite in a virtual machine where possible (WSL2 /dev directly contains
+> Windows physical disks, so damage is still possible), avoiding effects of test device enumeration, network changes,
+> and block-device operations on the physical machine's everyday environment.
 
-## 依赖
+## Dependencies
 
-| 依赖 | 用途 | 说明 |
+| Dependency | Purpose | Notes |
 |---|---|---|
-| WSL2（Ubuntu） | 测试环境 | 脚本在 WSL 内执行；Windows 侧用 `wsl -e bash` 调 |
-| `sudo` 免密 | usbip attach/detach 必需 | vhci 写 /sys 要 root；非免密时脚本会卡在密码输入 |
-| usbip 客户端（`/usr/local/sbin/usbip`） | attach/list/detach | 内核 usbip 用户层工具，支持 `-t <端口>`；**必须 sudo** |
-| usbip-win2 vhci 内核模块 | USB 总线模拟 | `lsmod \| grep vhci` 确认已加载；没加载则 attach 失败 |
-| 编译产物（`build_wsl2/`） | mock 服务器二进制 | 先 `cmake --build build_wsl2 -j6`（WSL 里编译，依赖走 vcpkg） |
-| python3 + pyusb（`python3-usb` 包） | cdc_acm / pipe 数据面测试 | 没有则这两个脚本失败 |
-| alsa-utils（aplay/arecord） | audio / speaker 测试 | 缺失时对应脚本 SKIP 或失败 |
-| ffmpeg | uvc 取流测试 | 缺失时 SKIP |
-| evtest | HID（键盘/鼠标/手柄）测试 | 事件流捕获 |
-| iproute2 / util-linux / coreutils | ss、lsblk、blockdev、truncate、cmp 等 | WSL 默认自带 |
+| WSL2 (Ubuntu) | Test environment | Scripts execute inside WSL; invoke from Windows using `wsl -e bash` |
+| Passwordless `sudo` | Required for usbip attach/detach | vhci writes to /sys require root; otherwise scripts stall awaiting password |
+| usbip client (`/usr/local/sbin/usbip`) | attach/list/detach | Kernel usbip userspace tool, supports `-t <port>`; **sudo required** |
+| usbip-win2 vhci kernel module | USB bus emulation | Confirm loaded with `lsmod \| grep vhci`; otherwise attach fails |
+| Build output (`build_wsl2/`) | Mock server binaries | First `cmake --build build_wsl2 -j6` (build in WSL, dependencies through vcpkg) |
+| python3 + pyusb (`python3-usb` package) | cdc_acm / pipe data-plane tests | Both scripts fail without them |
+| alsa-utils (aplay/arecord) | audio / speaker tests | Corresponding script SKIPs or fails if missing |
+| ffmpeg | uvc stream retrieval test | SKIP if missing |
+| evtest | HID (keyboard/mouse/gamepad) tests | Event-stream capture |
+| iproute2 / util-linux / coreutils | ss, lsblk, blockdev, truncate, cmp, etc. | Included by default in WSL |
 
-## 测试前准备
+## Preparation before testing
 
-1. **编译**：`cd 项目根 && cmake --build build_wsl2 -j6`（WSL 里执行，构建目录见
-   CLAUDE.local.md；禁开满核，最多 -j6）
-2. **确认 vhci 模块已加载**：`lsmod | grep vhci`——没加载时 attach 直接失败
-3. **确认 sudo 可用且免密**：`sudo -n true` 返回 0 即可
-4. **清理环境**（脚本启动时自动做，但手动跑前确认无碍）：
-   - 端口 53240 无残留监听（`ss -tln | grep 53240`）
-   - `/dev/input/by-path/`、`/dev/ttyACM*`、`/proc/asound/cards` 无残留设备
-5. **磁盘安全**：确认 WSL 里挂着的物理硬盘盘符（`lsblk`），测试中 mock_msc
-   的新盘由脚本双路确认，但人为干扰（见下）可能破坏确认逻辑
+1. **Build**: `cd project-root && cmake --build build_wsl2 -j6` (execute in WSL; build directory in
+   CLAUDE.local.md; do not use all cores, at most -j6)
+2. **Confirm vhci module loaded**: `lsmod | grep vhci`—attach fails immediately if not loaded
+3. **Confirm sudo available and passwordless**: `sudo -n true` should return 0
+4. **Clean environment** (scripts do this on startup; check before manual runs):
+   - No leftover listener on port 53240 (`ss -tln | grep 53240`)
+   - No leftover devices in `/dev/input/by-path/`, `/dev/ttyACM*`, `/proc/asound/cards`
+5. **Disk safety**: confirm physical disk device names attached in WSL (`lsblk`); scripts identify mock_msc
+   new disk through two independent checks, but manual interference (below) may break confirmation logic
 
-## 运行
+## Running
 
 ```bash
-# 单个测试
+# Single test
 bash tests/e2e/test_msc.sh
 
-# 全部（失败不中断，逐个跑）
+# All tests (run sequentially, continue on failure)
 bash tests/e2e/run_all.sh
 ```
 
-- 每个脚本独立工作目录（`/tmp/usbip_e2e/<测试名>`），日志在
-  `<工作目录>/logs/`；服务器以 `setsid` 后台运行，脚本结束自动清理
-- 脚本假设能访问本机端口 53240（可用 `PORT` 环境变量覆盖）
-- mock 服务器二进制默认从 `build_wsl2/` 找（可用 `BUILD_DIR` 环境变量覆盖，
-  如 `BUILD_DIR=/path/to/build_wsl2_asan bash tests/e2e/test_msc.sh`）
+- Separate working directory per script (`/tmp/usbip_e2e/<test-name>`); logs in
+  `<working-directory>/logs/`; server runs in background with `setsid`; automatic cleanup when script ends
+- Scripts assume local port 53240 accessible (overridable using `PORT` environment variable)
+- Mock server binaries found by default in `build_wsl2/` (overridable with `BUILD_DIR` environment variable,
+  e.g. `BUILD_DIR=/path/to/build_wsl2_asan bash tests/e2e/test_msc.sh`)
 
-## 测试中禁止做的事
+## Prohibited actions during tests
 
-1. **禁止混查与写 MSC 设备**：U 盘测试脚本内部严格分步（确认新盘 → 大小校验 →
-   写 → 读回），**人为**在 attach 后手写 `lsblk && dd if=/dev/sdX ...` 这类
-   一条命令串联查询与写入——WSL 里还有其他物理硬盘，写错盘符会毁数据
-2. **禁止 `pkill -f mock_xxx`**：`-f` 按整条命令行匹配，会把自己执行测试的
-   shell 杀掉（命令行里含 mock_xxx 字样）。清理用 `pkill -x mock_xxx`
-   （可执行名，超 15 字符会被内核截断，先 `ps -eo comm` 确认真实名）
-3. **禁止测试中途手动 attach/detach 其他 usbip 设备**：会污染新设备发现
-   （块设备对比、dmesg 增量、input 设备枚举），脚本可能误认或超时
-4. **禁止占用 53240 端口**：测试期间端口被其他程序占用，服务器起不来，
-   attach 会连到旧服务器（表现诡异：attach 成功但设备是旧的）
-5. **禁止测试期间插拔物理 USB 设备**：新插入的物理盘/输入设备会被
-   lsblk 对比 / by-path 枚举误认成虚拟设备，轻则测试失败，重则（物理盘
-   被当成 mock_msc 盘）写入错误设备
-6. **禁止手动 kill 测试中的 mock 服务器**：脚本管理服务器生命周期，
-   手动 kill 会导致脚本的清理逻辑（detach、等端口释放）错乱
+1. **Do not combine MSC device lookup and writing**: USB flash-drive test script strictly separates steps (confirm new disk → verify size →
+   write → read back); **manually** writing `lsblk && dd if=/dev/sdX ...` after attach
+   combines lookup and writing in one command—other physical disks exist in WSL; wrong device name destroys data
+2. **Do not use `pkill -f mock_xxx`**: `-f` matches entire command line and kills the
+   shell running the test itself (command line contains mock_xxx). Use `pkill -x mock_xxx` for cleanup
+   (executable name; kernel truncates beyond 15 characters; confirm actual name first with `ps -eo comm`)
+3. **Do not manually attach/detach other usbip devices during tests**: this contaminates new-device discovery
+   (block-device comparison, dmesg additions, input-device enumeration), causing misidentification or timeout
+4. **Do not occupy port 53240**: if another program holds it during testing, server cannot start,
+   and attach connects to old server (unexpected behavior: attach succeeds but device is old)
+5. **Do not plug/unplug physical USB devices during testing**: newly inserted physical disks/input devices may be
+   misidentified as virtual devices by lsblk comparison / by-path enumeration; at best test fails, at worst (physical disk
+   mistaken for mock_msc disk) writes target wrong device
+6. **Do not manually kill mock server under test**: scripts manage server lifecycle;
+   manual kill disrupts cleanup logic (detach, waiting for port release)
 
-## 风险
+## Risks
 
-- **数据损坏（最高风险）**：MSC 测试向块设备写入。脚本防线：
-  ① attach 前后 lsblk 快照对比 ② 内核 dmesg 枚举设备名互证（两路必须一致）
-  ③ `blockdev --getsize64` 大小必须等于 mock 镜像（2MiB=2097152），任一不符
-  **立即中止，不执行任何写**。人为违反"禁止事项"会绕过这些防线
-- **残留服务器/旧会话**：上一次崩溃残留的 mock 进程占着端口，新 attach 连到
-  旧设备。脚本已处理（sudo 杀端口进程 + 等端口释放），但手动调试时注意
-- **残留假 tty 节点**：设备 detach 后 `tee` 等命令可能把 `/dev/ttyACM0` 建
-  成普通文件（不是字符设备），后续 stty/读写全部诡异失败。wait_dev 只认
-  字符设备（`-c`）防此问题；手动操作时如遇 stty 报
-  "Inappropriate ioctl for device"，先 `ls -la /dev/ttyACM*` 看是不是普通文件
-- **串口规范模式陷阱**：串口默认 icanon（规范模式）读按行返回，数据无换行
-  时读端永远等不到。测试脚本用 python 关掉 icanon/echo 再读写；手动测试
-  串口时先 `stty -F /dev/ttyACM0 -icanon -echo -icrnl -onlcr`
-- **声卡资源**：WSL2 无物理声卡，audio/speaker 依赖 vhci 枚举的 USB 声卡；
-  多个测试连续跑时声卡号会变，脚本按 `/proc/asound/cards` 实时取号
-- **ECM 测试改网络**：test_ecm 会往 enx 网卡加 192.168.53.2/24 地址并 ping，
-  测试后脚本清理网卡；期间局域网内如有同名网段设备可能冲突
+- **Data corruption (highest risk)**: MSC test writes to block device. Script safeguards:
+  ① compare lsblk snapshots before/after attach ② cross-check kernel dmesg enumerated device name (both must agree)
+  ③ `blockdev --getsize64` size must equal mock image (2MiB=2097152); any mismatch
+  **aborts immediately without any writes**. Manually violating "prohibited actions" bypasses these safeguards
+- **Leftover server/old session**: mock process remaining after previous crash occupies port; new attach connects to
+  old device. Scripts handle this (sudo kill port process + await port release); take care during manual debugging
+- **Leftover false tty node**: after device detach, commands such as `tee` may create `/dev/ttyACM0`
+  as regular file (not character device), causing unexpected stty/read/write failures. wait_dev accepts only
+  character devices (`-c`) to prevent this; if manual stty reports
+  "Inappropriate ioctl for device", first use `ls -la /dev/ttyACM*` to check whether it is a regular file
+- **Serial canonical-mode trap**: serial ports default to icanon (canonical mode), returning reads by line; without newline
+  reader never receives data. Scripts disable icanon/echo with python before reading/writing; before manual
+  serial testing, use `stty -F /dev/ttyACM0 -icanon -echo -icrnl -onlcr`
+- **Sound-card resources**: WSL2 has no physical sound card; audio/speaker depend on USB sound cards enumerated by vhci;
+  card numbers change across consecutive tests; scripts retrieve current number from `/proc/asound/cards`
+- **ECM test modifies network**: test_ecm adds 192.168.53.2/24 to enx adapter and pings;
+  script cleans adapter afterward; devices on same subnet in LAN may conflict during testing
 
-## 各测试说明
+## Test descriptions
 
-| 脚本 | 设备 | 验证方式 |
+| Script | Device | Verification |
 |---|---|---|
-| test_cdc_acm.sh | 虚拟串口 | python(termios) 单 fd 写读，回显精确一致 |
-| test_ecm.sh | 虚拟网卡 | enx 网卡 + ping 192.168.53.1 |
-| test_msc.sh | U 盘 | lsblk+dmesg 双路确认新盘 → 大小校验 → 扇区 100 写读 cmp |
-| test_keyboard.sh | HID 键盘 | evtest 捕获 KEY_A 事件 |
-| test_mouse.sh | HID 鼠标 | evtest 捕获 REL 移动事件 |
-| test_gamepad.sh | HID 手柄 | evtest 捕获手柄事件 |
-| test_cdc_throttle.sh | 串口（节流） | ttyACM 计数上报 |
-| test_pipe.sh | vendor 管道 | pyusb bulk OUT→IN 回显 + 周期发送日志 |
-| test_audio.sh | UAC 麦克风 | arecord 实际录音 2 秒 |
-| test_speaker.sh | UAC 扬声器 | aplay 播 440Hz 正弦波，收流 WAV 频率/峰谷数内容级比对 |
-| test_uvc.sh | UVC 摄像头 | ffmpeg 实际拉 5 帧 |
+| test_cdc_acm.sh | Virtual serial port | python(termios) write/read with single fd; exact echo match |
+| test_ecm.sh | Virtual network adapter | enx adapter + ping 192.168.53.1 |
+| test_msc.sh | USB flash drive | lsblk+dmesg dual confirmation of new disk → size verification → sector 100 write/read cmp |
+| test_keyboard.sh | HID keyboard | evtest captures KEY_A events |
+| test_mouse.sh | HID mouse | evtest captures REL movement events |
+| test_gamepad.sh | HID gamepad | evtest captures gamepad events |
+| test_cdc_throttle.sh | Serial port (throttled) | ttyACM count reports |
+| test_pipe.sh | vendor pipe | pyusb bulk OUT→IN echo + periodic-send logs |
+| test_audio.sh | UAC microphone | arecord records actual audio for 2 seconds |
+| test_speaker.sh | UAC speaker | aplay plays 440Hz sine wave; content-level comparison of received WAV frequency/peak-and-trough count |
+| test_uvc.sh | UVC camera | ffmpeg retrieves 5 actual frames |
 
-python 辅助脚本：`cdc_acm_test.py`（串口读写）、`pipe_test.py`（libusb 传输）、
-`speaker_verify.py`（音频内容比对）。
+Python helpers: `cdc_acm_test.py` (serial read/write), `pipe_test.py` (libusb transfers),
+`speaker_verify.py` (audio-content comparison).

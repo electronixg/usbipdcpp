@@ -30,7 +30,7 @@ TEST(ReuseSet, EraseAndReuse) {
     EXPECT_TRUE(set.erase(1));
     EXPECT_FALSE(set.contains(1));
     EXPECT_EQ(set.size(), 1u);
-    EXPECT_TRUE(set.insert(3));  // 复用空槽
+    EXPECT_TRUE(set.insert(3));  // Reuse empty slot
 }
 
 TEST(ReuseSet, EraseNotFound) {

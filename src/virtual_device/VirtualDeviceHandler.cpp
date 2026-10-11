@@ -1,5 +1,5 @@
-// [CTRL] 等调试日志默认编译期裁掉（TRACE 级别）：排查客户端初始化流程时定义
-// USBIPDCPP_STRACE 保留
+// [CTRL] and other debug logs are removed at compile time by default (TRACE level); define
+// USBIPDCPP_STRACE to retain them when investigating client initialization
 #ifndef USBIPDCPP_STRACE
     #undef SPDLOG_ACTIVE_LEVEL
     #define SPDLOG_ACTIVE_LEVEL SPDLOG_LEVEL_INFO
@@ -31,29 +31,29 @@ void VirtualDeviceHandler::dispatch_urb(const UsbIpCommand::UsbIpCmdSubmit &cmd,
                                         const UsbEndpoint &ep, std::optional<UsbInterface> &interface,
                                         std::uint32_t transfer_flags, std::uint32_t transfer_buffer_length,
                                         const SetupPacket &setup_packet, usbipdcpp::error_code &ec) {
-    // 控制传输较少，Bulk/Interrupt 更常见
-    // bmAttributes 只取 bit0-1 传输类型，bit2-3 是 ISO sync type，bit4-5 是 usage type
+    // Control transfers are less common; Bulk/Interrupt are more common
+    // Take only bmAttributes bit0-1 for transfer type; bit2-3 are ISO sync type and bit4-5 are usage type
     const auto xfer_type = ep.attributes & 0x03;
     if (xfer_type == static_cast<std::uint8_t>(EndpointAttributes::Control)) [[unlikely]] {
-        SPDLOG_TRACE("控制传输: type={:02x} req={:02x} val={:04x} idx={:04x} len={}", setup_packet.request_type,
+        SPDLOG_TRACE("Control transfer: type={:02x} req={:02x} val={:04x} idx={:04x} len={}", setup_packet.request_type,
                     setup_packet.request, setup_packet.value, setup_packet.index, setup_packet.length);
         handle_control_urb(seqnum, ep, transfer_flags, transfer_buffer_length, setup_packet, std::move(cmd.transfer),
                            ec);
     }
     else if (interface.has_value()) [[likely]] {
         auto &intf = interface.value();
-        // Bulk 和 Interrupt 最常见
+        // Bulk and Interrupt are most common
         if (xfer_type == static_cast<std::uint8_t>(EndpointAttributes::Bulk)) [[likely]] {
-            SPDLOG_TRACE("块传输 ep={:02x} len={}", ep.address, transfer_buffer_length);
+            SPDLOG_TRACE("Bulk transfer ep={:02x} len={}", ep.address, transfer_buffer_length);
             handle_bulk_transfer(seqnum, ep, intf, transfer_flags, transfer_buffer_length, std::move(cmd.transfer), ec);
         }
         else if (xfer_type == static_cast<std::uint8_t>(EndpointAttributes::Interrupt)) {
-            SPDLOG_TRACE("中断传输 ep={:02x} len={}", ep.address, transfer_buffer_length);
+            SPDLOG_TRACE("Interrupt transfer ep={:02x} len={}", ep.address, transfer_buffer_length);
             handle_interrupt_transfer(seqnum, ep, intf, transfer_flags, transfer_buffer_length, std::move(cmd.transfer),
                                       ec);
         }
         else if (xfer_type == static_cast<std::uint8_t>(EndpointAttributes::Isochronous)) {
-            SPDLOG_TRACE("等时传输 ep={:02x} len={} iso_packets={}", ep.address, transfer_buffer_length,
+            SPDLOG_TRACE("Isochronous transfer ep={:02x} len={} iso_packets={}", ep.address, transfer_buffer_length,
                         cmd.number_of_packets);
             int num_iso = (cmd.number_of_packets != 0 && cmd.number_of_packets != 0xFFFFFFFF)
                                   ? static_cast<int>(cmd.number_of_packets)
@@ -62,18 +62,18 @@ void VirtualDeviceHandler::dispatch_urb(const UsbIpCommand::UsbIpCmdSubmit &cmd,
                                         std::move(cmd.transfer), num_iso, ec);
         }
         else [[unlikely]] {
-            SPDLOG_DEBUG("端口{:02x}的未知传输类型：{}", ep.address, ep.attributes);
+            SPDLOG_DEBUG("Unknown transfer type for endpoint {:02x}: {}", ep.address, ep.attributes);
             ec = make_error_code(ErrorType::INVALID_ARG);
         }
     }
     else [[unlikely]] {
-        SPDLOG_ERROR("非控制传输却不存在目标接口");
+        SPDLOG_ERROR("Target interface does not exist for a non-control transfer");
         ec = make_error_code(ErrorType::INTERNAL_ERROR);
     }
 }
 
 void VirtualDeviceHandler::setup_interface_handlers() {
-    // 将各接口的 TransferOperator 注册到设备级路由表，按端点分发
+    // Register each interface's TransferOperator in the device-level routing table; dispatch by endpoint
     auto *device_op = static_cast<VirtualDeviceTransferOperator *>(get_transfer_operator());
 
     for (auto &intf: handle_device.interfaces) {
@@ -81,7 +81,7 @@ void VirtualDeviceHandler::setup_interface_handlers() {
             auto *virtual_handler = intf.handler.get();
             if (virtual_handler) {
                 virtual_handler->set_device_handler(this);
-                // 把接口级 TransferOperator 注册到该接口所有 alt 的所有端点
+                // Register the interface-level TransferOperator for all endpoints of all alternate settings of this interface
                 auto *if_op = virtual_handler->get_transfer_operator();
                 for (auto &alt_eps: intf.endpoints) {
                     for (auto &ep: alt_eps) {
@@ -96,8 +96,8 @@ void VirtualDeviceHandler::setup_interface_handlers() {
 
 void VirtualDeviceHandler::on_new_connection(TransferResponder &current_session, error_code &ec) {
     AbstDeviceHandler::on_new_connection(current_session, ec);
-    // 先启动设备级传输调度器：ISO URB 入队后由它按帧节奏延迟响应
-    // （对齐 vudc 的 v_start_timer）。仅启用调度器的设备启动线程
+    // Start the device-level transfer scheduler first: after ISO URBs are queued, it delays responses at frame cadence
+    // (matching vudc v_start_timer). Only devices with the scheduler enabled start a thread
     if (use_transfer_scheduler) {
         transfer_scheduler.start();
     }
@@ -105,10 +105,10 @@ void VirtualDeviceHandler::on_new_connection(TransferResponder &current_session,
         if (intf.handler) {
             intf.handler->on_new_connection(current_session, ec);
             if (ec) {
-                // 子接口连接建立失败：先回滚前面已成功建连的接口（它们可能已启动
-                // 发送线程，不通知断开会留下运行中的线程，析构时 join 卡死），
-                // 再撤销基类已注册的 session 指针，防止残留指向即将析构的
-                // Session（use-after-free，见 AbstDeviceHandler::register_session 注释）
+                // Subinterface connection establishment failed: first roll back interfaces already connected successfully (they may have started
+                // sender threads; without disconnection notification these remain running and hang on join during destruction),
+                // then revoke the session pointer registered by the base class, preventing a remaining pointer to a Session about to be
+                // destroyed (use-after-free; see AbstDeviceHandler::register_session comment)
                 error_code rollback_ec;
                 for (auto &done: handle_device.interfaces) {
                     if (&done == &intf)
@@ -116,7 +116,7 @@ void VirtualDeviceHandler::on_new_connection(TransferResponder &current_session,
                     if (done.handler)
                         done.handler->on_disconnection(rollback_ec);
                 }
-                // 回滚：撤销已启动的调度线程
+                // Rollback: stop the scheduler thread that was started
                 if (use_transfer_scheduler) {
                     transfer_scheduler.stop();
                 }
@@ -128,20 +128,20 @@ void VirtualDeviceHandler::on_new_connection(TransferResponder &current_session,
 }
 
 void VirtualDeviceHandler::on_disconnection(error_code &ec) {
-    // 先停设备级传输调度器（丢弃未完成 URB、停线程）：调度线程可能正在调
-    // responder->submit_ret_submit，join 必须在基类清 session 指针之前完成
+    // Stop the device-level transfer scheduler first (discard unfinished URBs, stop thread): the scheduler thread may be calling
+    // responder->submit_ret_submit, so join must finish before the base class clears the session pointer
     if (use_transfer_scheduler) {
         transfer_scheduler.stop();
     }
     for (auto &intf: handle_device.interfaces) {
         if (intf.handler) {
-            // 每个 handler 用独立错误码：传入的既有错误（如 EOF 断开）不污染
-            // 判断；出错也不中断——各接口清理相互独立（如 AC 失败时 AS 的
-            // WAV 回填仍要执行），一个失败不影响其他接口的收尾
+            // Use an independent error code for each handler: an existing input error (e.g. EOF disconnection) must not contaminate
+            // the check. Do not stop on error: interface cleanup is independent (e.g. if AC fails, AS must still
+            // finalize WAV headers), so one failure must not affect other interfaces' cleanup
             usbipdcpp::error_code handler_ec;
             intf.handler->on_disconnection(handler_ec);
             if (handler_ec) {
-                SPDLOG_WARN("接口 handler on_disconnection 出错：{}", handler_ec.message());
+                SPDLOG_WARN("Interface handler on_disconnection error: {}", handler_ec.message());
             }
         }
     }
@@ -182,51 +182,51 @@ void VirtualDeviceHandler::change_device_ep0_max_size_by_speed() {
 void VirtualDeviceHandler::handle_control_urb(std::uint32_t seqnum, const UsbEndpoint &ep, std::uint32_t transfer_flags,
                                               std::uint32_t transfer_buffer_length, const SetupPacket &setup_packet,
                                               TransferHandle transfer, std::error_code &ec) {
-    // 获取 GenericTransfer 指针
+    // Get the GenericTransfer pointer
     auto *trx = GenericTransfer::from_handle(transfer.get());
 
-    // 调试用：打印所有控制请求（含标准请求），排查 Windows 客户端初始化流程停止位置
+    // Debug: print all control requests (including standard requests) to investigate where Windows client initialization stops
     SPDLOG_TRACE("[CTRL] seq={} bmReqType=0x{:02x} bRequest=0x{:02x} wValue=0x{:04x} wIndex=0x{:04x} len={} {}",
                 seqnum, setup_packet.calc_request_type(), setup_packet.request, setup_packet.value,
                 setup_packet.index, transfer_buffer_length, setup_packet.is_out() ? "OUT" : "IN");
 
     auto recipient = static_cast<RequestRecipient>(setup_packet.calc_recipient());
-    // 标准的请求全在这里处理了
-    //  大多数控制请求是标准请求
+    // All standard requests are handled here
+    //  Most control requests are standard requests
     if (setup_packet.calc_request_type() == static_cast<std::uint8_t>(RequestType::Standard)) [[likely]] {
         auto status = static_cast<std::uint32_t>(UrbStatusType::StatusOK);
         switch (recipient) {
             case RequestRecipient::Device: {
-                SPDLOG_TRACE("发给设备");
+                SPDLOG_TRACE("Send to device");
                 auto std_request = static_cast<StandardRequest>(setup_packet.calc_standard_request());
 
                 if (setup_packet.is_out()) {
                     switch (std_request) {
                         case StandardRequest::ClearFeature: {
-                            SPDLOG_TRACE("设备ClearFeature");
+                            SPDLOG_TRACE("Device ClearFeature");
                             request_clear_feature(setup_packet.value, &status);
                             break;
                         }
                         case StandardRequest::SetAddress: {
-                            SPDLOG_TRACE("设备SetAddress");
+                            SPDLOG_TRACE("Device SetAddress");
                             request_set_address(setup_packet.value, &status);
                             break;
                         }
                         case StandardRequest::SetConfiguration: {
-                            SPDLOG_TRACE("设备SetConfiguration");
+                            SPDLOG_TRACE("Device SetConfiguration");
                             request_set_configuration(setup_packet.value, &status);
                             break;
                         }
                         case StandardRequest::SetDescriptor: {
-                            SPDLOG_TRACE("设备SetDescriptor");
-                            // 从 transfer_handle 获取 OUT 数据
+                            SPDLOG_TRACE("Device SetDescriptor");
+                            // Get OUT data from transfer_handle
                             data_type out_data(trx->data.begin(), trx->data.begin() + transfer_buffer_length);
                             request_set_descriptor(setup_packet.value >> 8, setup_packet.value & 0x00FF,
                                                    setup_packet.index, setup_packet.length, out_data, &status);
                             break;
                         }
                         case StandardRequest::SetFeature: {
-                            SPDLOG_TRACE("设备SetFeature");
+                            SPDLOG_TRACE("Device SetFeature");
                             request_set_feature(setup_packet.value, &status);
                             break;
                         }
@@ -235,7 +235,7 @@ void VirtualDeviceHandler::handle_control_urb(std::uint32_t seqnum, const UsbEnd
                             status = static_cast<std::uint32_t>(UrbStatusType::StatusEPIPE);
                         }
                     }
-                    // transfer 析构时自动释放
+                    // transfer is released automatically on destruction
                     responder->submit_ret_submit(UsbIpResponse::UsbIpRetSubmit::create_ret_submit_with_status_and_no_data(
                             seqnum, status, 0));
                 }
@@ -243,15 +243,15 @@ void VirtualDeviceHandler::handle_control_urb(std::uint32_t seqnum, const UsbEnd
                     data_type result{};
                     switch (std_request) {
                         case StandardRequest::GetConfiguration: {
-                            SPDLOG_TRACE("设备GetConfiguration");
+                            SPDLOG_TRACE("Device GetConfiguration");
                             auto ret = request_get_configuration(&status);
-                            // 控制传输数据阶段统一小端（GetConfiguration 返回 1 字节，
-                            // 大小端无区别，与 GetStatus 等保持一致）
+                            // Control-transfer data stages are uniformly little-endian (GetConfiguration returns 1 byte,
+                            // so endianness makes no difference; consistent with GetStatus and others)
                             vector_append_to_le(result, ret);
                             break;
                         }
                         case StandardRequest::GetDescriptor: {
-                            SPDLOG_TRACE("设备GetDescriptor");
+                            SPDLOG_TRACE("Device GetDescriptor");
                             result = request_get_descriptor(setup_packet.value >> 8, setup_packet.value,
                                                             setup_packet.length, &status);
                             if (setup_packet.length < result.size()) {
@@ -260,23 +260,23 @@ void VirtualDeviceHandler::handle_control_urb(std::uint32_t seqnum, const UsbEnd
                             break;
                         }
                         case StandardRequest::GetStatus: {
-                            SPDLOG_TRACE("设备GetStatus");
+                            SPDLOG_TRACE("Device GetStatus");
                             auto gotten_status = request_get_status(&status);
-                            // USB 控制传输数据阶段多字节字段小端（GetStatus 返回 2 字节
-                            // 设备状态，低字节在前），不能用网络字节序
+                            // Multibyte fields in USB control-transfer data stages are little-endian (GetStatus returns 2 bytes of
+                            // device status, low byte first); do not use network byte order
                             vector_append_to_le(result, gotten_status);
                             break;
                         }
                         default: {
                             SPDLOG_WARN("Device Unhandled StandardRequest {}", static_cast<int>(std_request));
-                            // 未处理的请求回 EPIPE，不能留在默认 0（StatusOK）上报告成功
+                            // Return EPIPE for unhandled requests; do not leave default 0 (StatusOK) and report success
                             status = static_cast<std::uint32_t>(UrbStatusType::StatusEPIPE);
                         }
                     }
-                    // 将数据写入 transfer_handle
+                    // Write data into transfer_handle
                     trx->data = std::move(result);
                     trx->actual_length = trx->data.size();
-                    trx->data_offset = 0; // 虚拟设备没有 setup 包偏移
+                    trx->data_offset = 0; // Virtual devices have no setup-packet offset
 
                     responder->submit_ret_submit(
                             UsbIpResponse::UsbIpRetSubmit::create_ret_submit_with_status_and_no_iso(
@@ -286,10 +286,10 @@ void VirtualDeviceHandler::handle_control_urb(std::uint32_t seqnum, const UsbEnd
                 break;
             }
             case RequestRecipient::Interface: {
-                SPDLOG_TRACE("发给接口");
+                SPDLOG_TRACE("Send to interface");
                 auto intf_idx = setup_packet.index;
                 if (intf_idx >= handle_device.interfaces.size()) {
-                    SPDLOG_WARN("接口号{}越界（总共{}个接口），返回EPIPE", intf_idx, handle_device.interfaces.size());
+                    SPDLOG_WARN("Interface number {} out of bounds ({} interfaces total); returning EPIPE", intf_idx, handle_device.interfaces.size());
                     responder->submit_ret_submit(
                             UsbIpResponse::UsbIpRetSubmit::create_ret_submit_epipe_without_data(seqnum, 0));
                     return;
@@ -300,12 +300,12 @@ void VirtualDeviceHandler::handle_control_urb(std::uint32_t seqnum, const UsbEnd
                     if (setup_packet.is_out()) {
                         switch (std_request) {
                             case StandardRequest::ClearFeature: {
-                                SPDLOG_TRACE("接口request_clear_feature");
+                                SPDLOG_TRACE("Interface request_clear_feature");
                                 handler->request_clear_feature(setup_packet.value, &status);
                                 break;
                             }
                             case StandardRequest::SetFeature: {
-                                SPDLOG_TRACE("接口request_set_feature");
+                                SPDLOG_TRACE("Interface request_set_feature");
                                 handler->request_set_feature(setup_packet.value, &status);
                                 break;
                             }
@@ -320,37 +320,37 @@ void VirtualDeviceHandler::handle_control_urb(std::uint32_t seqnum, const UsbEnd
                             }
                             default: {
                                 SPDLOG_WARN("Interface Unhandled StandardRequest {}", static_cast<int>(std_request));
-                                // 未处理的请求回 EPIPE，不能留在默认 0（StatusOK）上报告成功
+                                // Return EPIPE for unhandled requests; do not leave default 0 (StatusOK) and report success
                                 status = static_cast<std::uint32_t>(UrbStatusType::StatusEPIPE);
                             }
                         }
-                        // transfer 析构时自动释放
+                        // transfer is released automatically on destruction
                         responder->submit_ret_submit(
                                 UsbIpResponse::UsbIpRetSubmit::create_ret_submit_with_status_and_no_data(
                                         seqnum, status,
-                                        0 // 控制传输 OUT 命令，无数据阶段
+                                        0 // Control-transfer OUT command, no data stage
                                         ));
                     }
                     else {
                         data_type result{};
                         switch (std_request) {
                             case StandardRequest::GetInterface: {
-                                SPDLOG_TRACE("接口request_get_interface");
+                                SPDLOG_TRACE("Interface request_get_interface");
                                 auto ret = this->request_get_interface(setup_packet.index, &status);
-                                // 控制传输数据阶段统一小端（GetInterface 返回 1 字节，
-                                // 大小端无区别，与 GetStatus 等保持一致）
+                                // Control-transfer data stages are uniformly little-endian (GetInterface returns 1 byte,
+                                // so endianness makes no difference; consistent with GetStatus and others)
                                 vector_append_to_le(result, ret);
                                 break;
                             }
                             case StandardRequest::GetStatus: {
-                                SPDLOG_TRACE("接口request_get_status");
+                                SPDLOG_TRACE("Interface request_get_status");
                                 auto ret = handler->request_get_status(&status);
-                                // USB 控制传输数据阶段多字节字段小端，不能用网络字节序
+                                // Multibyte fields in USB control-transfer data stages are little-endian; do not use network byte order
                                 vector_append_to_le(result, ret);
                                 break;
                             }
                             case StandardRequest::GetDescriptor: {
-                                SPDLOG_TRACE("接口request_get_descriptor");
+                                SPDLOG_TRACE("Interface request_get_descriptor");
                                 result = handler->request_get_descriptor(setup_packet.value >> 8,
                                                                          setup_packet.value & 0x00FF,
                                                                          setup_packet.length, &status);
@@ -361,11 +361,11 @@ void VirtualDeviceHandler::handle_control_urb(std::uint32_t seqnum, const UsbEnd
                             }
                             default: {
                                 SPDLOG_WARN("Interface Unhandled StandardRequest {}", static_cast<int>(std_request));
-                                // 未处理的请求回 EPIPE，不能留在默认 0（StatusOK）上报告成功
+                                // Return EPIPE for unhandled requests; do not leave default 0 (StatusOK) and report success
                                 status = static_cast<std::uint32_t>(UrbStatusType::StatusEPIPE);
                             }
                         }
-                        // 将数据写入 transfer_handle
+                        // Write data into transfer_handle
                         trx->data = std::move(result);
                         trx->actual_length = trx->data.size();
                         trx->data_offset = 0;
@@ -377,9 +377,9 @@ void VirtualDeviceHandler::handle_control_urb(std::uint32_t seqnum, const UsbEnd
                     }
                 }
                 else {
-                    SPDLOG_ERROR("接口未注册handler，无法处理发去接口的信息");
+                    SPDLOG_ERROR("No handler registered for interface; cannot handle messages sent to it");
                     ec = make_error_code(ErrorType::INVALID_ARG);
-                    // transfer 析构时自动释放
+                    // transfer is released automatically on destruction
                     responder->submit_ret_submit(
                             UsbIpResponse::UsbIpRetSubmit::create_ret_submit_epipe_without_data(seqnum, 0));
                     return;
@@ -387,7 +387,7 @@ void VirtualDeviceHandler::handle_control_urb(std::uint32_t seqnum, const UsbEnd
                 break;
             }
             case RequestRecipient::Endpoint: {
-                SPDLOG_TRACE("发给端点");
+                SPDLOG_TRACE("Send to endpoint");
                 auto find_ret = handle_device.find_ep(setup_packet.index);
                 if (find_ret) [[likely]] {
                     // auto &target_ep = find_ret->first;
@@ -400,13 +400,13 @@ void VirtualDeviceHandler::handle_control_urb(std::uint32_t seqnum, const UsbEnd
                             if (setup_packet.is_out()) {
                                 switch (std_request) {
                                     case StandardRequest::ClearFeature: {
-                                        SPDLOG_TRACE("端点request_endpoint_clear_feature");
+                                        SPDLOG_TRACE("Endpoint request_endpoint_clear_feature");
                                         handler->request_endpoint_clear_feature(setup_packet.value, setup_packet.index,
                                                                                 &status);
                                         break;
                                     }
                                     case StandardRequest::SetFeature: {
-                                        SPDLOG_TRACE("端点request_endpoint_set_feature");
+                                        SPDLOG_TRACE("Endpoint request_endpoint_set_feature");
                                         handler->request_endpoint_set_feature(setup_packet.value, setup_packet.index,
                                                                               &status);
                                         break;
@@ -414,41 +414,41 @@ void VirtualDeviceHandler::handle_control_urb(std::uint32_t seqnum, const UsbEnd
                                     default: {
                                         SPDLOG_WARN("Endpoint {:04x} Unhandled StandardRequest {}", setup_packet.index,
                                                     static_cast<int>(std_request));
-                                        // 未处理的请求回 EPIPE，不能留在默认 0（StatusOK）上报告成功
+                                        // Return EPIPE for unhandled requests; do not leave default 0 (StatusOK) and report success
                                         status = static_cast<std::uint32_t>(UrbStatusType::StatusEPIPE);
                                     }
                                 }
-                                // transfer 析构时自动释放
+                                // transfer is released automatically on destruction
                                 responder->submit_ret_submit(
                                         UsbIpResponse::UsbIpRetSubmit::create_ret_submit_with_status_and_no_data(
                                                 seqnum, status,
-                                                0 // 控制传输 OUT 命令，无数据阶段
+                                                0 // Control-transfer OUT command, no data stage
                                                 ));
                             }
                             else {
                                 data_type result{};
                                 switch (std_request) {
                                     case StandardRequest::GetStatus: {
-                                        SPDLOG_TRACE("端点request_endpoint_get_status");
+                                        SPDLOG_TRACE("Endpoint request_endpoint_get_status");
                                         auto gotten_status =
                                                 handler->request_endpoint_get_status(setup_packet.index, &status);
-                                        // USB 控制传输数据阶段多字节字段小端，不能用网络字节序
+                                        // Multibyte fields in USB control-transfer data stages are little-endian; do not use network byte order
                                         vector_append_to_le(result, gotten_status);
                                         break;
                                     }
                                     case StandardRequest::SynchFrame: {
-                                        SPDLOG_TRACE("端点request_endpoint_sync_frame");
+                                        SPDLOG_TRACE("Endpoint request_endpoint_sync_frame");
                                         handler->request_endpoint_sync_frame(setup_packet.index, &status);
                                         break;
                                     }
                                     default: {
                                         SPDLOG_WARN("Endpoint {:04x} Unhandled StandardRequest {}", setup_packet.index,
                                                     static_cast<int>(std_request));
-                                        // 未处理的请求回 EPIPE，不能留在默认 0（StatusOK）上报告成功
+                                        // Return EPIPE for unhandled requests; do not leave default 0 (StatusOK) and report success
                                         status = static_cast<std::uint32_t>(UrbStatusType::StatusEPIPE);
                                     }
                                 }
-                                // 将数据写入 transfer_handle
+                                // Write data into transfer_handle
                                 trx->data = std::move(result);
                                 trx->actual_length = trx->data.size();
                                 trx->data_offset = 0;
@@ -460,18 +460,18 @@ void VirtualDeviceHandler::handle_control_urb(std::uint32_t seqnum, const UsbEnd
                             }
                         }
                         else {
-                            SPDLOG_ERROR("端点{:04x}所在的接口没注册对应handler", setup_packet.value);
+                            SPDLOG_ERROR("No corresponding handler registered for the interface containing endpoint {:04x}", setup_packet.value);
                             ec = make_error_code(ErrorType::INVALID_ARG);
-                            // transfer 析构时自动释放
+                            // transfer is released automatically on destruction
                             responder->submit_ret_submit(
                                     UsbIpResponse::UsbIpRetSubmit::create_ret_submit_epipe_without_data(seqnum, 0));
                             return;
                         }
                     }
                     else {
-                        SPDLOG_ERROR("端点{:04x}没有对应的接口", setup_packet.value);
+                        SPDLOG_ERROR("No interface corresponds to endpoint {:04x}", setup_packet.value);
                         ec = make_error_code(ErrorType::INVALID_ARG);
-                        // transfer 析构时自动释放
+                        // transfer is released automatically on destruction
                         responder->submit_ret_submit(
                                 UsbIpResponse::UsbIpRetSubmit::create_ret_submit_epipe_without_data(seqnum, 0));
                         return;
@@ -480,16 +480,16 @@ void VirtualDeviceHandler::handle_control_urb(std::uint32_t seqnum, const UsbEnd
                 break;
             }
             case RequestRecipient::Other: {
-                SPDLOG_TRACE("发给其他");
-                SPDLOG_WARN("未实现去其他地方的包");
-                // transfer 析构时自动释放
+                SPDLOG_TRACE("Send to other");
+                SPDLOG_WARN("Packets to other recipients are unimplemented");
+                // transfer is released automatically on destruction
                 responder->submit_ret_submit(
                         UsbIpResponse::UsbIpRetSubmit::create_ret_submit_epipe_without_data(seqnum, 0));
                 break;
             }
             default: {
-                SPDLOG_WARN("未知去往目标");
-                // transfer 析构时自动释放
+                SPDLOG_WARN("Unknown recipient");
+                // transfer is released automatically on destruction
                 responder->submit_ret_submit(
                         UsbIpResponse::UsbIpRetSubmit::create_ret_submit_epipe_without_data(seqnum, 0));
             }
@@ -498,16 +498,16 @@ void VirtualDeviceHandler::handle_control_urb(std::uint32_t seqnum, const UsbEnd
     else {
         switch (recipient) {
             case RequestRecipient::Device: {
-                SPDLOG_TRACE("发给设备的非标准控制传输包");
+                SPDLOG_TRACE("Non-standard control-transfer packet sent to device");
                 handle_non_standard_request_type_control_urb(seqnum, ep, transfer_flags, transfer_buffer_length,
                                                              setup_packet, std::move(transfer), ec);
                 break;
             }
             case RequestRecipient::Interface: {
-                SPDLOG_TRACE("发给{}号接口的非标准控制传输包", setup_packet.index);
+                SPDLOG_TRACE("Non-standard control-transfer packet sent to interface {}", setup_packet.index);
                 auto intf_idx = setup_packet.index & 0xFF;
                 if (intf_idx >= handle_device.interfaces.size()) {
-                    SPDLOG_WARN("接口号{}越界（总共{}个接口），返回EPIPE", intf_idx, handle_device.interfaces.size());
+                    SPDLOG_WARN("Interface number {} out of bounds ({} interfaces total); returning EPIPE", intf_idx, handle_device.interfaces.size());
                     responder->submit_ret_submit(
                             UsbIpResponse::UsbIpRetSubmit::create_ret_submit_epipe_without_data(seqnum, 0));
                     return;
@@ -518,9 +518,9 @@ void VirtualDeviceHandler::handle_control_urb(std::uint32_t seqnum, const UsbEnd
                             seqnum, ep, transfer_flags, transfer_buffer_length, setup_packet, std::move(transfer), ec);
                 }
                 else {
-                    SPDLOG_ERROR("接口未注册handler，无法处理发往接口的信息");
+                    SPDLOG_ERROR("No handler registered for interface; cannot handle messages sent to it");
                     ec = make_error_code(ErrorType::INVALID_ARG);
-                    // transfer 析构时自动释放
+                    // transfer is released automatically on destruction
                     responder->submit_ret_submit(
                             UsbIpResponse::UsbIpRetSubmit::create_ret_submit_epipe_without_data(seqnum, 0));
                     return;
@@ -528,7 +528,7 @@ void VirtualDeviceHandler::handle_control_urb(std::uint32_t seqnum, const UsbEnd
                 break;
             }
             case RequestRecipient::Endpoint: {
-                SPDLOG_TRACE("发给{}号地址端口的非标准控制传输包", setup_packet.index);
+                SPDLOG_TRACE("Non-standard control-transfer packet sent to endpoint address {}", setup_packet.index);
                 auto find_ret = handle_device.find_ep(setup_packet.index);
                 if (find_ret) {
                     auto &intf = find_ret->second;
@@ -540,7 +540,7 @@ void VirtualDeviceHandler::handle_control_urb(std::uint32_t seqnum, const UsbEnd
                                     std::move(transfer), ec);
                         }
                         else {
-                            SPDLOG_ERROR("端点{:04x}所在的接口没注册对应handler", setup_packet.index);
+                            SPDLOG_ERROR("No corresponding handler registered for the interface containing endpoint {:04x}", setup_packet.index);
                             ec = make_error_code(ErrorType::INVALID_ARG);
                             responder->submit_ret_submit(
                                     UsbIpResponse::UsbIpRetSubmit::create_ret_submit_epipe_without_data(seqnum, 0));
@@ -548,7 +548,7 @@ void VirtualDeviceHandler::handle_control_urb(std::uint32_t seqnum, const UsbEnd
                         }
                     }
                     else {
-                        SPDLOG_ERROR("端点{:04x}没有对应的接口", setup_packet.index);
+                        SPDLOG_ERROR("No interface corresponds to endpoint {:04x}", setup_packet.index);
                         ec = make_error_code(ErrorType::INVALID_ARG);
                         responder->submit_ret_submit(
                                 UsbIpResponse::UsbIpRetSubmit::create_ret_submit_epipe_without_data(seqnum, 0));
@@ -556,7 +556,7 @@ void VirtualDeviceHandler::handle_control_urb(std::uint32_t seqnum, const UsbEnd
                     }
                 }
                 else {
-                    SPDLOG_ERROR("找不到端点{:04x}", setup_packet.index);
+                    SPDLOG_ERROR("Cannot find endpoint {:04x}", setup_packet.index);
                     ec = make_error_code(ErrorType::INVALID_ARG);
                     responder->submit_ret_submit(
                             UsbIpResponse::UsbIpRetSubmit::create_ret_submit_epipe_without_data(seqnum, 0));
@@ -565,15 +565,15 @@ void VirtualDeviceHandler::handle_control_urb(std::uint32_t seqnum, const UsbEnd
                 break;
             }
             case RequestRecipient::Other: {
-                SPDLOG_WARN("未实现去其他地方的包");
-                // transfer 析构时自动释放
+                SPDLOG_WARN("Packets to other recipients are unimplemented");
+                // transfer is released automatically on destruction
                 responder->submit_ret_submit(
                         UsbIpResponse::UsbIpRetSubmit::create_ret_submit_epipe_without_data(seqnum, 0));
                 break;
             }
             default: {
-                SPDLOG_WARN("未知去往目标");
-                // transfer 析构时自动释放
+                SPDLOG_WARN("Unknown recipient");
+                // transfer is released automatically on destruction
                 responder->submit_ret_submit(
                         UsbIpResponse::UsbIpRetSubmit::create_ret_submit_epipe_without_data(seqnum, 0));
             }
@@ -589,8 +589,8 @@ void VirtualDeviceHandler::handle_bulk_transfer(std::uint32_t seqnum, const UsbE
                                                 ec);
     }
     else {
-        SPDLOG_ERROR("端点{:04x}所在的接口没注册handler", ep.address);
-        // transfer 析构时自动释放
+        SPDLOG_ERROR("No handler registered for the interface containing endpoint {:04x}", ep.address);
+        // transfer is released automatically on destruction
         responder->submit_ret_submit(UsbIpResponse::UsbIpRetSubmit::create_ret_submit_epipe_without_data(seqnum, 0));
     }
 }
@@ -605,8 +605,8 @@ void VirtualDeviceHandler::handle_interrupt_transfer(std::uint32_t seqnum, const
                                                      std::move(transfer), ec);
     }
     else {
-        SPDLOG_ERROR("端点{:04x}所在的接口没注册handler", ep.address);
-        // transfer 析构时自动释放
+        SPDLOG_ERROR("No handler registered for the interface containing endpoint {:04x}", ep.address);
+        // transfer is released automatically on destruction
         responder->submit_ret_submit(UsbIpResponse::UsbIpRetSubmit::create_ret_submit_epipe_without_data(seqnum, 0));
     }
 }
@@ -620,16 +620,16 @@ void VirtualDeviceHandler::handle_isochronous_transfer(std::uint32_t seqnum, con
                                                        std::move(transfer), num_iso_packets, ec);
     }
     else {
-        SPDLOG_ERROR("端点{:04x}所在的接口没注册handler", ep.address);
-        // transfer 析构时自动释放
+        SPDLOG_ERROR("No handler registered for the interface containing endpoint {:04x}", ep.address);
+        // transfer is released automatically on destruction
         responder->submit_ret_submit(UsbIpResponse::UsbIpRetSubmit::create_ret_submit_epipe_without_data(seqnum, 0));
     }
 }
 
 void VirtualDeviceHandler::handle_unlink_seqnum(std::uint32_t unlink_seqnum, std::uint32_t cmd_seqnum) {
-    // 等时 URB 驻留在调度器队列中，优先在那里取消（对齐 vudc_rx.c 的
-    // CMD_UNLINK：找到 → 应答 RET_UNLINK(-ECONNRESET) 且不再发 RET_SUBMIT；
-    // 找不到 → 应答 RET_UNLINK(0)，表示 URB 已完成或不存在）
+    // Isochronous URBs reside in the scheduler queue; try cancelling there first (matching vudc_rx.c's
+    // CMD_UNLINK: found -> respond RET_UNLINK(-ECONNRESET) without further RET_SUBMIT;
+    // not found -> respond RET_UNLINK(0), indicating completed or nonexistent URB)
     if (use_transfer_scheduler && transfer_scheduler.cancel(unlink_seqnum)) {
         responder->submit_ret_unlink(UsbIpResponse::UsbIpRetUnlink::create_ret_unlink(
                 cmd_seqnum, static_cast<std::uint32_t>(UrbStatusType::StatusECONNRESET)));
@@ -651,37 +651,37 @@ data_type VirtualDeviceHandler::request_get_descriptor(std::uint8_t type, std::u
     auto desc_type = static_cast<DescriptorType>(type);
     switch (desc_type) {
         case DescriptorType::Device: {
-            SPDLOG_TRACE("设备get_device_descriptor");
+            SPDLOG_TRACE("Device get_device_descriptor");
             return get_device_descriptor(language_id, descriptor_length, p_status);
             break;
         }
         case DescriptorType::Configuration: {
-            SPDLOG_TRACE("设备get_configuration_descriptor");
+            SPDLOG_TRACE("Device get_configuration_descriptor");
             return get_configuration_descriptor(language_id, descriptor_length, p_status);
             break;
         }
         case DescriptorType::DeviceQualifier: {
-            SPDLOG_TRACE("设备get_device_qualifier_descriptor");
+            SPDLOG_TRACE("Device get_device_qualifier_descriptor");
             return get_device_qualifier_descriptor(language_id, descriptor_length, p_status);
             break;
         }
         case DescriptorType::BOS: {
-            SPDLOG_TRACE("设备get_bos_descriptor");
+            SPDLOG_TRACE("Device get_bos_descriptor");
             return get_bos_descriptor(language_id, descriptor_length, p_status);
             break;
         }
         case DescriptorType::String: {
-            SPDLOG_TRACE("设备get_string_descriptor");
+            SPDLOG_TRACE("Device get_string_descriptor");
             return get_string_descriptor(language_id, descriptor_length, p_status);
             break;
         }
         case DescriptorType::OtherSpeedConfiguration: {
-            SPDLOG_TRACE("设备get_other_speed_descriptor");
+            SPDLOG_TRACE("Device get_other_speed_descriptor");
             return get_other_speed_descriptor(language_id, descriptor_length, p_status);
             break;
         }
         default: {
-            SPDLOG_DEBUG("请求非标准描述符 {:08b}", type);
+            SPDLOG_DEBUG("Requesting non-standard descriptor {:08b}", type);
             return get_custom_descriptor(type, language_id, descriptor_length, p_status);
         }
     }
@@ -693,7 +693,7 @@ std::uint8_t VirtualDeviceHandler::request_get_interface(std::uint16_t intf, std
         return handler->request_get_interface(p_status);
     }
     else {
-        SPDLOG_ERROR("接口未注册handler，无法处理");
+        SPDLOG_ERROR("No handler registered for interface; cannot handle");
         *p_status = static_cast<std::uint32_t>(UrbStatusType::StatusEPIPE);
         return -1;
     }
@@ -710,7 +710,7 @@ void VirtualDeviceHandler::request_set_interface(std::uint16_t alternate_setting
         }
     }
     else {
-        SPDLOG_ERROR("接口未注册handler，无法处理");
+        SPDLOG_ERROR("No handler registered for interface; cannot handle");
         *p_status = static_cast<std::uint32_t>(UrbStatusType::StatusEPIPE);
         return;
     }
@@ -761,18 +761,18 @@ data_type VirtualDeviceHandler::get_configuration_descriptor(std::uint16_t langu
     std::shared_lock lock(data_mutex);
     data_type desc;
     ConfigHeaderDesc{0x09, static_cast<std::uint8_t>(DescriptorType::Configuration),
-                     0x00, // wTotalLength: 循环拼接完成后回填
+                     0x00, // wTotalLength: fill after the concatenation loop completes
                      static_cast<std::uint8_t>(handle_device.interfaces.size()), // bNumInterfaces
                      handle_device.configuration_value, // bConfigurationValue
                      string_configuration_value, // iConfiguration
                      0x80, // bmAttributes Bus Powered
                      0xFA} // bMaxPower 500mA
             .append_to(desc);
-    // IAD（接口关联描述符）：多接口功能（RNDIS/UVC 等）在 Windows 上要识别
-    // 为复合设备必须有 IAD（对齐内核 gadget 各功能的 *_iad_descriptor）。
-    // 由功能首个接口的 interface_association_descriptor 声明，内插在所属
-    // 接口描述符之前（USB 2.0 ECN 要求的位置）；bFirstInterface 按所属接口
-    // 号回填（声明时接口号可能未知，如 make_interface 模板阶段）
+    // IAD (Interface Association Descriptor): multi-interface functions (RNDIS/UVC, etc.) must have IAD to be recognized
+    // as composite devices on Windows (matching each kernel gadget function's *_iad_descriptor).
+    // Declared by the function's first interface's interface_association_descriptor and inserted before the owning
+    // interface descriptor (the position required by USB 2.0 ECN); fill bFirstInterface with the owning interface
+    // number (possibly unknown when declared, e.g. during the make_interface template stage)
     for (std::size_t i = 0; i < handle_device.interfaces.size(); i++) {
         auto &intf = handle_device.interfaces[i];
         if (intf.interface_association_descriptor) {
@@ -780,15 +780,15 @@ data_type VirtualDeviceHandler::get_configuration_descriptor(std::uint16_t langu
             iad.bFirstInterface = intf.interface_number;
             iad.append_to(desc);
         }
-        // 接口未注册 handler 时跳过 class-specific 描述符（与 handle_control_urb 的 EPIPE 处理一致）
+        // Skip class-specific descriptors if no interface handler is registered (consistent with handle_control_urb's EPIPE handling)
         auto class_specific_descriptor =
                 intf.handler ? intf.handler->get_class_specific_descriptor() : data_type{};
 
         auto num_alts = intf.endpoints.size();
         if (num_alts == 0)
-            num_alts = 1; // 至少保证 alt 0 如果没有初始化
+            num_alts = 1; // Ensure at least alt 0 if uninitialized
 
-        // 无端点接口（如纯控制接口）：alt_endpoints 用空列表，防止 endpoints[0] 越界
+        // Endpoint-free interfaces (e.g. control-only): use an empty alt_endpoints list to prevent endpoints[0] out-of-bounds access
         static const std::vector<UsbEndpoint> no_endpoints;
         for (std::size_t alt = 0; alt < num_alts; alt++) {
             auto &alt_endpoints = intf.endpoints.empty()
@@ -796,8 +796,8 @@ data_type VirtualDeviceHandler::get_configuration_descriptor(std::uint16_t langu
                                           : (alt < intf.endpoints.size() ? intf.endpoints[alt] : intf.endpoints[0]);
             data_type intf_desc;
             InterfaceDesc{0x09, static_cast<std::uint8_t>(DescriptorType::Interface),
-                          intf.interface_number, // bInterfaceNumber：严格按 interface_number
-                          // 语义（多接口设备由装配方手动填写，见 UsbInterface::interface_number）
+                          intf.interface_number, // bInterfaceNumber: strictly follow interface_number
+                          // semantics (manually filled by the assembler for multi-interface devices; see UsbInterface::interface_number)
                           static_cast<std::uint8_t>(alt), // bAlternateSetting
                           static_cast<std::uint8_t>(alt_endpoints.size()), // bNumEndpoints
                           intf.interface_class, // bInterfaceClass
@@ -805,9 +805,9 @@ data_type VirtualDeviceHandler::get_configuration_descriptor(std::uint16_t langu
                           intf.interface_protocol, // bInterfaceProtocol
                           (intf.handler ? intf.handler->get_string_interface_value() : std::uint8_t{0})} // iInterface
                     .append_to(intf_desc);
-            // class-specific 描述符默认只放 alt 0（TinyUSB 做法），alt>0 只放端点。
-            // 若放所有 alt，UVC 的 config descriptor 会被撑到超过 255 字节导致 Windows 截断解析失败。
-            // UAC 的 AS 接口描述符很小且 alt 1 必须有格式描述符，通过 put_class_specific_descriptor_in_all_alts 放行
+            // Put class-specific descriptors only in alt 0 by default (TinyUSB approach); alt>0 contains only endpoints.
+            // Putting them in every alt would expand UVC config descriptors beyond 255 bytes, causing Windows truncation and parse failure.
+            // UAC AS interface descriptors are small and alt 1 must have format descriptors; allow through put_class_specific_descriptor_in_all_alts
             bool all_alts = intf.handler && intf.handler->put_class_specific_descriptor_in_all_alts();
             if ((alt == 0 || all_alts) && !class_specific_descriptor.empty()) {
                 intf_desc.insert(intf_desc.end(), class_specific_descriptor.begin(), class_specific_descriptor.end());
@@ -823,20 +823,20 @@ data_type VirtualDeviceHandler::get_configuration_descriptor(std::uint16_t langu
                     VcInterruptEndpointDesc{0x05, CS_ENDPOINT, EP_INTERRUPT, endpoint.max_packet_size}.append_to(
                             intf_desc);
                 }
-                // UAC 1.0 §4.6.1.2: AS 的 ISO 音频数据端点需要 class-specific endpoint descriptor。
-                // bmAttributes 的 SamplingFreqControl 位是 Linux snd-usb-audio 发起
-                // 采样率 SET_CUR 协商的前提，缺失时驱动按描述符默认速率直接开流。
-                // 标准端点描述符保持 7 字节：音频规范虽要求 9（audio10.pdf Table
-                // 4-20），但 usbip-win 场景下实测 9 字节致 Windows usbaudio 启动失败，
-                // 7 字节可用（mock_audio 长期验证，勿改）
-                // UAC 1.0 §4.6.1.2: AS 的 ISO 音频数据端点需要 class-specific endpoint descriptor。
-                // bmAttributes 的 SamplingFreqControl 位是 Linux snd-usb-audio 发起
-                // 采样率 SET_CUR 协商的前提，缺失时驱动按描述符默认速率直接开流。
-                // 标准端点描述符保持 7 字节：audio10.pdf Table 4-20 虽要求音频端点
-                // 9 字节（bRefresh/bSynchAddress），但 usbip-win2 基于 UDE 框架，
-                // Udecx.sys 按 7 字节 USB_ENDPOINT_DESCRIPTOR 解析配置描述符，
-                // 9 字节导致后续描述符错位、Windows 枚举直接失败（服务器收不到
-                // 任何控制请求）。7 字节实测可用（mock_audio 长期验证），勿改
+                // UAC 1.0 section 4.6.1.2: AS ISO audio data endpoints require class-specific endpoint descriptors.
+                // bmAttributes SamplingFreqControl is a prerequisite for Linux snd-usb-audio initiating
+                // sample-rate SET_CUR negotiation; without it the driver starts streaming directly at the descriptor's default rate.
+                // Keep standard endpoint descriptors at 7 bytes: although the audio specification requires 9 (audio10.pdf Table
+                // 4-20), observed 9-byte descriptors cause Windows usbaudio startup failure with usbip-win;
+                // 7 bytes work (long-term mock_audio verification; do not change)
+                // UAC 1.0 section 4.6.1.2: AS ISO audio data endpoints require class-specific endpoint descriptors.
+                // bmAttributes SamplingFreqControl is a prerequisite for Linux snd-usb-audio initiating
+                // sample-rate SET_CUR negotiation; without it the driver starts streaming directly at the descriptor's default rate.
+                // Keep standard endpoint descriptors at 7 bytes: although audio10.pdf Table 4-20 requires audio endpoints to have
+                // 9 bytes (bRefresh/bSynchAddress), usbip-win2 uses the UDE framework,
+                // and Udecx.sys parses configuration descriptors using the 7-byte USB_ENDPOINT_DESCRIPTOR;
+                // 9 bytes misalign subsequent descriptors and immediately fail Windows enumeration (the server receives
+                // no control requests). 7 bytes work in tests (long-term mock_audio verification); do not change
                 if (intf.interface_class == CC_AUDIO && intf.interface_subclass == SC_AUDIOSTREAMING &&
                     (endpoint.attributes & 0x03) == 0x01) {
                     AsEpGeneralDesc{AS_EP_DESC_GENERAL_LEN,
@@ -862,7 +862,7 @@ data_type VirtualDeviceHandler::get_configuration_descriptor(std::uint16_t langu
 data_type VirtualDeviceHandler::get_string_descriptor(std::uint8_t language_id, std::uint16_t descriptor_length,
                                                       std::uint32_t *p_status) {
     std::shared_lock lock(data_mutex);
-    // 先尝试虚函数：允许子类处理特殊字符串索引（如 Microsoft OS 0xEE）
+    // Try the virtual function first: allow subclasses to handle special string indices (e.g. Microsoft OS 0xEE)
     if (auto special = get_special_string_descriptor(language_id)) {
         if (descriptor_length < special->size())
             special->resize(descriptor_length);
@@ -870,7 +870,7 @@ data_type VirtualDeviceHandler::get_string_descriptor(std::uint8_t language_id, 
     }
 
     if (language_id == 0) [[unlikely]] {
-        // language ids - 特殊情况，用于获取支持的语言ID列表
+        // language ids - special case for obtaining the supported language ID list
         data_type desc = {4, static_cast<std::uint8_t>(DescriptorType::String), 0x09, 0x04};
         if (descriptor_length < desc.size()) {
             desc.resize(descriptor_length);
@@ -893,7 +893,7 @@ data_type VirtualDeviceHandler::get_string_descriptor(std::uint8_t language_id, 
         return desc;
     }
     else {
-        SPDLOG_ERROR("非法字符串描述符索引：{}", language_id);
+        SPDLOG_ERROR("Invalid string descriptor index: {}", language_id);
         *p_status = static_cast<std::uint32_t>(UrbStatusType::StatusEPIPE);
         return {};
     }
@@ -902,18 +902,18 @@ data_type VirtualDeviceHandler::get_string_descriptor(std::uint8_t language_id, 
 data_type VirtualDeviceHandler::get_device_qualifier_descriptor(std::uint8_t language_id,
                                                                 std::uint16_t descriptor_length,
                                                                 std::uint32_t *p_status) {
-    // USB 2.0 §9.6.2: 高速设备必须返回 other-speed 信息
-    // 返回全速模式下的设备描述信息（bMaxPacketSize0 等与高速相同）
+    // USB 2.0 section 9.6.2: high-speed devices must return other-speed information
+    // Return device descriptor information in full-speed mode (bMaxPacketSize0 and others match high speed)
     std::shared_lock lock(data_mutex);
-    // bcdUSB 用 usb_version 的 operator uint16_t() 编码（BCD：major<<8 |
-    // minor<<4 | patch），与 device descriptor 一致，不能只拆 minor/major
-    // 漏掉 patch。拆成大小端两字节塞进字节数组描述符
+    // Encode bcdUSB using usb_version's operator uint16_t() (BCD: major<<8 |
+    // minor<<4 | patch), consistent with the device descriptor; do not split only minor/major,
+    // omitting patch. Split into low and high bytes and put into the byte-array descriptor
     std::uint16_t bcd_usb = usb_version;
     data_type desc = {
             0x0A,                                                           // bLength
             static_cast<std::uint8_t>(DescriptorType::DeviceQualifier),     // bDescriptorType
-            static_cast<std::uint8_t>(bcd_usb & 0x00FF),                    // bcdUSB 低字节
-            static_cast<std::uint8_t>(bcd_usb >> 8),                        // bcdUSB 高字节
+            static_cast<std::uint8_t>(bcd_usb & 0x00FF),                    // bcdUSB low byte
+            static_cast<std::uint8_t>(bcd_usb >> 8),                        // bcdUSB high byte
             handle_device.device_class,                                     // bDeviceClass
             handle_device.device_subclass,                                  // bDeviceSubClass
             handle_device.device_protocol,                                  // bDeviceProtocol

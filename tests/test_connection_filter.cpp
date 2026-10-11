@@ -1,7 +1,7 @@
-// Server::set_connection_filter（连接来源准入控制）专项测试：未设置时默认全
-// 放行、拒绝语义（连接被关闭且不建会话、不发 on_session_started、不占设备）、
-// 按来源（源端口）过滤、过滤器抛异常按拒绝处理（fail-closed）且不打死 accept
-// 循环、跨 start/stop 保留、清除后恢复放行
+// Dedicated Server::set_connection_filter (connection-source admission control) tests: allow all by default when unset,
+// rejection semantics (close connection without establishing a session, sending on_session_started, or occupying a device),
+// source (source-port) filtering; filter exceptions treated as rejection (fail-closed) without killing the accept
+// loop; persistence across start/stop; restoring admission after clearing
 #include <gtest/gtest.h>
 
 #include <atomic>
@@ -29,8 +29,8 @@ using namespace usbipdcpp::test;
 
 namespace {
 
-// 记录会话开始事件的观察者：被拒连接不得产生该事件（回调在会话线程上执行，
-// 内部加锁）
+// Observer recording session-start events: rejected connections must not generate this event (callbacks execute on the session thread,
+// with internal locking)
 class StartedObserver : public ServerObserver {
 public:
     void on_session_started(std::uint64_t session_id, const std::string &peer) override {
@@ -51,8 +51,8 @@ private:
     std::vector<std::string> peers;
 };
 
-// Server 析构前必须已 stop（契约见 Server.h），否则网络线程仍 joinable 直接
-// terminate。测试中途 ASSERT 失败会提前 return，靠 RAII 保证 stop 一定执行
+// Server must already be stopped before destruction (contract in Server.h); otherwise the still-joinable network thread directly
+// terminates the process. An ASSERT failure midway through a test returns early; RAII ensures stop is always executed
 class ServerStopper {
 public:
     explicit ServerStopper(Server &server) : server(server) {
@@ -108,8 +108,8 @@ std::shared_ptr<UsbDevice> make_keyboard(StringPool &string_pool) {
     return mock_keyboard;
 }
 
-// 轮询等待条件成立。被拒连接的"没发生什么"无法用事件等待，统一用
-// 过滤器自身的调用计数定序（每个 accept 的连接都会调用一次过滤器）
+// Poll until the condition holds. The "nothing happened" property of rejected connections cannot be awaited as an event; consistently use
+// the filter's own invocation count for ordering (the filter is invoked once for every accepted connection)
 bool wait_until(const std::function<bool()> &pred, std::chrono::milliseconds timeout = std::chrono::seconds(5)) {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline) {
@@ -121,23 +121,23 @@ bool wait_until(const std::function<bool()> &pred, std::chrono::milliseconds tim
     return pred();
 }
 
-// 绑定到指定本地端口后再连服务器：模拟"客户端先占住一个临时源端口、再让
-// 服务器只放行该端口"的场景。connect_with_retry 会在重试时重建 socket，
-// 绑定的端口会丢失，因此这里自带重试
+// Bind to a specified local port before connecting to the server: simulate "the client first reserves an ephemeral source port, then
+// the server allows only that port". connect_with_retry recreates the socket on retry,
+// losing the bound port, so retry is implemented locally here
 bool connect_from_port(asio::ip::tcp::socket &client, const asio::ip::tcp::endpoint &server_ep,
                        std::uint16_t local_port) {
     for (int i = 0; i < 200; i++) {
         std::error_code ec;
         client.close();
         client = asio::ip::tcp::socket(client.get_executor());
-        // bind 要求 socket 已打开（asio 的 connect 会自动 open，bind 不会）
+        // bind requires an already-open socket (asio's connect automatically opens it; bind does not)
         client.open(asio::ip::tcp::v4(), ec);
         if (ec) {
             return false;
         }
         client.bind(asio::ip::tcp::endpoint(asio::ip::address_v4::loopback(), local_port), ec);
         if (ec) {
-            // 端口可能还未从上一轮释放，重试
+            // The port may not yet have been released by the previous round; retry
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
             continue;
         }
@@ -150,19 +150,19 @@ bool connect_from_port(asio::ip::tcp::socket &client, const asio::ip::tcp::endpo
     return false;
 }
 
-// 断言连接已被服务器关闭：过滤器处理完该连接后，读取应立刻得到 EOF（FIN）
-// 或重置错误（RST），而不是继续阻塞
+// Assert that the server has closed the connection: after the filter handles this connection, reading should immediately return EOF (FIN)
+// or a reset error (RST), rather than remain blocked
 void expect_closed_by_server(asio::ip::tcp::socket &client) {
     char buf[1] = {};
     asio::error_code ec;
     const std::size_t n = client.read_some(asio::buffer(buf), ec);
-    EXPECT_TRUE(ec || n == 0) << "连接未被关闭（读到 " << n << " 字节且无错误）";
+    EXPECT_TRUE(ec || n == 0) << "Connection was not closed (read " << n << " bytes without an error)";
 }
 
 } // namespace
 
 TEST(TestConnectionFilter, AllowsAllWhenNotSet) {
-    // 未设置过滤器：行为与引入过滤器之前完全一致（默认全部放行）
+    // Filter unset: behavior exactly matches that before the filter was introduced (allow all by default)
     asio::io_context io;
     StringPool string_pool;
     StartedObserver observer;
@@ -181,9 +181,9 @@ TEST(TestConnectionFilter, AllowsAllWhenNotSet) {
 }
 
 TEST(TestConnectionFilter, RejectClosesConnectionWithoutSessionOrEvent) {
-    // 被拒连接：socket 被关闭、不建会话、不发 on_session_started。
-    // 被拒连接的"什么都没发生"用后一个放行连接 + 过滤器调用计数定序
-    // （accept 循环串行，放行连接被处理时被拒连接必然已处理完）
+    // Rejected connection: socket closed, no session established, no on_session_started sent.
+    // Order the rejected connection's "nothing happened" property using a subsequent allowed connection + filter invocation count
+    // (the accept loop is serial; when the allowed connection is handled, the rejected connection must already have been handled)
     asio::io_context io;
     StringPool string_pool;
     StartedObserver observer;
@@ -200,25 +200,25 @@ TEST(TestConnectionFilter, RejectClosesConnectionWithoutSessionOrEvent) {
     });
     ASSERT_FALSE(server.start(asio::ip::tcp::endpoint(asio::ip::address_v4::loopback(), 0)));
 
-    // 源端口不在白名单：拒绝
+    // Source port not in the allowlist: reject
     asio::ip::tcp::socket rejected(io);
     ASSERT_TRUE(connect_with_retry(rejected, server.endpoint()));
 
-    // 源端口在白名单：放行
+    // Source port in the allowlist: allow
     asio::ip::tcp::socket allowed(io);
     ASSERT_TRUE(connect_from_port(allowed, server.endpoint(), allowed_port));
     ASSERT_EQ(import_device(allowed, "1-1"), 0u);
 
     ASSERT_TRUE(wait_until([&] { return filter_calls.load() >= 2; }));
-    EXPECT_EQ(observer.started_count.load(), 1) << "被拒连接不得发出 on_session_started";
-    EXPECT_EQ(server.get_session_count(), 1u) << "被拒连接不得建立会话";
+    EXPECT_EQ(observer.started_count.load(), 1) << "Rejected connections must not send on_session_started";
+    EXPECT_EQ(server.get_session_count(), 1u) << "Rejected connections must not establish a session";
 
     expect_closed_by_server(rejected);
 }
 
 TEST(TestConnectionFilter, NonWhitelistedPortIsRejected) {
-    // 只放行指定源端口（Android 同机回环场景：127.0.0.1 被所有 app 共享，
-    // 服务器只信任客户端刚占住的那个端口）——白名单外的连接一律拒绝
+    // Allow only the specified source port (Android same-host loopback scenario: 127.0.0.1 is shared by all apps,
+    // and the server trusts only the port just reserved by the client)—reject every connection outside the allowlist
     asio::io_context io;
     StringPool string_pool;
     StartedObserver observer;
@@ -232,23 +232,23 @@ TEST(TestConnectionFilter, NonWhitelistedPortIsRejected) {
             [allowed_port](const asio::ip::tcp::endpoint &ep) { return ep.port() == allowed_port; });
     ASSERT_FALSE(server.start(asio::ip::tcp::endpoint(asio::ip::address_v4::loopback(), 0)));
 
-    // 白名单端口：放行并完成一次导入
+    // Allowlisted port: allow and complete one import
     asio::ip::tcp::socket allowed(io);
     ASSERT_TRUE(connect_from_port(allowed, server.endpoint(), allowed_port));
     ASSERT_EQ(import_device(allowed, "1-1"), 0u);
     ASSERT_TRUE(wait_until([&] { return observer.started_count.load() == 1; }));
     allowed.close();
 
-    // 非白名单端口：拒绝，且不影响已有会话的收尾
+    // Port outside the allowlist: reject without affecting cleanup of the existing session
     asio::ip::tcp::socket rejected(io);
     ASSERT_TRUE(connect_with_retry(rejected, server.endpoint()));
     ASSERT_TRUE(wait_until([&] { return server.get_session_count() == 0; }));
-    EXPECT_EQ(observer.started_count.load(), 1) << "非白名单连接不得建立会话";
+    EXPECT_EQ(observer.started_count.load(), 1) << "Connections outside the allowlist must not establish a session";
     expect_closed_by_server(rejected);
 }
 
 TEST(TestConnectionFilter, FilterSeesPeerEndpoint) {
-    // 过滤器拿到的对端地址就是客户端的来源地址（本用例验证源端口按绑定值）
+    // The peer address received by the filter is the client's source address (this case verifies that the source port matches the bound value)
     asio::io_context io;
     StringPool string_pool;
     Server server;
@@ -260,7 +260,7 @@ TEST(TestConnectionFilter, FilterSeesPeerEndpoint) {
     server.set_connection_filter([&](const asio::ip::tcp::endpoint &ep) {
         seen_port.store(ep.port());
         filter_calls.fetch_add(1);
-        return false; // 入参是本用例唯一关注点，一律拒绝
+        return false; // The argument is this case's only focus; reject all
     });
     ASSERT_FALSE(server.start(asio::ip::tcp::endpoint(asio::ip::address_v4::loopback(), 0)));
 
@@ -272,8 +272,8 @@ TEST(TestConnectionFilter, FilterSeesPeerEndpoint) {
 }
 
 TEST(TestConnectionFilter, ThrowingFilterRejectsAndServerStaysUsable) {
-    // 过滤器抛异常按"拒绝"处理（fail-closed），且不打死 accept 循环：
-    // 之后返回 true 时连接照常建立
+    // Treat filter exceptions as "reject" (fail-closed), without killing the accept loop:
+    // connections establish normally when true is subsequently returned
     asio::io_context io;
     StringPool string_pool;
     StartedObserver observer;
@@ -284,9 +284,9 @@ TEST(TestConnectionFilter, ThrowingFilterRejectsAndServerStaysUsable) {
 
     std::atomic<int> filter_calls{0};
     server.set_connection_filter([&](const asio::ip::tcp::endpoint &) -> bool {
-        // 前两次调用抛异常（std::exception 分支），之后放行
+        // The first two invocations throw exceptions (std::exception branch); allow subsequent ones
         if (filter_calls.fetch_add(1) < 2) {
-            throw std::runtime_error("测试异常");
+            throw std::runtime_error("Test exception");
         }
         return true;
     });
@@ -299,16 +299,16 @@ TEST(TestConnectionFilter, ThrowingFilterRejectsAndServerStaysUsable) {
     ASSERT_TRUE(connect_with_retry(second, server.endpoint()));
     ASSERT_TRUE(connect_with_retry(third, server.endpoint()));
 
-    // 三次连接都过滤过：抛异常的两次被拒，第三次放行
+    // All three connections were filtered: the two throwing exceptions were rejected; the third was allowed
     ASSERT_TRUE(wait_until([&] { return filter_calls.load() >= 3; }));
     ASSERT_TRUE(wait_until([&] { return observer.started_count.load() == 1; }));
-    EXPECT_EQ(observer.started_count.load(), 1) << "抛异常的连接不得建立会话";
+    EXPECT_EQ(observer.started_count.load(), 1) << "Connections whose filter throws must not establish a session";
     EXPECT_EQ(server.get_session_count(), 1u);
 
-    // 放行的是哪一个取决于 accept 顺序，按端口找到它并验证可用
+    // Which connection is allowed depends on accept order; find it by port and verify it works
     const auto peers = observer.peer_snapshot();
     ASSERT_EQ(peers.size(), 1u);
-    const std::string peer = peers.front(); // 形如 "127.0.0.1:port"
+    const std::string peer = peers.front(); // Of the form "127.0.0.1:port"
     const std::uint16_t winner_port = static_cast<std::uint16_t>(std::stoi(peer.substr(peer.rfind(':') + 1)));
     asio::ip::tcp::socket *winner = nullptr;
     for (auto *candidate: {&first, &second, &third}) {
@@ -317,13 +317,13 @@ TEST(TestConnectionFilter, ThrowingFilterRejectsAndServerStaysUsable) {
             break;
         }
     }
-    ASSERT_NE(winner, nullptr) << "收到通知的连接必须是三个客户端之一";
+    ASSERT_NE(winner, nullptr) << "The notified connection must be one of the three clients";
     EXPECT_EQ(import_device(*winner, "1-1"), 0u);
 }
 
 TEST(TestConnectionFilter, ManyRejectionsThenAllow) {
-    // 连续多个被拒连接不破坏 accept 循环（也间接验证 active_sessions 计数
-    // 平衡：每次拒绝都会创建又析构一个 Session，计数泄漏会让 stop() 卡住）
+    // Multiple consecutive rejected connections do not break the accept loop (also indirectly verifies balanced active_sessions counting:
+    // each rejection creates and destroys a Session; a count leak would make stop() hang)
     asio::io_context io;
     StringPool string_pool;
     Server server;
@@ -346,7 +346,7 @@ TEST(TestConnectionFilter, ManyRejectionsThenAllow) {
     ASSERT_TRUE(wait_until([&] { return filter_calls.load() >= 5; }));
     EXPECT_EQ(server.get_session_count(), 0u);
 
-    // 被拒的连接全部被关闭，随后白名单连接照常可用
+    // All rejected connections are closed; the subsequent allowlisted connection works normally
     for (auto &client: rejected) {
         expect_closed_by_server(client);
     }
@@ -357,7 +357,7 @@ TEST(TestConnectionFilter, ManyRejectionsThenAllow) {
 }
 
 TEST(TestConnectionFilter, PersistsAcrossRestart) {
-    // 过滤器是 Server 成员：stop 后再次 start 仍然生效，无需重新设置
+    // The filter is a Server member: it still applies when starting again after stop, with no need to set it again
     asio::io_context io;
     StringPool string_pool;
     Server server;
@@ -381,11 +381,11 @@ TEST(TestConnectionFilter, PersistsAcrossRestart) {
     asio::ip::tcp::socket second_round(io);
     ASSERT_TRUE(connect_with_retry(second_round, server.endpoint()));
     ASSERT_TRUE(wait_until([&] { return filter_calls.load() >= 2; }));
-    EXPECT_EQ(server.get_session_count(), 0u) << "重启后过滤器必须仍然生效";
+    EXPECT_EQ(server.get_session_count(), 0u) << "The filter must still apply after restart";
 }
 
 TEST(TestConnectionFilter, ClearRestoresAllowAll) {
-    // 清除过滤器（传空 std::function）后恢复全部放行
+    // Clearing the filter (passing an empty std::function) restores admission for all
     asio::io_context io;
     StringPool string_pool;
     Server server;
@@ -410,12 +410,12 @@ TEST(TestConnectionFilter, ClearRestoresAllowAll) {
     ASSERT_TRUE(connect_with_retry(allowed, server.endpoint()));
     EXPECT_EQ(import_device(allowed, "1-1"), 0u);
     EXPECT_EQ(server.get_session_count(), 1u);
-    EXPECT_EQ(filter_calls.load(), 1) << "清除后过滤器不应再被调用";
+    EXPECT_EQ(filter_calls.load(), 1) << "The filter should no longer be invoked after clearing";
 }
 
 TEST(TestConnectionFilter, AcceptsLvalueFilter) {
-    // 过滤器以左值传入（策略常来自配置对象等左值）：按值形参必须收得下，
-    // 且只拷贝不掏空调用方的 std::function（否则调用方无法复用或事后检查）
+    // Pass the filter as an lvalue (policies often come from lvalues such as configuration objects): the by-value parameter must accept it,
+    // copying without emptying the caller's std::function (otherwise the caller cannot reuse it or inspect it afterward)
     asio::io_context io;
     StringPool string_pool;
     Server server;
@@ -434,7 +434,7 @@ TEST(TestConnectionFilter, AcceptsLvalueFilter) {
     ASSERT_TRUE(connect_with_retry(rejected, server.endpoint()));
     ASSERT_TRUE(wait_until([&] { return filter_calls.load() >= 1; }));
     EXPECT_EQ(server.get_session_count(), 0u);
-    EXPECT_TRUE(static_cast<bool>(deny_all)) << "按值传参不应掏空调用方的 std::function";
+    EXPECT_TRUE(static_cast<bool>(deny_all)) << "Passing by value must not empty the caller's std::function";
 
     server.stop();
 }

@@ -12,7 +12,7 @@
 
 using namespace usbipdcpp;
 
-// ========== TransferHandle 实现 ==========
+// ========== TransferHandle implementation ==========
 
 TransferHandle::TransferHandle(void *handle, TransferOperator *op) : handle_(handle), op_(op) {
 }
@@ -52,7 +52,7 @@ void *TransferHandle::release() {
     return tmp;
 }
 
-// ========== 其他协议实现 ==========
+// ========== Other protocol implementations ==========
 
 const usbipdcpp::TransferErrorCategory g_error_category;
 
@@ -145,19 +145,19 @@ void UsbIpResponse::OpRepDevlist::to_socket(asio::ip::tcp::socket &sock, error_c
 }
 
 void UsbIpResponse::OpRepDevlist::from_socket(asio::ip::tcp::socket &sock) {
-    // 与 to_socket 对称：status + device_count + 每设备（312 字节固定头部 +
-    // 接口计数个 4 字节接口体，接口体数量在设备头部末尾）。version/command
-    // 两个字段由调用方在读命令码时消费，不在此读取
+    // Symmetric with to_socket: status + device_count + each device (312-byte fixed header +
+    // interface-count 4-byte interface bodies; the count is at the end of the device header). The version/command
+    // fields are consumed by the caller when reading the command code and are not read here
     data_read_from_socket(sock, status, device_count);
     devices.clear();
-    // device_count 来自网络不可信：恶意服务端可发巨大值，reserve 直接抛
-    // bad_alloc 崩溃（防御风格同 CmdSubmit::from_socket 的大小校验）
+    // device_count comes from the untrusted network: a malicious server can send a huge value, causing reserve to throw
+    // bad_alloc and crash (the same defensive approach as the size checks in CmdSubmit::from_socket)
     devices.reserve(std::min<std::uint32_t>(device_count, 256));
     for (std::uint32_t i = 0; i < device_count; i++) {
         UsbDevice device;
         device.from_socket(sock);
-        // 接口体紧跟在设备头部之后（to_bytes_with_interfaces 的格式），
-        // 数量由头部末尾的接口计数给出
+        // Interface bodies immediately follow the device header (the to_bytes_with_interfaces format),
+        // with their number given by the interface count at the end of the header
         for (auto &intf: device.interfaces) {
             intf.from_socket(sock);
         }
@@ -206,9 +206,9 @@ void UsbIpResponse::OpRepImport::to_socket(asio::ip::tcp::socket &sock, error_co
 }
 
 void UsbIpResponse::OpRepImport::from_socket(asio::ip::tcp::socket &sock) {
-    // 与 to_socket 对称：status 后（成功时）跟设备描述符（312 字节固定头部，
-    // 不含接口体，服务端 import 响应只发 to_bytes()）。version/command
-    // 由调用方在读命令码时消费
+    // Symmetric with to_socket: status is followed (on success) by the device descriptor (312-byte fixed header,
+    // without interface bodies; the server's import response sends only to_bytes()). version/command
+    // are consumed by the caller when reading the command code
     data_read_from_socket(sock, status);
     if (status == 0) {
         device = std::make_shared<UsbDevice>();
@@ -237,15 +237,15 @@ void UsbIpResponse::UsbIpRetSubmit::to_socket(asio::ip::tcp::socket &sock, error
     auto data1 = array_add_padding<8>(
             to_network_array(header.to_bytes(), status, actual_length, start_frame, number_of_packets, error_count));
 
-    // 从 transfer 获取数据。入口条件不能只看 actual_length：ISO 传输即使
-    // actual_length 为 0（如全包失败/0 字节）也必须由 operator 发送 iso
-    // 描述符（vhci 按 number_of_packets 读取，不发会错位）；数据发送
-    // length 按 transfer_is_in 计算：IN 传 actual_length（数据回发），OUT
-    // 恒为 0（OUT 应答无数据回发，见 stub_tx.c 的 usb_pipein 条件；vhci
-    // 对 OUT 也不读数据，传非 0 会把数据误读成 iso 描述符导致校验失败）。
-    // 非 ISO 传输 actual_length 为 0 时走 else 分支只发 header——不能把
-    // 0 字节的非 ISO 传输放进 op 路径（如存储后端的零拷贝 send_direct 在
-    // Windows 上 TransmitFile(0) 会发送整个文件）
+    // Get data from transfer. The entry condition cannot consider actual_length alone: even when an ISO transfer's
+    // actual_length is 0 (e.g. all packets failed/0 bytes), the operator must send the iso
+    // descriptors (vhci reads number_of_packets descriptors; omitting them misaligns the stream). The data-send
+    // length is calculated according to transfer_is_in: IN uses actual_length (returning data), while OUT
+    // always uses 0 (OUT responses return no data; see the usb_pipein condition in stub_tx.c; vhci
+    // also reads no data for OUT, so a nonzero length makes it misread data as iso descriptors and fail validation).
+    // For non-ISO transfers with actual_length 0, take the else branch and send only the header; do not put
+    // 0-byte non-ISO transfers through the op path (e.g. the storage backend's zero-copy send_direct calls
+    // TransmitFile(0) on Windows, which sends the entire file)
     if (transfer && (actual_length > 0 || number_of_packets > 0)) {
         auto *op = transfer.get_operator();
         void *raw_handle = transfer.get();
@@ -260,21 +260,21 @@ void UsbIpResponse::UsbIpRetSubmit::to_socket(asio::ip::tcp::socket &sock, error
 }
 
 void UsbIpResponse::UsbIpRetSubmit::from_socket(asio::ip::tcp::socket &sock) {
-    // 与 to_socket 对称：header 与传输参数共 40 字节，尾随 8 字节 padding，
-    // 凑齐内核 usbip_header 的 48 字节（vhci_rx_pdu 一次读 sizeof(usbip_header)，
-    // ret_submit 在 union 中占 20 字节，剩余 8 字节本项目以零填充）。
-    // command 由本函数设置，不读
+    // Symmetric with to_socket: the header and transfer parameters total 40 bytes, followed by 8 bytes of padding,
+    // making up the kernel usbip_header's 48 bytes (vhci_rx_pdu reads sizeof(usbip_header) at once;
+    // ret_submit occupies 20 bytes in the union, and this project zero-fills the remaining 8 bytes).
+    // command is set by this function, not read
     unsigned_integral_and_array_read_from_socket<8>(sock, header.seqnum, header.devid, header.direction, header.ep,
                                                     status, actual_length, start_frame, number_of_packets,
                                                     error_count);
     header.command = USBIP_RET_SUBMIT;
 
-    // 数据阶段不在此读取：RET_SUBMIT 的头部不含方向信息（服务端回包时清零），
-    // 无法判断数据阶段是否存在——actual_length 对 OUT 传输只是已接收字节数，
-    // 内核 stub 对 OUT 响应不回发数据（stub_tx.c 只在 usb_pipein 时发 buffer）。
-    // 内核 vhci 用 seqnum 匹配自己发出的 CMD_SUBMIT，按 URB 方向决定是否读数据
-    // （usbip_recv_xbuff 对 OUT 直接跳过）。需要数据阶段的调用方应基于自己的
-    // 传输方向，通过 transfer 的 recv_transfer_data 显式读取
+    // The data stage is not read here: the RET_SUBMIT header contains no direction information (the server clears it in responses),
+    // so the presence of a data stage cannot be determined; for OUT transfers, actual_length is only the number of bytes received,
+    // and the kernel stub returns no data in OUT responses (stub_tx.c sends the buffer only for usb_pipein).
+    // The kernel vhci matches its own CMD_SUBMIT using seqnum and decides whether to read data based on the URB direction
+    // (usbip_recv_xbuff skips OUT directly). Callers needing a data stage should explicitly read it according to their own
+    // transfer direction through the transfer's recv_transfer_data
 }
 
 
@@ -371,9 +371,9 @@ void UsbIpResponse::UsbIpRetUnlink::to_socket(asio::ip::tcp::socket &sock, error
 }
 
 void usbipdcpp::UsbIpResponse::UsbIpRetUnlink::from_socket(asio::ip::tcp::socket &sock) {
-    // 与 to_bytes 对称：header 20 字节 + status 4 字节 + 24 字节 padding，
-    // 凑齐内核 usbip_header 的 48 字节（ret_unlink 在 union 中只占 4 字节）。
-    // command 由本函数设置，不读
+    // Symmetric with to_bytes: 20-byte header + 4-byte status + 24-byte padding,
+    // making up the kernel usbip_header's 48 bytes (ret_unlink occupies only 4 bytes in the union).
+    // command is set by this function, not read
     unsigned_integral_and_array_read_from_socket<24>(sock, header.seqnum, header.devid, header.direction, header.ep,
                                                      status);
     header.command = USBIP_RET_UNLINK;
@@ -397,9 +397,9 @@ usbipdcpp::UsbIpCommand::OpReqDevlist::to_bytes() const {
 }
 
 void UsbIpCommand::OpReqDevlist::from_socket(asio::ip::tcp::socket &sock) {
-    // status 是客户端请求里的保留字段（协议规定为 0），服务端读后忽略：
-    // 不 assert status == 0——恶意客户端可发任意值，debug 构建下 assert 失败
-    // 会让服务端崩溃（可被远程触发的崩溃点）
+    // status is a reserved field in client requests (specified as 0 by the protocol), read and ignored by the server:
+    // do not assert status == 0; a malicious client can send any value, and a failed assertion in a debug build
+    // would crash the server (a remotely triggerable crash point)
     status = read_u32(sock);
 }
 
@@ -416,8 +416,8 @@ void UsbIpCommand::OpReqImport::to_socket(asio::ip::tcp::socket &sock, error_cod
 
 void usbipdcpp::UsbIpCommand::OpReqImport::from_socket(asio::ip::tcp::socket &sock) {
     data_read_from_socket(sock, status, busid);
-    // 同 OpReqDevlist：不 assert status == 0——status 是请求里的保留字段，
-    // 恶意客户端可发任意值，debug 构建下 assert 失败会让服务端崩溃
+    // As in OpReqDevlist: do not assert status == 0; status is a reserved request field,
+    // and a malicious client can send any value, causing a failed assertion in a debug build to crash the server
 }
 
 void UsbIpCommand::UsbIpCmdSubmit::to_socket(asio::ip::tcp::socket &sock, error_code &ec) const {
@@ -430,67 +430,67 @@ void UsbIpCommand::UsbIpCmdSubmit::to_socket(asio::ip::tcp::socket &sock, error_
     if (transfer) {
         auto *op = transfer.get_operator();
         void *raw_handle = transfer.get();
-        // 数据阶段只在 OUT 方向携带（与 from_socket 的方向判断对称）：
-        // IN 恒传 0，防止 IN 的 transfer 缓冲内容被误发
+        // The data stage is carried only in the OUT direction (symmetric with the direction check in from_socket):
+        // IN always passes 0 to prevent accidentally sending the IN transfer buffer's contents
         op->send_transfer_data(raw_handle, sock, op->transfer_is_in(raw_handle) ? 0 : transfer_buffer_length, ec);
     }
 }
 
 void UsbIpCommand::UsbIpCmdSubmit::from_socket(asio::ip::tcp::socket &sock) {
-    // 使用 scatter-gather 一次性读取固定部分
-    // header 字段(16字节) + transfer参数(20字节) + setup(8字节) = 44字节
+    // Use scatter-gather to read the fixed portion in one operation
+    // header fields (16 bytes) + transfer parameters (20 bytes) + setup (8 bytes) = 44 bytes
     decltype(SetupPacket{}.to_bytes()) setup_buffer;
     unsigned_integral_and_array_read_from_socket(sock, header.seqnum, header.devid, header.direction, header.ep,
                                                  transfer_flags, transfer_buffer_length, start_frame, number_of_packets,
                                                  interval, setup_buffer);
-    // 设置命令类型
+    // Set the command type
     header.command = USBIP_CMD_SUBMIT;
 
-    // 校验端点号：header.ep 是 32 位，转 uint8_t 会截断，恶意客户端可发
-    // 溢出值（如 0x100）截断后映射到错误端点。协议中 ep 是端点号且不带
-    // 方向位（方向由 direction 字段给出，见 protocol.h 中 UsbIpHeaderBasic::ep
-    // 的注释），合法范围 0-0x7F，超范围按协议错误拒绝
+    // Validate the endpoint number: header.ep is 32-bit, and conversion to uint8_t truncates it; a malicious client could send
+    // an overflowing value (e.g. 0x100) that maps to the wrong endpoint after truncation. In the protocol, ep is an endpoint number without
+    // a direction bit (direction is given by the direction field; see the comment for UsbIpHeaderBasic::ep
+    // in protocol.h); its valid range is 0-0x7F, and out-of-range values are rejected as protocol errors
     if (header.ep > 0x7F) [[unlikely]] {
         throw std::system_error(std::make_error_code(std::errc::protocol_error), "invalid endpoint number");
     }
 
-    // 解析 setup packet（小端序）
+    // Parse the setup packet (little-endian)
     setup = SetupPacket::parse(setup_buffer);
 
-    // 检查缓冲区大小，防止恶意大内存分配
+    // Check the buffer size to prevent maliciously large memory allocations
     if (transfer_buffer_length > USBIPDCPP_MAX_TRANSFER_BUFFER_SIZE) [[unlikely]] {
         throw std::system_error(std::make_error_code(std::errc::no_buffer_space), "transfer_buffer_length too large");
     }
 
-    // 检查等时包数量，防止恶意巨大分配（如 0x7FFFFFFF 导致 libusb_alloc_transfer
-    // 分配失败返回 null）。0xFFFFFFFF 是协议中非等时传输的占位值，必须放行
+    // Check the isochronous packet count to prevent maliciously huge allocations (e.g. 0x7FFFFFFF causes libusb_alloc_transfer
+    // to fail allocation and return null). 0xFFFFFFFF is the protocol's placeholder for non-isochronous transfers and must be allowed
     if (number_of_packets != 0xFFFFFFFF && number_of_packets > USBIPDCPP_MAX_ISO_PACKETS) [[unlikely]] {
         throw std::system_error(std::make_error_code(std::errc::no_buffer_space), "number_of_packets too large");
     }
 
-    // 从路由 op 拿到对应端点的 leaf op，用它创建 transfer_handle
-    // header.ep 是 USB/IP 线格式（不带方向位），需还原真实端点地址再查表
+    // Get the leaf op for the corresponding endpoint from the routing op, and use it to create transfer_handle
+    // header.ep is in USB/IP wire format (without the direction bit); restore the actual endpoint address before looking it up
     int num_iso = (number_of_packets != 0 && number_of_packets != 0xFFFFFFFF) ? static_cast<int>(number_of_packets) : 0;
     auto *routing_op = transfer.get_operator();
     std::uint8_t real_ep = static_cast<std::uint8_t>(header.ep);
-    // direction 不显式校验（非 0/1 值按 Out 处理）：与内核 usbip 模块和
-    // usbipd-libusb 一致（都只判断 == USBIP_DIR_IN），非法值还原出的
-    // 端点地址不会命中任何真实端点，后续 find_ep 失败自然拒绝，无内存
-    // 安全影响
+    // direction is not explicitly validated (values other than 0/1 are treated as Out): this matches the kernel usbip module and
+    // usbipd-libusb (both test only == USBIP_DIR_IN). Endpoint addresses reconstructed from invalid values
+    // will not match any real endpoint; the subsequent find_ep failure naturally rejects them, with no memory
+    // safety impact
     if (header.direction == UsbIpDirection::In)
         real_ep |= 0x80;
     auto *leaf_op = routing_op->get_operator_for_ep(real_ep);
     auto *raw_handle = leaf_op->alloc_transfer_handle(transfer_buffer_length, num_iso, header, setup);
     if (!raw_handle) [[unlikely]] {
-        // 分配失败（内存耗尽等），抛 std::system_error 由 get_cmd_from_socket 捕获后
-        // 优雅断开本会话，而不是空指针解引用崩溃整个进程
+        // On allocation failure (out of memory, etc.), throw std::system_error, caught by get_cmd_from_socket to
+        // disconnect this session gracefully rather than crashing the entire process through a null-pointer dereference
         throw std::system_error(std::make_error_code(std::errc::no_buffer_space), "alloc_transfer_handle failed");
     }
-    // 将 handle 绑定到 leaf op，后续 I/O 操作直接走 leaf op，无需 map 查找
+    // Bind the handle to the leaf op so subsequent I/O operations use it directly without a map lookup
     transfer.set_handle(raw_handle, leaf_op);
 
-    // 数据传输统一由 recv_transfer_data 处理（数据 + iso 描述符）
-    // IN 方向 client 不发送数据，长度传 0
+    // All data transfer is handled by recv_transfer_data (data + iso descriptors)
+    // For IN, the client sends no data; pass length 0
     std::error_code ec;
     leaf_op->recv_transfer_data(raw_handle, sock, header.direction == UsbIpDirection::In ? 0 : transfer_buffer_length,
                                 ec);
@@ -510,10 +510,10 @@ void UsbIpCommand::UsbIpCmdUnlink::to_socket(asio::ip::tcp::socket &sock, error_
 }
 
 void UsbIpCommand::UsbIpCmdUnlink::from_socket(asio::ip::tcp::socket &sock) {
-    // 使用 scatter-gather 一次性读取 header 字段 + unlink_seqnum + padding
+    // Use scatter-gather to read the header fields + unlink_seqnum + padding in one operation
     unsigned_integral_and_array_read_from_socket<24>(sock, header.seqnum, header.devid, header.direction, header.ep,
                                                      unlink_seqnum);
-    // 设置命令类型
+    // Set the command type
     header.command = USBIP_CMD_UNLINK;
 }
 
@@ -526,7 +526,7 @@ usbipdcpp::UsbIpCommand::OpCmdVariant usbipdcpp::UsbIpCommand::get_op_from_socke
             return OpCmdVariant{};
         }
         auto op = read_u16(sock);
-        SPDLOG_DEBUG("收到op: 0x{:04x}", op);
+        SPDLOG_DEBUG("Received op: 0x{:04x}", op);
 
         switch (op) {
             case OP_REQ_DEVLIST: {
@@ -547,7 +547,7 @@ usbipdcpp::UsbIpCommand::OpCmdVariant usbipdcpp::UsbIpCommand::get_op_from_socke
             }
         }
     } catch (const asio::system_error &e) {
-        SPDLOG_DEBUG("asio错误：{}", e.what());
+        SPDLOG_DEBUG("asio error: {}", e.what());
         if (e.code() == asio::error::eof) {
             ec = make_error_code(ErrorType::SOCKET_EOF);
         }
@@ -564,12 +564,12 @@ usbipdcpp::UsbIpCommand::CmdVariant usbipdcpp::UsbIpCommand::get_cmd_from_socket
 
     try {
         auto command = read_u32(sock);
-        SPDLOG_DEBUG("收到command: 0x{:04x}", command);
+        SPDLOG_DEBUG("Received command: 0x{:04x}", command);
 
         switch (command) {
             case USBIP_CMD_SUBMIT: {
                 auto cmd = UsbIpCmdSubmit{};
-                // 提前设置operator防止空指针
+                // Set operator in advance to prevent a null pointer
                 cmd.transfer.set_operator(handler->get_transfer_operator());
                 cmd.from_socket(sock);
                 return cmd;
@@ -587,10 +587,10 @@ usbipdcpp::UsbIpCommand::CmdVariant usbipdcpp::UsbIpCommand::get_cmd_from_socket
             }
         }
     } catch (const asio::system_error &e) {
-        // 注意：独立 asio 中 asio::system_error 就是 std::system_error 的 typedef，
-        // 因此 from_socket 里抛的纯 std::system_error（如 transfer_buffer_length 超限、
-        // OUT 数据阶段读失败）也会被这里捕获，不会逃出线程函数导致 std::terminate
-        SPDLOG_DEBUG("asio错误：{}", e.what());
+        // Note: in standalone asio, asio::system_error is a typedef for std::system_error,
+        // so plain std::system_error exceptions thrown in from_socket (e.g. transfer_buffer_length exceeding its limit,
+        // or failure to read the OUT data stage) are caught here too, instead of escaping the thread function and causing std::terminate
+        SPDLOG_DEBUG("asio error: {}", e.what());
         if (e.code() == asio::error::eof) {
             ec = make_error_code(ErrorType::SOCKET_EOF);
         }

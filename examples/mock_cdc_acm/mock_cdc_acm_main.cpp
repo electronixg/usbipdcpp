@@ -17,24 +17,24 @@ int main(int argc, char **argv) {
 
     StringPool string_pool;
 
-    // CDC ACM 需要两个接口：通信接口和数据接口（make_interface 只返回描述符模板，
-    // 设备创建后绑定示例内的 Mock handler）
+    // CDC ACM requires two interfaces: communication interface and data interface (make_interface only returns the descriptor template,
+    // device is created and bound to the Mock handler in the example)
     std::vector<UsbInterface> interfaces = {
             CdcAcmCommunicationInterfaceHandler::make_interface(0x83),
             CdcAcmDataInterfaceHandler::make_interface(0x81, 0x02),
     };
 
-    // 创建设备：IAD 复合设备需在设备级声明 CDC 类
+    // Create device: IAD composite device needs to declare CDC class at the device level
     auto mock_cdc_acm = UsbDevice::make(busid, 0x1234, 0x5680, std::move(interfaces),
                                         1, 1, static_cast<std::uint8_t>(ClassCode::CDC), "/usbipdcpp/mock_cdc_acm");
-    // 接口从 0 连续编号：按下标依次填 interface_number（多接口设备的 bInterfaceNumber 依赖它）
+    // interfaces are numbered consecutively from 0: fill in interface_number in sequence according to the subscript (bInterfaceNumber of multi-interface devices depends on it)
     mock_cdc_acm->assign_interface_numbers();
-    // 设置接口处理器（with_handler 返回具体类型的 shared_ptr，直接用，无需 cast）
+    // sets the interface processor (with_handler returns the specific type of shared_ptr, which can be used directly without cast)
     auto comm_handler = mock_cdc_acm->interfaces[0].with_handler<MockCdcAcmCommunicationInterfaceHandler>(string_pool);
     auto data_handler = mock_cdc_acm->interfaces[1].with_handler<MockCdcAcmDataInterfaceHandler>(string_pool);
     mock_cdc_acm->with_handler<SimpleVirtualDeviceHandler>(string_pool)->setup_interface_handlers();
 
-    // 关联通信接口和数据接口处理器（描述符引用数据接口号 + 数据面状态查询）
+    // associates communication interface and data interface processor (descriptor references data interface number + data plane status query)
     comm_handler->set_data_handler(data_handler.get());
     data_handler->set_comm_handler(comm_handler.get());
 
@@ -44,7 +44,7 @@ int main(int argc, char **argv) {
     asio::ip::tcp::endpoint endpoint{asio::ip::tcp::v4(), port};
 
     if (auto ec = server.start(endpoint); ec) {
-        SPDLOG_ERROR("服务器启动失败：{}", ec.message());
+        SPDLOG_ERROR("Server startup failed: {}", ec.message());
         return 1;
     }
 

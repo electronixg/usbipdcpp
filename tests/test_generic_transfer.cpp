@@ -4,7 +4,7 @@
 
 using namespace usbipdcpp;
 
-// ============== GenericTransfer 测试 ==============
+// ============== GenericTransfer tests ==============
 
 TEST(TestGenericTransfer, FromHandle) {
     GenericTransfer trx;
@@ -41,7 +41,7 @@ TEST(TestGenericTransfer, DataOffset) {
     EXPECT_EQ(trx.actual_length, 92);
 }
 
-// ============== 极端情况测试 ==============
+// ============== Edge-case tests ==============
 
 TEST(TestGenericTransfer, EmptyData) {
     GenericTransfer trx;
@@ -111,7 +111,7 @@ TEST(TestGenericTransfer, MoveSemantics) {
 
     EXPECT_EQ(trx2.data.size(), 5);
     EXPECT_EQ(trx2.actual_length, 5);
-    // trx1 的状态未定义，但不应崩溃
+    // trx1's state is undefined, but it should not crash
 }
 
 TEST(TestGenericTransfer, ClearData) {
@@ -129,9 +129,9 @@ TEST(TestGenericTransfer, ClearData) {
 TEST(TestGenericTransfer, IsoDescriptorsStatusValues) {
     GenericTransfer trx;
     trx.iso_descriptors = {
-        {.offset = 0, .length = 1024, .actual_length = 1024, .status = 0},    // 成功
-        {.offset = 1024, .length = 1024, .actual_length = 0, .status = 1},    // 错误
-        {.offset = 2048, .length = 1024, .actual_length = 512, .status = 0}   // 部分传输
+        {.offset = 0, .length = 1024, .actual_length = 1024, .status = 0},    // Success
+        {.offset = 1024, .length = 1024, .actual_length = 0, .status = 1},    // Error
+        {.offset = 2048, .length = 1024, .actual_length = 512, .status = 0}   // Partial transfer
     };
 
     EXPECT_EQ(trx.iso_descriptors[0].status, 0);

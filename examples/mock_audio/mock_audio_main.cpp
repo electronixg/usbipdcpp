@@ -4,11 +4,11 @@
 #include <sstream>
 
 #ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN // 阻止 windows.h 拉入 winsock.h（项目用 winsock2，顺序冲突）
-#define NOMINMAX // 阻止 windows.h 定义 min/max 宏（项目用 std::min/std::max）
+#define WIN32_LEAN_AND_MEAN // prevents windows.h from pulling in winsock.h (the project uses winsock2, order conflict)
+#define NOMINMAX // prevents windows.h from defining min/max macros (projects use std::min/std::max)
 #include <windows.h>
 #include <mmsystem.h>
-// MSVC/clang-cl 链接 winmm（timeBeginPeriod）
+// MSVC/clang-cl link winmm(timeBeginPeriod)
 #pragma comment(lib, "winmm.lib")
 #endif
 
@@ -26,7 +26,7 @@
 
 using namespace usbipdcpp;
 
-/// 解析逗号分隔的采样率列表，如 "48000,16000,8000"
+/// Parse a comma-separated list of sampling rates, such as "48000,16000,8000"
 static std::vector<std::uint32_t> parse_sample_rates(const std::string &str) {
     std::vector<std::uint32_t> rates;
     std::stringstream ss(str);
@@ -40,12 +40,12 @@ static std::vector<std::uint32_t> parse_sample_rates(const std::string &str) {
     return rates;
 }
 
-/// 解析谐波列表，如 "440:50,880:25:1.5708"（频率Hz:幅度百分比[:相位弧度]，相位可省略
-/// 默认 0；幅度可为负值表示反相，即相位翻转 π）。
-/// 合成公式：y(t) = Σ A_k·sin(2π·f_k·t + φ_k)
-/// 方波前 3 谐波示例（440Hz，原始傅里叶系数 4/(kπ)，k 为奇数）：
-/// "440:127.324,1320:42.441,2200:25.465"——叠加峰值超满幅时默认整体除以峰值
-/// 不削波（波形形状不变），--clamp 改为直接削波
+/// Analyze harmonic list, such as "440:50,880:25:1.5708" (frequency Hz: amplitude percentage [: phase radian], phase can be omitted
+/// Default 0; the amplitude can be negative to indicate inversion, that is, phase flip π).
+/// Synthetic formula: y(t) = Σ A_k·sin(2π·f_k·t + φ_k)
+/// Example using the first 3 square-wave harmonics (440Hz, original Fourier coefficient 4/(kπ), k is an odd number):
+/// "440:127.324,1320:42.441,2200:25.465" - the default is to divide the whole by the peak value when the superimposed peak value exceeds the full range
+/// No clipping (waveform shape remains unchanged), --clamp changes to direct clipping
 static std::vector<FourierHarmonic> parse_harmonics(const std::string &str) {
     std::vector<FourierHarmonic> result;
     std::stringstream ss(str);
@@ -67,8 +67,8 @@ static std::vector<FourierHarmonic> parse_harmonics(const std::string &str) {
     return result;
 }
 
-/// 创建音频源：--audio 文件源（文件打不开时软失败输出静音，同 FfmpegSource 做法）、
-/// --harmonics 傅里叶级数合成、否则正弦波
+/// Create audio source: --audio file source (soft failure output mute when the file cannot be opened, the same as FfmpegSource),
+/// --harmonics Fourier series synthesis, otherwise sine wave
 static std::unique_ptr<AudioSource> create_source(const cxxopts::ParseResult &result,
                                                   const std::vector<std::uint32_t> &rates,
                                                   const std::vector<FourierHarmonic> &harmonics,
@@ -105,8 +105,8 @@ int main(int argc, char **argv) {
          "wave down by the peak (default: scale only when peak exceeds full scale)",
          cxxopts::value<bool>()->default_value("false")->implicit_value("true"));
 #ifdef USBIPDCPP_USE_MINIAUDIO
-    // 仅 miniaudio 可用时注册 --audio：不可用的构建里 -h 不显示该选项，
-    // 直接传也会被 cxxopts 按未知选项拒绝（parse_example_args 打印 help 退出）
+    // Only register when miniaudio is available --audio: In unavailable builds -h does not display this option.
+    // passing it explicitly is also rejected by cxxopts as an unknown option (parse_example_args prints help to exit)
     options_group("audio", "Audio file to play instead of sine (WAV/MP3/FLAC/OGG)", cxxopts::value<std::string>());
 #endif
     auto result = parse_example_args(opts, argc, argv);
@@ -119,11 +119,11 @@ int main(int argc, char **argv) {
 #ifdef USBIPDCPP_USE_MINIAUDIO
     auto has_audio = result.count("audio") > 0;
 #else
-    auto has_audio = false; // --audio 未注册（无 miniaudio 构建）
+    auto has_audio = false; // --audio not registered (no miniaudio build)
 #endif
     auto has_harmonics = result.count("harmonics") > 0;
 
-    // 列表参数解析（stoul/stod 对非法输入抛异常，转成友好报错退出）
+    // list parameter parsing (stoul/stod throws an exception for illegal input and converts it into a friendly error report to exit)
     std::vector<std::uint32_t> rates;
     std::vector<FourierHarmonic> harmonics;
     try {
@@ -153,20 +153,20 @@ int main(int argc, char **argv) {
 
     StringPool string_pool;
 
-    // 音频源：--audio 提供时用文件音源（声道数由文件决定，--channels 忽略）；
-    // --harmonics 提供时用傅里叶级数合成；否则正弦波。
-    // 文件打不开时 AudioFileSource 软失败（日志报错 + 输出静音），设备仍可枚举（同 FfmpegSource 做法）
+    // Audio source: --audio uses the file audio source when provided (the number of channels is determined by the file, --channels is ignored);
+    // --harmonics uses Fourier series synthesis when provided; otherwise it is a sine wave.
+    // When the file cannot be opened, the AudioFileSource soft fails (log error + output mute), but the device can still be enumerated (same as FfmpegSource)
     auto source = create_source(result, rates, harmonics, channels, freq, amp, !clamp);
-    // 声道数以音源实际为准
+    // The number of channels is subject to the actual sound source.
     channels = source->current_format().channels;
 
-    // 高速等时端点：bInterval=4 → 每 1ms 一个包（对齐内核 gadget f_uac1.c 的 as_in_ep_desc，
-    // 真实 UAC 设备形态），端点大小按最高采样率帧对齐预留。
-    // 包调度（对齐内核 gadget u_audio.c）为"基准包长 + 残差溢出补一帧"，溢出包比基准大一帧，
-    // 所以 wMaxPacketSize 必须按帧向上取整（帧大小×ceil(max_rate/1000)）：非 1kHz 整数倍采样率
-    // （如 44100 单声道 = 88.2 字节/ms → 88/90 字节包交替）下按字节取整会截断溢出包切碎帧。
-    // 必须用音源实际支持格式的最大采样率：软失败降级格式（48000）可能不在命令行 rates 里，
-    // 端点按命令行算会偏小，等时数据被截断
+    // high-speed isochronous endpoint: bInterval=4 → one packet per 1ms (aligned kernel gadget f_uac1.c’s as_in_ep_desc,
+    // real UAC device form), the endpoint size is reserved according to the highest sampling rate frame alignment.
+    // packet scheduling (aligned kernel gadget u_audio.c) is "base packet length + residual overflow plus one frame", and the overflow packet is one frame larger than the base.
+    // So wMaxPacketSize must be rounded up by frame (frame size × ceil(max_rate/1000)): non-1kHz integer multiples of the sampling rate
+    // Rounding by byte under  (such as 44100 mono = 88.2 bytes/ms → 88/90 byte packet alternation) will truncate the overflow packet and chop the frame.
+    // must use the maximum sampling rate of the format actually supported by the sound source: the soft failure downgrade format (48000) may not be in the command line rates.
+    // endpoint will be too small according to the command line, and the isochronous data will be truncated.
     auto fmts = source->supported_formats();
     auto max_rate = std::max_element(fmts.begin(), fmts.end(),
                                      [](const AudioFormatInfo &a, const AudioFormatInfo &b) {
@@ -175,8 +175,8 @@ int main(int argc, char **argv) {
     auto iso_packet_size = static_cast<std::uint16_t>(((max_rate + 999) / 1000) * 2 * channels);
 
     std::vector<UsbInterface> interfaces = {
-            // Interface 0: AudioControl（含中断端点用于状态通知，
-            // 对齐内核 gadget f_uac1.c 的 ac_int_ep_desc：wMaxPacketSize=2、bInterval=4）
+            // Interface 0: AudioControl (including interrupt endpoint for status notification,
+            // aligns the core gadget ac_int_ep_desc of f_uac1.c: wMaxPacketSize=2, bInterval=4)
             UsbInterface{
                     .interface_class = CC_AUDIO,
                     .interface_subclass = SC_AUDIOCONTROL,
@@ -184,11 +184,11 @@ int main(int argc, char **argv) {
                     .endpoints = {{UsbEndpoint{
                             .address = 0x82, // IN, endpoint 2 — interrupt for status
                             .attributes = 0x03, // Interrupt
-                            .max_packet_size = 2, // UAC1 状态字（bStatusType + bOriginator）
+                            .max_packet_size = 2, // UAC1 status word (bStatusType + bOriginator)
                             .interval = 4,
                     }}},
             },
-            // Interface 1: AudioStreaming（alt 0 空端点，alt 1 ISO IN 端点）
+            // Interface 1: AudioStreaming (alt 0 has no endpoints, alt 1 ISO IN endpoint)
             UsbInterface{
                     .interface_class = CC_AUDIO,
                     .interface_subclass = SC_AUDIOSTREAMING,
@@ -199,7 +199,7 @@ int main(int argc, char **argv) {
                                           .attributes = static_cast<std::uint8_t>(EndpointAttributes::Isochronous) |
                                                         static_cast<std::uint8_t>(IsoSyncType::Async),
                                           .max_packet_size = iso_packet_size,
-                                          .interval = 4, // 每 1ms 一包（对齐 gadget f_uac1.c）
+                                          .interval = 4, // One packet per 1ms (aligned gadget f_uac1.c)
                                   }}},
             },
     };
@@ -213,7 +213,7 @@ int main(int argc, char **argv) {
             .vendor_id = 0x1234,
             .product_id = 0x5682,
             .device_bcd = 0x0100,
-            .device_class = 0x00, // 单功能设备，接口各自定义（无需 IAD）
+            .device_class = 0x00, // single-function device, interfaces are defined individually (no IAD required)
             .device_subclass = 0x00,
             .device_protocol = 0x00,
             .configuration_value = 1,
@@ -223,11 +223,11 @@ int main(int argc, char **argv) {
             .ep0_out = UsbEndpoint::get_ep0_out(UsbSpeed::High),
     });
 
-    // UacDeviceHelper 创建 AC/AS handler 并注册 + 设置描述符。
-    // 接口从 0 连续编号：按下标依次填 interface_number（bInterfaceNumber 依赖它）
+    // UacDeviceHelper creates AC/AS handler and registers + sets descriptor.
+    // interface is numbered consecutively from 0: fill in interface_number in sequence according to the subscript (bInterfaceNumber depends on it)
     device->assign_interface_numbers();
     if (auto ec = UacDeviceHelper::setup_microphone(device, 0, string_pool, std::move(source)); ec) {
-        SPDLOG_ERROR("UAC 功能装配失败：{}", ec.message());
+        SPDLOG_ERROR("UAC function assembly failed: {}", ec.message());
         return 1;
     }
 
@@ -237,7 +237,7 @@ int main(int argc, char **argv) {
     asio::ip::tcp::endpoint endpoint{asio::ip::tcp::v4(), port};
 
     if (auto ec = server.start(endpoint); ec) {
-        SPDLOG_ERROR("服务器启动失败：{}", ec.message());
+        SPDLOG_ERROR("Server startup failed: {}", ec.message());
         return 1;
     }
 

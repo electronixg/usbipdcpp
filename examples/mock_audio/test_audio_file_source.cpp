@@ -1,6 +1,6 @@
-// AudioFileSource 单元测试（实现随示例走，miniaudio 可用且构建 tests 时编译）：
-// WAV 加载、采样率切换（miniaudio 重采样）、循环/非循环、软失败
-// 由 examples/mock_audio/CMakeLists.txt 在 USBIPDCPP_BUILD_TESTS 时添加
+// AudioFileSource unit test (implementation follows the example, miniaudio is available and compiled when building tests):
+// WAV loading, sample rate switching (miniaudio resampling), looping/non-looping, soft failure
+// was added by examples/mock_audio/CMakeLists.txt when USBIPDCPP_BUILD_TESTS
 
 #include <gtest/gtest.h>
 
@@ -18,7 +18,7 @@ using namespace usbipdcpp;
 
 namespace {
 
-/// 生成 16 位 PCM WAV 测试文件（440Hz 正弦），返回文件路径
+/// Generate 16 bit PCM WAV test file (440Hz sine), return file path
 std::string make_test_wav(const std::string &tag, std::uint32_t sample_rate, std::uint16_t channels, double seconds) {
     auto total_frames = static_cast<std::size_t>(sample_rate * seconds);
     std::vector<std::int16_t> samples(total_frames * channels);
@@ -48,7 +48,7 @@ std::string make_test_wav(const std::string &tag, std::uint32_t sample_rate, std
     put_u32(36 + data_bytes);
     f.write("WAVE", 4);
     f.write("fmt ", 4);
-    put_u32(16); // fmt chunk 大小
+    put_u32(16); // fmt chunk size
     put_u16(1); // PCM
     put_u16(channels);
     put_u32(sample_rate);
@@ -74,7 +74,7 @@ TEST(AudioFileSource, LoadWavBasic) {
         EXPECT_EQ(fmt.channels, 1);
         EXPECT_EQ(fmt.bits_per_sample, 16);
 
-        // 每块 1ms：8 帧 × 2 字节 = 16 字节，且非全零
+        // Each block 1ms: 8 frame × 2 bytes = 16 bytes, and not all zeros
         AudioChunk chunk;
         ASSERT_TRUE(src.get_chunk(chunk));
         EXPECT_EQ(chunk.size, 16);
@@ -84,7 +84,7 @@ TEST(AudioFileSource, LoadWavBasic) {
                 has_nonzero = true;
         }
         EXPECT_TRUE(has_nonzero);
-    } // src 析构释放文件句柄
+    } // src destructs to release the file handle
     std::filesystem::remove(path);
 }
 
@@ -98,7 +98,7 @@ TEST(AudioFileSource, ResampleToDifferentRate) {
 
         AudioChunk chunk;
         ASSERT_TRUE(src.get_chunk(chunk));
-        EXPECT_EQ(chunk.size, 32); // 16 帧 × 2 字节
+        EXPECT_EQ(chunk.size, 32); // 16 frame × 2 byte
     }
     std::filesystem::remove(path);
 }
@@ -111,21 +111,21 @@ TEST(AudioFileSource, StereoWav) {
         EXPECT_EQ(src.current_format().channels, 2);
         EXPECT_EQ(src.current_format().sample_rate, 16000);
 
-        // 声道数与文件不一致时拒绝切换
+        // Refuse to switch when the number of channels is inconsistent with the file
         EXPECT_FALSE(src.set_format(1, 16, 16000));
         EXPECT_FALSE(src.set_format(2, 8, 16000));
-        // 不在列表中的采样率拒绝切换
+        // Sampling rate not in the list refuses to switch
         EXPECT_FALSE(src.set_format(2, 16, 32000));
 
         AudioChunk chunk;
         ASSERT_TRUE(src.get_chunk(chunk));
-        EXPECT_EQ(chunk.size, 64); // 16 帧 × 2 声道 × 2 字节
+        EXPECT_EQ(chunk.size, 64); // 16 frame × 2 channel × 2 bytes
     }
     std::filesystem::remove(path);
 }
 
 TEST(AudioFileSource, NonLoopStopsAtEnd) {
-    // 10ms 的文件，非循环：10 次 get_chunk 后应返回 false
+    // 10ms file, non-looping: get_chunk should return false after 10 calls
     auto path = make_test_wav("nonloop", 8000, 1, 0.01);
     {
         AudioFileSource src(path, std::vector<std::uint32_t>{}, false);
@@ -146,7 +146,7 @@ TEST(AudioFileSource, LoopWrapsAround) {
     {
         AudioFileSource src(path, std::vector<std::uint32_t>{}, true);
 
-        // 循环模式：读取远超文件长度（1 秒 = 1000 块）仍持续有数据
+        // loop mode: reading far exceeds the file length (1 seconds = 1000 blocks) and still has data
         AudioChunk chunk;
         for (int i = 0; i < 1000; ++i) {
             ASSERT_TRUE(src.get_chunk(chunk));
@@ -163,8 +163,8 @@ TEST(AudioFileSource, InvalidFileSoftFail) {
         f << "not a wav file";
     }
     {
-        // 软失败（同 FfmpegSource）：不抛异常，返回合法降级格式，无数据输出；
-        // 与降级格式一致的切换请求按 no-op 接受，保证驱动能开流
+        // soft failure (same as FfmpegSource): no exception is thrown, legal downgraded format is returned, and no data is output;
+        // Switching requests consistent with the downgraded format are accepted as no-op to ensure that the driver can open the stream.
         AudioFileSource src(path);
 
         auto fmts = src.supported_formats();
@@ -183,7 +183,7 @@ TEST(AudioFileSource, InvalidFileSoftFail) {
 TEST(AudioFileSource, InvalidSampleRateListSoftFail) {
     auto path = make_test_wav("badrate", 8000, 1, 1.0);
     {
-        // 采样率列表含非法值（0）：校验失败软失败
+        // The sampling rate list contains illegal values (0): Verification failed and soft failed.
         AudioFileSource src(path, std::vector<std::uint32_t>{0});
 
         AudioChunk chunk;

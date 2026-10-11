@@ -23,24 +23,24 @@ namespace usbipdcpp {
 RawImageBackend::RawImageBackend(std::string path, std::uint64_t initial_blocks, std::uint32_t block_size) :
     path_(std::move(path)), block_count_(initial_blocks), block_size_(block_size) {
 
-    SPDLOG_INFO("磁盘镜像路径: {}", std::filesystem::absolute(path_).string());
+    SPDLOG_INFO("Disk image path: {}", std::filesystem::absolute(path_).string());
 
     bool is_new_file = false;
     auto file_size = static_cast<std::size_t>(block_count_) * block_size_;
 
 #ifdef _WIN32
-    // 打开已有文件或创建新文件（OPEN_ALWAYS：存在则打开，不存在则创建）
+    // Open an existing file or create a new one (OPEN_ALWAYS: open if existing, create otherwise)
     HANDLE fh = CreateFileA(path_.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, nullptr, OPEN_ALWAYS,
                             FILE_ATTRIBUTE_NORMAL, nullptr);
     if (fh == INVALID_HANDLE_VALUE) {
-        SPDLOG_ERROR("无法打开/创建文件: {}", path_);
+        SPDLOG_ERROR("Cannot open/create file: {}", path_);
         return;
     }
 
-    // 标记为稀疏文件，允许后续 punch_hole 释放空间
+    // Mark as sparse file, allowing later punch_hole to release space
     DeviceIoControl(fh, FSCTL_SET_SPARSE, nullptr, 0, nullptr, 0, nullptr, nullptr);
 
-    // 判断文件是否为新创建：已有文件大小 > 0 则使用实际大小
+    // Determine whether newly created: if existing size > 0, use actual size
     LARGE_INTEGER existing_size;
     if (GetFileSizeEx(fh, &existing_size) && existing_size.QuadPart > 0) {
         auto exist_blocks = static_cast<std::uint64_t>(existing_size.QuadPart) / block_size_;
@@ -50,7 +50,7 @@ RawImageBackend::RawImageBackend(std::string path, std::uint64_t initial_blocks,
         }
     }
     else {
-        // 新文件：扩展文件到目标大小
+        // New file: extend to target size
         is_new_file = true;
         LARGE_INTEGER target;
         target.QuadPart = static_cast<LONGLONG>(file_size);
@@ -58,19 +58,19 @@ RawImageBackend::RawImageBackend(std::string path, std::uint64_t initial_blocks,
         SetEndOfFile(fh);
     }
 
-    // 创建文件映射对象（dwMaximumSizeHigh:dwMaximumSizeLow 为 64 位大小）
+    // Create file mapping object (dwMaximumSizeHigh:dwMaximumSizeLow is the 64-bit size)
     HANDLE mh = CreateFileMappingA(fh, nullptr, PAGE_READWRITE, static_cast<DWORD>(file_size >> 32),
                                    static_cast<DWORD>(file_size), nullptr);
     if (!mh) {
-        SPDLOG_ERROR("CreateFileMapping 失败");
+        SPDLOG_ERROR("CreateFileMapping failed");
         CloseHandle(fh);
         return;
     }
 
-    // 将文件映射到进程地址空间
+    // Map file into process address space
     void *addr = MapViewOfFile(mh, FILE_MAP_ALL_ACCESS, 0, 0, file_size);
     if (!addr) {
-        SPDLOG_ERROR("MapViewOfFile 失败");
+        SPDLOG_ERROR("MapViewOfFile failed");
         CloseHandle(mh);
         CloseHandle(fh);
         return;
@@ -82,19 +82,19 @@ RawImageBackend::RawImageBackend(std::string path, std::uint64_t initial_blocks,
     mapped_size_ = file_size;
 
 #else
-    // 打开已有文件，不存在则创建
+    // Open existing file, create if absent
     int fd = open(path_.c_str(), O_RDWR | O_CREAT, 0644);
     if (fd < 0) {
-        SPDLOG_ERROR("无法打开/创建文件: {}", path_);
+        SPDLOG_ERROR("Cannot open/create file: {}", path_);
         return;
     }
 
-    // 获取文件系统块大小（用于 fallocate punch_hole 对齐）
+    // Get filesystem block size (for fallocate punch_hole alignment)
     struct stat st{};
     if (fstat(fd, &st) == 0) {
         fs_block_size_ = st.st_blksize;
     }
-    // 判断文件是否为新创建
+    // Determine whether newly created
     if (st.st_size > 0) {
         auto exist_blocks = static_cast<std::uint64_t>(st.st_size) / block_size_;
         if (exist_blocks > 0) {
@@ -103,19 +103,19 @@ RawImageBackend::RawImageBackend(std::string path, std::uint64_t initial_blocks,
         }
     }
     else {
-        // 新文件：截断到目标大小（文件原有内容会被填零）
+        // New file: truncate to target size (original file contents are zero-filled)
         is_new_file = true;
         if (ftruncate(fd, static_cast<off_t>(file_size)) != 0) {
-            SPDLOG_ERROR("ftruncate 失败");
+            SPDLOG_ERROR("ftruncate failed");
             close(fd);
             return;
         }
     }
 
-    // MAP_SHARED：写入映射区的数据会由内核异步写回磁盘
+    // MAP_SHARED: the kernel asynchronously writes mapped data back to disk
     void *addr = mmap(nullptr, file_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     if (addr == MAP_FAILED) {
-        SPDLOG_ERROR("mmap 失败");
+        SPDLOG_ERROR("mmap failed");
         close(fd);
         return;
     }
@@ -127,11 +127,11 @@ RawImageBackend::RawImageBackend(std::string path, std::uint64_t initial_blocks,
 
 #ifdef __linux__
     if (pipe(splice_pipe_) < 0) {
-        SPDLOG_WARN("pipe 创建失败，splice 零拷贝接收不可用");
+        SPDLOG_WARN("Failed to create pipe; splice zero-copy reception unavailable");
     }
 #endif
 
-    SPDLOG_INFO("{}镜像: {} ({} 块, {} MiB)", is_new_file ? "创建" : "打开", path_, block_count_,
+    SPDLOG_INFO("{} image: {} ({} blocks, {} MiB)", is_new_file ? "Created" : "Opened", path_, block_count_,
                 block_count_ * block_size_ / 1024 / 1024);
 }
 
@@ -172,7 +172,7 @@ void RawImageBackend::punch_hole(std::uint64_t lba, std::uint64_t count) {
     std::lock_guard lock(mutex_);
     auto offset = static_cast<std::size_t>(lba) * block_size_;
     auto length = static_cast<std::size_t>(count) * block_size_;
-    // 清零映射内存：mmap 进程页表不感知 fallocate 打洞，必须手动清零
+    // Zero mapped memory: mmap process page tables are unaware of fallocate hole punching, so manual zeroing is required
     std::memset(static_cast<char *>(mapped_data_) + offset, 0, length);
 #ifdef _WIN32
     FILE_ZERO_DATA_INFORMATION zero{};
@@ -180,13 +180,13 @@ void RawImageBackend::punch_hole(std::uint64_t lba, std::uint64_t count) {
     zero.BeyondFinalZero.QuadPart = static_cast<LONGLONG>(offset + length);
     DeviceIoControl(file_handle_, FSCTL_SET_ZERO_DATA, &zero, sizeof(zero), nullptr, 0, nullptr, nullptr);
 #elif defined(__linux__)
-    // fallocate punch_hole 要求 offset 对齐到 fs 块边界，向下对齐并扩容覆盖整段
+    // fallocate punch_hole requires offset aligned to filesystem block boundaries; align down and extend to cover the whole range
     auto aligned_off = (offset / fs_block_size_) * fs_block_size_;
     auto end = offset + length;
     auto aligned_end = ((end + fs_block_size_ - 1) / fs_block_size_) * fs_block_size_;
     if (fallocate(fd_, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, static_cast<off_t>(aligned_off),
                   static_cast<off_t>(aligned_end - aligned_off)) != 0) {
-        SPDLOG_WARN("punch_hole 失败: LBA={} count={}", lba, count);
+        SPDLOG_WARN("punch_hole failed: LBA={} count={}", lba, count);
     }
 #endif
 }
@@ -194,7 +194,7 @@ void RawImageBackend::punch_hole(std::uint64_t lba, std::uint64_t count) {
 bool RawImageBackend::recv_direct(std::uint64_t lba, std::size_t offset, std::size_t length, intptr_t sock_fd,
                                   std::error_code &ec) {
 #ifdef _WIN32
-    return false; // Windows 无 splice，回退 asio::read
+    return false; // Windows lacks splice, fall back to asio::read
 #elif defined(__linux__)
     if (splice_pipe_[0] < 0)
         return false;
@@ -209,7 +209,7 @@ bool RawImageBackend::recv_direct(std::uint64_t lba, std::size_t offset, std::si
             ec.assign(errno, std::generic_category());
             return false;
         }
-        // pipe → file（DMA 到页缓存，零用户态拷贝）
+        // pipe → file (DMA to page cache, no user-space copying)
         off64_t off = static_cast<off64_t>(file_offset + (length - remaining));
         ssize_t m = splice(splice_pipe_[0], nullptr, fd_, &off, n, SPLICE_F_MOVE);
         if (m < 0) {
@@ -220,7 +220,7 @@ bool RawImageBackend::recv_direct(std::uint64_t lba, std::size_t offset, std::si
     }
     return true;
 #else
-    return false; // macOS 等无 splice，回退 asio::read
+    return false; // macOS and similar platforms lack splice, fall back to asio::read
 #endif
 }
 
@@ -252,7 +252,7 @@ bool RawImageBackend::send_direct(std::uint64_t lba, std::size_t offset, std::si
     }
     return true;
 #elif defined(__linux__)
-    // splice: file → pipe → sock（与 recv 共用 splice_pipe_）
+    // splice: file → pipe → sock (shares splice_pipe_ with recv)
     if (splice_pipe_[0] < 0)
         return false;
     off64_t off = static_cast<off64_t>(file_offset);
@@ -274,7 +274,7 @@ bool RawImageBackend::send_direct(std::uint64_t lba, std::size_t offset, std::si
     }
     return true;
 #elif defined(__APPLE__)
-    // macOS sendfile: file → socket，零用户态拷贝
+    // macOS sendfile: file → socket, no user-space copying
     off_t off = static_cast<off_t>(file_offset);
     off_t remaining = static_cast<off_t>(length);
     while (remaining > 0) {
@@ -290,7 +290,7 @@ bool RawImageBackend::send_direct(std::uint64_t lba, std::size_t offset, std::si
     }
     return true;
 #else
-    return false; // 其他平台回退 asio::write
+    return false; // Other platforms fall back to asio::write
 #endif
 }
 

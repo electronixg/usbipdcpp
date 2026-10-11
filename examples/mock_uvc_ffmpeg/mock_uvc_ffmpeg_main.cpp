@@ -72,10 +72,10 @@ int main(int argc, char **argv) {
     });
 
     auto source = std::make_unique<FfmpegSource>(video_path, passthrough);
-    // 接口从 0 连续编号：按下标依次填 interface_number（bInterfaceNumber/IAD 依赖它）
+    // interface is numbered consecutively from 0: fill in interface_number in sequence according to the subscript (bInterfaceNumber/IAD depends on it)
     device->assign_interface_numbers();
     if (auto ec = UvcDeviceHelper::setup(device, 0, string_pool, std::move(source)); ec) {
-        SPDLOG_ERROR("UVC 功能装配失败：{}", ec.message());
+        SPDLOG_ERROR("UVC function assembly failed: {}", ec.message());
         return 1;
     }
 
@@ -85,7 +85,7 @@ int main(int argc, char **argv) {
     asio::ip::tcp::endpoint endpoint{asio::ip::tcp::v4(), port};
 
     if (auto ec = server.start(endpoint); ec) {
-        SPDLOG_ERROR("服务器启动失败：{}", ec.message());
+        SPDLOG_ERROR("Server startup failed: {}", ec.message());
         return 1;
     }
 

@@ -20,8 +20,8 @@ int main(int argc, char **argv) {
 
     StringPool string_pool;
 
-    // 接口 0: 相对鼠标（make_interface 提供非 boot 的 HID 鼠标定义 03/00/00）
-    // 接口 1: 键盘
+    // interface 0: relative mouse (make_interface provides non-boot HID mouse definition 03/00/00)
+    // interface 1: keyboard
     std::vector<UsbInterface> interfaces = {
             RelativeMouseHandler::make_interface(0x81),
             KeyboardHandler::make_interface(0x82),
@@ -29,7 +29,7 @@ int main(int argc, char **argv) {
 
     auto device = UsbDevice::make(busid, 0x1234, 0x5679, interfaces, 1, 1, 0, "/usbipdcpp/multi_interface_hid",
                                   UsbSpeed::Low, 0xabcd);
-    // 接口从 0 连续编号：按下标依次填 interface_number（多接口设备的 bInterfaceNumber 依赖它）
+    // interfaces are numbered consecutively from 0: fill in interface_number in sequence according to the subscript (bInterfaceNumber of multi-interface devices depends on it)
     device->assign_interface_numbers();
     device->interfaces[0].with_handler<RelativeMouseHandler>(string_pool);
     device->interfaces[1].with_handler<KeyboardHandler>(string_pool);
@@ -43,7 +43,7 @@ int main(int argc, char **argv) {
 
     asio::ip::tcp::endpoint endpoint{asio::ip::tcp::v4(), port};
     if (auto ec = server.start(endpoint); ec) {
-        SPDLOG_ERROR("服务器启动失败：{}", ec.message());
+        SPDLOG_ERROR("Server startup failed: {}", ec.message());
         return 1;
     }
 
@@ -55,11 +55,11 @@ int main(int argc, char **argv) {
 
     std::atomic<bool> running{true};
 
-    // 鼠标线程：画正方形（右 → 下 → 左 → 上）
+    // Mouse thread: Draw a square (right → bottom → left → top)
     std::thread mouse_thread([&]() {
         constexpr std::int8_t speed = 5;
-        constexpr int side_steps = 40; // 每边 40 步
-        int dir = 0; // 0=右, 1=下, 2=左, 3=上
+        constexpr int side_steps = 40; // 40 steps per side
+        int dir = 0; // 0=right, 1=bottom, 2=left, 3=top
         int step = 0;
         while (running) {
             switch (dir) {
@@ -76,7 +76,7 @@ int main(int argc, char **argv) {
         }
     });
 
-    // 键盘线程：a → z 每秒一个
+    // keyboard thread: a → z one per second
     std::thread keyboard_thread([&]() {
         constexpr std::uint8_t HID_A = 0x04;
         while (running) {

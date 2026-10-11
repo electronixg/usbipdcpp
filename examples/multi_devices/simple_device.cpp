@@ -2,7 +2,7 @@
 
 #include <spdlog/spdlog.h>
 
-// HID报告描述符 - 一个简单的按钮
+// HID report descriptor - a simple button
 const usbipdcpp::data_type SimpleHidInterfaceHandler::report_descriptor_ = {
         0x05, 0x01, // Usage Page (Generic Desktop)
         0x09, 0x01, // Usage (Pointer)
@@ -29,7 +29,7 @@ usbipdcpp::data_type SimpleHidInterfaceHandler::get_report_descriptor() {
     return report_descriptor_;
 }
 
-// SimpleDeviceHandler 实现
+// SimpleDeviceHandler implementation
 SimpleDeviceHandler::SimpleDeviceHandler(usbipdcpp::UsbDevice &handle_device, usbipdcpp::StringPool &string_pool) :
     SimpleVirtualDeviceHandler(handle_device, string_pool) {
 }

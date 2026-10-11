@@ -5,11 +5,11 @@
 #include <vector>
 
 #ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN // 阻止 windows.h 拉入 winsock.h（项目用 winsock2，顺序冲突）
-#define NOMINMAX // 阻止 windows.h 定义 min/max 宏（项目用 std::min/std::max）
+#define WIN32_LEAN_AND_MEAN // prevents windows.h from pulling in winsock.h (the project uses winsock2, order conflict)
+#define NOMINMAX // prevents windows.h from defining min/max macros (projects use std::min/std::max)
 #include <windows.h>
 #include <mmsystem.h>
-// MSVC/clang-cl 链接 winmm（timeBeginPeriod）
+// MSVC/clang-cl link winmm(timeBeginPeriod)
 #pragma comment(lib, "winmm.lib")
 #endif
 
@@ -26,7 +26,7 @@
 
 using namespace usbipdcpp;
 
-/// 解析逗号分隔的采样率列表，如 "48000,44100,16000"
+/// Parse a comma separated list of sampling rates, such as "48000,44100,16000"
 static std::vector<std::uint32_t> parse_sample_rates(const std::string &str) {
     std::vector<std::uint32_t> rates;
     std::stringstream ss(str);
@@ -42,9 +42,9 @@ static std::vector<std::uint32_t> parse_sample_rates(const std::string &str) {
 
 int main(int argc, char **argv) {
 #ifdef _WIN32
-    // Windows 定时器默认粒度 ~15.6ms，asio 的亚毫秒 deadline 无法精确触发。
-    // 进程级请求 1ms 粒度（系统取所有进程的最小值），TransferScheduler 的
-    // 帧对齐/数据时长延迟才能按计划触发（播放延迟、闭环收敛都依赖它）
+    // Windows timer default granularity ~15.6ms, ASIO's sub-millisecond deadline cannot be triggered accurately.
+    // process-level request 1ms granularity (the system takes the minimum value of all processes), TransferScheduler
+    // Frame alignment/data duration delay can trigger as planned (playback delay and closed-loop convergence all depend on it)
     timeBeginPeriod(1);
 #endif
     auto opts = make_example_options("mock_speaker", "USB/IP virtual UAC speaker");
@@ -68,7 +68,7 @@ int main(int argc, char **argv) {
     auto device_name = result["device"].as<std::string>();
 #endif
 
-    // 列表参数解析（stoul 对非法输入抛异常，转成友好报错退出）
+    // list parameter parsing (stoul throws an exception for illegal input and converts it into a friendly error report to exit)
     std::vector<std::uint32_t> rates;
     try {
         rates = parse_sample_rates(result["rates"].as<std::string>());
@@ -90,8 +90,8 @@ int main(int argc, char **argv) {
 
     StringPool string_pool;
 
-    // 音频汇：--output 指定文件时写入 WAV 文件，否则本机播放（miniaudio）；
-    // 无 miniaudio 且未指定文件时退化为丢弃计数（软失败，设备仍可枚举）
+    // Audio sink: --output writes a WAV file when specifying a file, otherwise it plays it locally (miniaudio);
+    // Degenerates to discard count when there is no miniaudio and no file is specified (soft failure, the device can still be enumerated)
     std::unique_ptr<AudioSink> sink;
     if (has_output) {
         sink = std::make_unique<WavFileSink>(result["output"].as<std::string>());
@@ -123,21 +123,21 @@ int main(int argc, char **argv) {
                 auto mb = received / (1024 * 1024);
                 if (mb > last_reported_mb) {
                     last_reported_mb = mb;
-                    SPDLOG_INFO("DiscardSink: 已接收 {} MB", mb);
+                    SPDLOG_INFO("DiscardSink: Received {} MB", mb);
                 }
             }
             AudioFormatInfo format{1, 16, 48000};
             std::uint64_t received = 0;
             std::uint32_t last_reported_mb = 0;
         };
-        SPDLOG_WARN("miniaudio 不可用且未指定 --output，进入丢弃模式（仅统计接收字节）");
+        SPDLOG_WARN("miniaudio is not available and --output is not specified, entering drop mode (only receiving bytes are counted)");
         sink = std::make_unique<DiscardSink>();
     }
 #endif
 
-    // 高速等时端点：bInterval=4 → 每 1ms 一个包（对齐内核 gadget f_uac1.c 的
-    // as_out_ep_desc），OUT 方向同步类型 Adaptive（USB 2.0 Table 9-13，与麦克风
-    // IN 的 Async 不同）。端点大小按最高采样率帧对齐预留（同 mock_audio）
+    // high-speed isochronous endpoint: bInterval=4 → one packet per 1ms (aligned kernel gadget f_uac1.c
+    // as_out_ep_desc), OUT direction synchronization type Adaptive (USB 2.0 Table 9-13, with microphone
+    // Async of  IN is different). The endpoint size is reserved according to the highest sampling rate frame alignment (same as mock_audio)
     auto fmts = sink->supported_formats();
     auto max_rate = std::max_element(fmts.begin(), fmts.end(),
                                      [](const AudioFormatInfo &a, const AudioFormatInfo &b) {
@@ -146,8 +146,8 @@ int main(int argc, char **argv) {
     auto iso_packet_size = static_cast<std::uint16_t>(((max_rate + 999) / 1000) * 2 * channels);
 
     std::vector<UsbInterface> interfaces = {
-            // Interface 0: AudioControl（含中断端点用于状态通知，
-            // 对齐内核 gadget f_uac1.c 的 ac_int_ep_desc：wMaxPacketSize=2、bInterval=4）
+            // Interface 0: AudioControl (including interrupt endpoint for status notification,
+            // aligns the core gadget ac_int_ep_desc of f_uac1.c: wMaxPacketSize=2, bInterval=4)
             UsbInterface{
                     .interface_class = CC_AUDIO,
                     .interface_subclass = SC_AUDIOCONTROL,
@@ -155,11 +155,11 @@ int main(int argc, char **argv) {
                     .endpoints = {{UsbEndpoint{
                             .address = 0x82, // IN, endpoint 2 — interrupt for status
                             .attributes = 0x03, // Interrupt
-                            .max_packet_size = 2, // UAC1 状态字（bStatusType + bOriginator）
+                            .max_packet_size = 2, // UAC1 status word (bStatusType + bOriginator)
                             .interval = 4,
                     }}},
             },
-            // Interface 1: AudioStreaming（alt 0 空端点，alt 1 ISO OUT 端点）
+            // Interface 1: AudioStreaming (alt 0 has no endpoints, alt 1 ISO OUT endpoint)
             UsbInterface{
                     .interface_class = CC_AUDIO,
                     .interface_subclass = SC_AUDIOSTREAMING,
@@ -170,20 +170,20 @@ int main(int argc, char **argv) {
                                           .attributes = static_cast<std::uint8_t>(EndpointAttributes::Isochronous) |
                                                         static_cast<std::uint8_t>(IsoSyncType::Adaptive),
                                           .max_packet_size = iso_packet_size,
-                                          .interval = 4, // 每 1ms 一包（对齐 gadget f_uac1.c）
+                                          .interval = 4, // One packet per 1ms (aligned gadget f_uac1.c)
                                   }}},
             },
     };
 
     auto device = UsbDevice::make(busid, 0x1234, 0x5683, std::move(interfaces), 1, 1, 0,
                                   "/usbipdcpp/mock_speaker", UsbSpeed::High, 0x0100);
-    // 接口从 0 连续编号：按下标依次填 interface_number（bInterfaceNumber 依赖它）
+    // interface is numbered consecutively from 0: fill in interface_number in sequence according to the subscript (bInterfaceNumber depends on it)
     device->assign_interface_numbers();
 
-    // UacDeviceHelper 创建 AC/AS 汇 handler 并注册 + 设置描述符
+    // UacDeviceHelper creates AC/AS sink handler and registers + sets descriptor
     UacDeviceConfig config{.channels = static_cast<std::uint8_t>(channels)};
     if (auto ec = UacDeviceHelper::setup_speaker(device, 0, string_pool, std::move(sink), config); ec) {
-        SPDLOG_ERROR("UAC 功能装配失败：{}", ec.message());
+        SPDLOG_ERROR("UAC function assembly failed: {}", ec.message());
         return 1;
     }
 
@@ -193,7 +193,7 @@ int main(int argc, char **argv) {
     asio::ip::tcp::endpoint endpoint{asio::ip::tcp::v4(), port};
 
     if (auto ec = server.start(endpoint); ec) {
-        SPDLOG_ERROR("服务器启动失败：{}", ec.message());
+        SPDLOG_ERROR("Server startup failed: {}", ec.message());
         return 1;
     }
 

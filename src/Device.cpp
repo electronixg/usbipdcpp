@@ -35,10 +35,10 @@ array_data_type<UsbDevice::bytes_without_interfaces_num> usbipdcpp::UsbDevice::t
 }
 
 void UsbDevice::from_socket(asio::ip::tcp::socket &sock) {
-    // 与 to_bytes() 对称（固定 312 字节）：path/busid 是 NUL 结尾的原始字节
-    // 字符串，其余为网络序整数，最后 1 字节是接口计数。接口体不在此读取：
-    // import 响应的设备部分不含接口体（服务端只发 to_bytes()），devlist 响应
-    // 由 OpRepDevlist::from_socket 按此计数另行读取
+    // Symmetric with to_bytes() (fixed 312 bytes): path/busid are raw NUL-terminated byte
+    // strings; the other fields are network-order integers, and the last byte is the interface count. Interface bodies are not read here:
+    // the device portion of an import response has no interface bodies (the server sends only to_bytes()); a devlist response
+    // is read separately by OpRepDevlist::from_socket according to this count
     array_data_type<256> path_buffer{};
     array_data_type<32> busid_buffer{};
     std::uint16_t device_bcd_raw = 0;
@@ -48,7 +48,7 @@ void UsbDevice::from_socket(asio::ip::tcp::socket &sock) {
                                                  device_subclass, device_protocol, configuration_value,
                                                  num_configurations, interface_count);
     device_bcd = Version(device_bcd_raw);
-    // NUL 结尾字符串：截断到第一个 \0
+    // NUL-terminated strings: truncate at the first \0
     path = std::string(reinterpret_cast<const char *>(path_buffer.data()),
                        strnlen(reinterpret_cast<const char *>(path_buffer.data()), path_buffer.size()));
     busid = std::string(reinterpret_cast<const char *>(busid_buffer.data()),
@@ -59,7 +59,7 @@ void UsbDevice::from_socket(asio::ip::tcp::socket &sock) {
 std::optional<std::pair<usbipdcpp::UsbEndpoint, std::optional<usbipdcpp::UsbInterface>>>
 usbipdcpp::UsbDevice::find_ep(std::uint8_t ep) {
     if (ep == ep0_in.address) {
-        // SPDLOG_INFO("找到端口0{}", ep);
+        // SPDLOG_INFO("Found endpoint 0{}", ep);
         return std::make_pair(ep0_in, std::nullopt);
     }
     else if (ep == ep0_out.address) {

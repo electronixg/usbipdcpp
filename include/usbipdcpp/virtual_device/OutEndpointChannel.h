@@ -16,60 +16,60 @@
 namespace usbipdcpp {
 
 /**
- * @brief OUT 数据通道基类（CRTP 静态分发）：主机 OUT 请求挂起，业务侧取走时应答（NAK 背压）
+ * @brief OUT data channel base class (CRTP static distribution): Host OUT request is pending, and the business side responds when it is taken away (NAK back pressure)
  *
- * 与 InEndpointChannelBase 对称：In 的请求挂起是「设备没数据可发」，Out 的请求
- * 挂起是「设备没空位可收」（业务侧未消费）。主机 OUT 请求到达后数据留在
- * transfer 里挂起、不回 RET_SUBMIT——主机 URB 挂着，天然停发（对齐内核
- * vudc：gadget 请求耗尽时 OUT 端点 NAK，见 u_serial.c gs_rx_push）。
- * 业务侧 take() 取走时读出数据并回 RET_SUBMIT，空位释放后主机恢复发送。
+ * is symmetrical with InEndpointChannelBase: the request for In is suspended because "the device has no data to send", and the request for Out is suspended
+ * because "the device has no space to receive" (the application has not consumed data). After a host OUT request arrives, data stays pending in
+ * transfer without returning RET_SUBMIT: the host URB remains pending and naturally stops sending (consistent with kernel
+ * vudc: OUT endpoint NAK when gadget request is exhausted, see u_serial.c gs_rx_push).
+ * When the application retrieves it through take(), read the data and return RET_SUBMIT; after space is freed, the host resumes sending.
  *
- * 数据读取走 TransferHandle 持有的 TransferOperator::get_transfer_data，
- * 组件不假设 transfer 内部结构。
+ * data is read from TransferOperator::get_transfer_data held by TransferHandle.
+ * component does not assume transfer internal structure.
  *
- * 单锁即可：阻塞等待（take）时释放锁，请求侧（on_out_request）随时可入队，
- * 不需要 In 通道的双锁（In 双锁是因为写侧等空间时不能占请求队列锁）。
+ * A single lock is sufficient: the lock is released when blocking and waiting (take), and the requesting side (on_out_request) can join the queue at any time.
+ * does not require double locking of the In channel (the double locking of In is because the request queue lock cannot be occupied when writing to the waiting space).
  *
- * 纯通知请求（transfer 为空，如 Pipe 控制 IN 的 setup 透出）：take 只返回
- * setup、不应答，用于把「主机有控制请求待应答」通知给业务侧
+ * Pure notification request (transfer is empty, such as the setup of Pipe control IN is exposed): take only returns
+ * setup, no response, used to notify the business side that "the host has a control request to be responded to"
  *
- * 典型接入（handler 内）：
- *  - 主机 OUT 回调里调 on_out_request(...)：请求挂起，数据留在 transfer 里
- *  - 业务线程取数据：take()（阻塞，取走时读出数据并应答，空位释放主机恢复发送）
- *    或 try_take()（非阻塞，没数据立即返回 nullopt）
- *  - 生命周期：on_new_connection 时传会话调 on_new_connection(会话)，
- *    on_disconnection 时调 on_disconnection（清挂起请求、唤醒阻塞的 take）
+ * Typical access (within handler):
+ *  - Called in the host OUT callback on_out_request(...): The request is suspended and the data remains in the transfer
+ *  - Business thread takes data: take() (blocking, reads the data and responds when taking it, the vacancy is released and the host resumes sending)
+ *    or try_take() (non-blocking, returns nullopt immediately if there is no data)
+ *  - Lifecycle: during on_new_connection, pass the session to on_new_connection(session),
+ *    and during on_disconnection call on_disconnection (clear pending requests, wake blocked take)
  */
 template <typename Derived>
 class OutEndpointChannelBase {
 public:
-    /// take() 返回的一次消费（业务侧拿到数据后自行处理）
+    /// one consumption returned by take() (the business side will process it after getting the data)
     struct Pending {
-        std::uint8_t ep;                       // 端点地址（含方向位）；控制请求时为 0
-        std::optional<SetupPacket> setup_req;  // 仅控制请求（ep==0）时有效
-        data_type data;                        // OUT 数据（纯通知请求为空）
+        std::uint8_t ep;                       // endpoint address (including direction bit); when controlling the request, it is 0
+        std::optional<SetupPacket> setup_req;  // is only valid when controlling the request (ep==0)
+        data_type data;                        // OUT data (pure notification request is empty)
     };
 
     /**
-     * @brief 设置挂起请求上限（0 = 无限，默认）。挂起请求数达到上限后，主机新
-     * OUT 请求立即回 EPIPE（设备忙）、不占队列；业务消费腾出空位后才放行。
-     * 与 InEndpointChannelBase::set_max_pending_requests 同方向：都限「主机
-     * 发来的请求」堆积（设备没空位可收时），非数据缓冲上限
+     * @brief Set the pending-request limit (0 = unlimited, default). Once the limit is reached, new host
+     * OUT requests immediately return EPIPE (device busy), without occupying the queue; allow them only after application consumption frees space.
+     * Same direction as InEndpointChannelBase::set_max_pending_requests: both limit accumulation of "requests
+     * from the host" (when the device has no space to receive), rather than data buffering
      */
     void set_max_pending_requests(std::size_t max_pending) {
         std::lock_guard lock(mutex_);
         max_pending_ = max_pending;
     }
 
-    /** @brief 当前挂起中（已收未消费）的请求数 */
+    /** @brief Number of requests currently pending (received but not consumed) */
     std::size_t size() const {
         std::lock_guard lock(mutex_);
         return pending.size();
     }
 
     /**
-     * @brief 挂起队列最旧一个请求的 seqnum（空队列返回 nullopt）
-     * @note 供跨通道/跨端点按 USB 全局到达顺序取数据：seqnum 单调递增
+     * @brief The seqnum of the oldest request in the pending queue (empty queue returns nullopt)
+     * @note For cross-channel/cross-endpoint data acquisition according to USB global arrival order: seqnum monotonically increasing
      */
     std::optional<std::uint32_t> front_seqnum() const {
         std::lock_guard lock(mutex_);
@@ -80,22 +80,22 @@ public:
     }
 
     /**
-     * @brief 处理一个主机 OUT 请求（接口 OUT 传输回调里转发，session receiver 线程）
+     * @brief Processes a host OUT request (forwarded in the interface OUT transfer callback, session receiver thread)
      *
-     * 请求挂起、不立即回 RET_SUBMIT——主机 URB 挂着即背压停发；等业务侧
-     * take()/try_take() 取走数据时再应答（NAK 背压，对齐内核 u_serial 的 OUT 处理）。
-     * @param ep 端点地址（含方向位，如 0x02）
-     * @param seqnum 命令序列号
-     * @param transfer 本次 OUT 句柄，数据在句柄里，take() 时经 op 读出
-     * @param setup_req 仅非标准控制请求（ep==0）透传给业务侧；普通端点 OUT 不用传
+     * Suspend the request without immediately returning RET_SUBMIT: a pending host URB applies backpressure and stops sending; respond only when the application
+     * take()/try_take() responds after taking the data (NAK back pressure, aligning the OUT processing of core u_serial).
+     * @param ep endpoint address (including direction bit, such as 0x02)
+     * @param seqnum command sequence number
+     * @param transfer This time the OUT handle, the data is in the handle, read out by op when take()
+     * @param setup_req Only non-standard control requests (ep==0) are transparently transmitted to the business side; ordinary endpoint OUT does not need to be transmitted
      */
     void on_out_request(std::uint8_t ep, std::uint32_t seqnum, TransferHandle transfer,
                         std::optional<SetupPacket> setup_req = std::nullopt) {
         std::lock_guard lock(mutex_);
         if (disconnected) {
-            return;  // 断连后不再接收：请求直接释放（会话已关闭，无从应答）
+            return;  // No more reception after disconnection: Request direct release (the session has been closed and there is no way to respond)
         }
-        // 达到上限：设备忙，回 EPIPE 拒绝（请求直接释放，不占挂起队列）
+        // reaches the upper limit: the device is busy, and EPIPE rejects the request (the request is released directly and does not occupy the pending queue)
         if (max_pending_ != 0 && pending.size() >= max_pending_) {
             self().reply(seqnum, 0, static_cast<std::uint32_t>(UrbStatusType::StatusEPIPE));
             return;
@@ -105,9 +105,9 @@ public:
     }
 
     /**
-     * @brief 非阻塞取一条已挂起的 OUT 请求（业务线程调）
-     * @return 有请求则返回 Pending（含端点与读出数据），并自动应答（主机恢复发送）；
-     *         队列空返回 nullopt
+     * @brief Retrieve a pending OUT request without blocking (called by the application thread)
+     * @return If there is a request, it will return Pending (including endpoint and read data), and automatically respond (the host resumes sending);
+     *         Queue empty returns nullopt
      */
     std::optional<Pending> try_take() {
         std::lock_guard lock(mutex_);
@@ -118,9 +118,9 @@ public:
     }
 
     /**
-     * @brief 阻塞取一条已挂起的 OUT 请求（业务线程调）
-     * @param timeout_ms 等待超时（毫秒）；0 = 无限等
-     * @return 有请求返回 Pending（含端点与读出数据，自动应答）；超时或断连返回 nullopt
+     * @brief Retrieve a pending OUT request with blocking (called by the application thread)
+     * @param timeout_ms Wait timeout (milliseconds); 0 = infinite wait
+     * @return Returns Pending if there is a request (including endpoint and read data, automatic response); returns nullopt when timeout or disconnection
      */
     std::optional<Pending> take(std::uint32_t timeout_ms = 0) {
         std::unique_lock lock(mutex_);
@@ -130,7 +130,7 @@ public:
             }
             else {
                 if (data_cv.wait_for(lock, std::chrono::milliseconds(timeout_ms)) == std::cv_status::timeout) {
-                    // 超时时刻数据可能恰好入队：跳出循环走统一判断，避免丢数据
+                    // The data may just enter the queue at the time of timeout: jump out of the loop and make a unified judgment to avoid losing data.
                     break;
                 }
             }
@@ -142,15 +142,15 @@ public:
     }
 
     /**
-     * @brief 取消一个挂起的 OUT 请求（主机的 UNLINK 命令处理）
-     * @return true = 请求确实还在挂起队列里、已取消（应答 -ECONNRESET）；
-     *         false = 请求不存在或已应答过（应答 0）
+     * @brief Cancel a pending OUT request (host's UNLINK command processing)
+     * @return true = The request is indeed still in the pending queue and has been canceled (response -ECONNRESET);
+     *         false = The request does not exist or has been answered (response 0)
      */
     bool cancel_pending(std::uint32_t unlink_seqnum) {
         std::lock_guard lock(mutex_);
         for (auto it = pending.begin(); it != pending.end(); ++it) {
             if (it->seqnum == unlink_seqnum) {
-                pending.erase(it);  // transfer 析构自动释放
+                pending.erase(it);  // transfer destruction and automatic release
                 return true;
             }
         }
@@ -158,9 +158,9 @@ public:
     }
 
     /**
-     * @brief 新连接激活通道：设会话指针并复位断连标记（队列由上次断连清空）。
-     * handler 的 on_new_connection 里传当前会话调用；无参（测试桩复位）时保持
-     * 已绑定的会话不变
+     * @brief New connection activation channel: Set the session pointer and reset the disconnection mark (the queue is cleared from the last disconnection).
+     * Call from the handler's on_new_connection with the current session; when called without arguments (test stub reset), leave
+     * The bound session remains unchanged
      */
     void on_new_connection(TransferResponder *current_session = nullptr) {
         std::lock_guard lock(mutex_);
@@ -171,14 +171,14 @@ public:
     }
 
     /**
-     * @brief 断连：清挂起请求（transfer 析构自动释放）、唤醒阻塞的 take 按断连返回。
-     * 之后 take 立即返回 nullopt；连接状态由 handler 管理
+     * @brief Disconnection: clear pending requests (automatically released by transfer destructor), wake up blocked take and return by disconnection.
+     * Take immediately returns nullopt; the connection status is managed by the handler
      */
     void on_disconnection() {
         {
             std::lock_guard lock(mutex_);
             disconnected = true;
-            pending.clear();  // TransferHandle 析构自动释放
+            pending.clear();  // TransferHandle is automatically released after destruction
         }
         data_cv.notify_all();
     }
@@ -195,49 +195,49 @@ private:
         std::uint8_t ep;
         std::uint32_t seqnum;
         std::optional<SetupPacket> setup_req;
-        TransferHandle transfer;  // 数据载体（OUT 数据已读入）；纯通知请求为空
+        TransferHandle transfer;  // data carrier (OUT data has been read in); pure notification request is empty
     };
 
-    // 调用者必须已持有 mutex_
+    // The caller must already hold mutex_
     std::optional<Pending> take_locked() {
         auto req = std::move(pending.front());
         pending.pop_front();
         if (req.transfer) {
-            // 有数据：读出并应答（数据消费完成 = 空位释放，主机恢复发送）
+            // has data: read and respond (data consumption completed = vacancy released, host resumes sending)
             assert(req.transfer.get_operator() != nullptr);
             bool supported = false;
             data_type data;
             auto len = req.transfer.get_operator()->get_transfer_data(req.transfer.get(), data, supported);
-            assert(supported);  // 挂起-消费的 op 必须支持读数据
+            assert(supported);  // Operators using suspend-consume must support reading data
             self().reply(req.seqnum, len);
             return Pending{req.ep, req.setup_req, std::move(data)};
         }
-        // 纯通知（控制 IN 的 setup 透出）：不应答，只把 setup 交给业务侧
+        // Pure notification (controlling the setup of IN): No response, only the setup is handed over to the business side
         return Pending{req.ep, req.setup_req, {}};
     }
 
     mutable std::mutex mutex_;
-    std::condition_variable data_cv;  // 挂起队列非空或断连
+    std::condition_variable data_cv;  // The pending queue is not empty or disconnected
     std::deque<PendingRequest> pending;
-    std::size_t max_pending_ = 0;  // 0 = 无限
-    bool disconnected = true;      // 初始为断连，on_new_connection 后可用
+    std::size_t max_pending_ = 0;  // 0 = Unlimited
+    bool disconnected = true;      // is initially disconnected and available after on_new_connection
 };
 
 /**
- * @brief OUT 数据通道默认实现
+ * @brief OUT data channel default implementation
  *
- * 派生类需实现 reply()（CRTP 接口，应答一个请求）：通常走
- * responder->submit_ret_submit 回 RET_SUBMIT（status=0：OUT 数据消费完成；
- * 非 0：如上限拒绝的 EPIPE）。测试可继承 OutEndpointChannelBase 提供自己的
- * reply() 记录应答，不产生虚函数开销
+ * derived classes need to implement reply() (CRTP interface, respond to a request): usually
+ * responder->submit_ret_submit returns RET_SUBMIT (status=0: OUT data consumption completed;
+ * not 0: EPIPE as upper limit rejected). Tests can inherit from OutEndpointChannelBase to provide their own
+ * reply() records the response and does not generate virtual function overhead
  */
 class OutEndpointChannel : public OutEndpointChannelBase<OutEndpointChannel> {
 public:
     /**
-     * @brief 应答一个挂起的请求（本通道的 CRTP 实现，内部调用，无需直接使用）
-     * @param seqnum 对应请求的序列号
-     * @param length 已消费的数据长度（status==0 时主机以为本次大小）
-     * @param status 0 = 正常完成；非 0 = 错误状态（如上限拒绝的 EPIPE，长度填 0）
+     * @brief responds to a pending request (CRTP implementation of this channel, internal call, no need to use it directly)
+     * @param seqnum The sequence number corresponding to the request
+     * @param length The length of the consumed data (when status==0, the host thinks this is the size)
+     * @param status 0 = Normal completion; non-0 = Error status (such as EPIPE rejected by the upper limit, fill in the length 0)
      */
     void reply(std::uint32_t seqnum, std::uint32_t length, std::uint32_t status = 0) {
         if (status == 0) {
@@ -245,7 +245,7 @@ public:
                     UsbIpResponse::UsbIpRetSubmit::create_ret_submit_ok_without_data(seqnum, length));
         }
         else {
-            // 错误状态应答：actual_length 填 0（协议上错误传输不带有效数据）
+            // Error status response: actual_length Fill in 0 (the protocol error transfer does not contain valid data)
             responder->submit_ret_submit(
                     UsbIpResponse::UsbIpRetSubmit::create_ret_submit_with_status_and_no_data(seqnum, status, 0));
         }

@@ -10,7 +10,7 @@
 
 using namespace usbipdcpp;
 
-// ============== 测试用的常量 header 和 setup_packet ==============
+// ============== Constant header and setup_packet for testing ==============
 
 static const UsbIpHeaderBasic test_header = {
     .command = USBIP_CMD_SUBMIT,
@@ -69,7 +69,7 @@ public:
                      usbipdcpp::error_code &ec) override {}
 };
 
-// ============== 基本功能测试 ==============
+// ============== Basic functionality tests ==============
 
 class TransferHandleTest : public ::testing::Test {
 protected:
@@ -159,7 +159,7 @@ TEST_F(TransferHandleTest, Reset) {
     EXPECT_EQ(op->free_count, 1);
 }
 
-// ============== 并发安全测试 ==============
+// ============== Concurrency safety tests ==============
 
 TEST_F(TransferHandleTest, ConcurrentTransferHandles) {
     constexpr int num_threads = 4;

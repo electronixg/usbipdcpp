@@ -20,8 +20,8 @@ using namespace usbipdcpp;
 using namespace usbipdcpp::test;
 
 namespace {
-// 构造一个虚拟键盘设备（与 examples/mock_keyboard 相同的构造方式）。
-// string_pool 必须由调用方持有且生命周期长于设备（handler 内部保存其引用）
+// Construct a virtual keyboard device (same construction as examples/mock_keyboard).
+// Caller must own string_pool and outlive device (handler retains its reference)
 std::shared_ptr<UsbDevice> make_mock_keyboard(StringPool &string_pool) {
     std::vector<UsbInterface> interfaces = {
             UsbInterface{
@@ -65,12 +65,12 @@ std::shared_ptr<UsbDevice> make_mock_keyboard(StringPool &string_pool) {
 } // namespace
 
 TEST(TestNetworkVdev, ServerCanStopWithImportedDevice) {
-    // stop() 时 session 正处于传输状态（import 设备后的 receiver/sender 双线程）：
-    // immediately_stop 要能打断 receiver，设备要能移回可用列表，所有 session
-    // 线程 join 后 stop() 才返回，保证之后析构 Server 时没有线程还在访问它
+    // At stop(), session is in transfer state (receiver/sender threads after device import):
+    // immediately_stop must interrupt receiver; device must return to available list; stop() returns only after all session
+    // threads join, ensuring no thread still accesses Server when it is subsequently destroyed
     asio::io_context io;
 
-    // string_pool 必须先于 server 声明（后于 server 析构），handler 保存其引用
+    // string_pool must be declared before server (destroyed after server); handler retains its reference
     StringPool string_pool;
     usbipdcpp::Server server;
     server.add_device(make_mock_keyboard(string_pool));
@@ -78,10 +78,10 @@ TEST(TestNetworkVdev, ServerCanStopWithImportedDevice) {
 
     for (int round = 0; round < 2; round++) {
         ASSERT_FALSE(server.start(ep));
-        // 端口 0 启动，实际监听端点（含系统分配的端口）用 endpoint() 查询
+        // Start on port 0; query actual listening endpoint (including system-allocated port) using endpoint()
         auto actual_ep = server.endpoint();
 
-        // 连接服务器，轮询等待监听就绪
+        // Connect to server, polling until listening is ready
         asio::ip::tcp::socket client(io);
         bool connected = false;
         for (int i = 0; i < 200; i++) {
@@ -97,7 +97,7 @@ TEST(TestNetworkVdev, ServerCanStopWithImportedDevice) {
         }
         ASSERT_TRUE(connected);
 
-        // 发送 import 请求，让 session 进入传输状态
+        // Send import request, putting session in transfer state
         UsbIpCommand::OpReqImport req{.status = 0, .busid = {}};
         const std::string busid = "1-1";
         std::copy(busid.begin(), busid.end(), req.busid.begin());
@@ -105,7 +105,7 @@ TEST(TestNetworkVdev, ServerCanStopWithImportedDevice) {
         req.to_socket(client, send_ec);
         ASSERT_FALSE(send_ec);
 
-        // 读 OpRepImport 响应头（version + command + status），确认导入成功
+        // Read OpRepImport response header (version + command + status), confirming successful import
         std::uint16_t version = 0;
         std::uint16_t command = 0;
         std::uint32_t status = 0;
@@ -113,20 +113,20 @@ TEST(TestNetworkVdev, ServerCanStopWithImportedDevice) {
         ASSERT_EQ(command, OP_REP_IMPORT);
         ASSERT_EQ(status, 0u);
 
-        // 不关客户端，直接 stop()：immediately_stop 要打断传输中的 session
+        // Without closing client, call stop() directly: immediately_stop must interrupt transferring session
         server.stop();
         client.close();
     }
 }
 
 // ---------------------------------------------------------------------------
-// 以下为客户端各种奇特连接/断连场景
+// Various unusual client connection/disconnection scenarios follow
 // ---------------------------------------------------------------------------
 
 TEST(TestNetworkVdev, ClientRstWithoutAnyData) {
-    // 连接后不发任何数据直接 RST：session 挂在 parse_op 的阻塞读上，读要
-    // 以连接重置错误返回（SOCKET_ERR 路径，区别于 FIN 的 EOF 路径），
-    // session 干净退出，stop() 不卡
+    // RST directly after connection without sending data: session blocked reading in parse_op; read must
+    // return connection-reset error (SOCKET_ERR path, distinct from FIN's EOF path),
+    // session exits cleanly; stop() does not hang
     asio::io_context io;
     asio::ip::tcp::endpoint ep(asio::ip::address_v4::loopback(), 0);
 
@@ -137,14 +137,14 @@ TEST(TestNetworkVdev, ClientRstWithoutAnyData) {
         ASSERT_TRUE(connect_with_retry(client, server.endpoint()));
         rst_disconnect(client);
     }
-    // session 线程要在客户端断开后自行清理
+    // Session thread must clean itself up after client disconnection
     ASSERT_TRUE(wait_sessions_gone(server));
     server.stop();
 }
 
 TEST(TestNetworkVdev, ClientSendsHalfOpThenDisconnects) {
-    // 只发送 1 个字节就断开：服务器读 2 字节的 version 时卡在半个头上，
-    // 随后 EOF。这是"半包断开"最极端的形态，session 要干净退出
+    // Send only 1 byte then disconnect: server reading 2-byte version is stuck on half a header,
+    // followed by EOF. Most extreme "partial-packet disconnection"; session must exit cleanly
     asio::io_context io;
     asio::ip::tcp::endpoint ep(asio::ip::address_v4::loopback(), 0);
 
@@ -162,9 +162,9 @@ TEST(TestNetworkVdev, ClientSendsHalfOpThenDisconnects) {
 }
 
 TEST(TestNetworkVdev, ClientDisconnectsRightAfterImportRequest) {
-    // 发出 import 请求后不等服务器回复就 RST：服务器可能正在打开设备或写
-    // 回复时发现连接已断。session 要干净退出，设备不能卡在 using_devices——
-    // 重启后重新 import 同一设备必须成功
+    // RST after import request without awaiting server reply: server may discover disconnection while opening device or writing
+    // reply. Session must exit cleanly; device must not remain stuck in using_devices—
+    // reimporting the same device after restart must succeed
     asio::io_context io;
     asio::ip::tcp::endpoint ep(asio::ip::address_v4::loopback(), 0);
 
@@ -184,12 +184,12 @@ TEST(TestNetworkVdev, ClientDisconnectsRightAfterImportRequest) {
         req.to_socket(client, send_ec);
         ASSERT_FALSE(send_ec);
 
-        rst_disconnect(client); // 不读回复直接 RST
+        rst_disconnect(client); // RST directly without reading reply
     }
     ASSERT_TRUE(wait_sessions_gone(server));
     server.stop();
 
-    // 重启后重新 import 同一设备：设备没卡在 using_devices 才能成功
+    // Reimport same device after restart: succeeds only if device not stuck in using_devices
     ASSERT_FALSE(server.start(ep));
     {
         asio::ip::tcp::socket client(io);
@@ -202,9 +202,9 @@ TEST(TestNetworkVdev, ClientDisconnectsRightAfterImportRequest) {
 }
 
 TEST(TestNetworkVdev, ClientDisconnectsAfterSuccessfulImport) {
-    // import 成功后客户端优雅断开（FIN）：receiver 读到 EOF 走完整清理路径
-    // （on_disconnection → 设备移回可用列表）。3 轮循环验证设备可以反复
-    // 导入-释放，没有泄漏在 using_devices 中
+    // After successful import, client gracefully disconnects (FIN): receiver reads EOF, taking full cleanup path
+    // (on_disconnection → device returns to available list). 3 rounds verify repeatable device
+    // import-release without leaks in using_devices
     asio::io_context io;
     asio::ip::tcp::endpoint ep(asio::ip::address_v4::loopback(), 0);
 
@@ -218,7 +218,7 @@ TEST(TestNetworkVdev, ClientDisconnectsAfterSuccessfulImport) {
             asio::ip::tcp::socket client(io);
             ASSERT_TRUE(connect_with_retry(client, server.endpoint()));
             ASSERT_EQ(import_device(client, "1-1"), 0u);
-            client.close(); // 传输中优雅断开
+            client.close(); // Graceful disconnection during transfer
         }
         ASSERT_TRUE(wait_sessions_gone(server));
         server.stop();
@@ -226,8 +226,8 @@ TEST(TestNetworkVdev, ClientDisconnectsAfterSuccessfulImport) {
 }
 
 TEST(TestNetworkVdev, ClientRstDuringTransfer) {
-    // import 成功后传输进行中客户端 RST（不发 FIN）：receiver 的挂起读要以
-    // 连接重置错误返回并走完整清理路径，设备释放，之后可再次 import
+    // After successful import, client sends RST during transfer (no FIN): receiver's pending read must return
+    // connection-reset error, taking full cleanup path; device released and available for reimport
     asio::io_context io;
     asio::ip::tcp::endpoint ep(asio::ip::address_v4::loopback(), 0);
 
@@ -240,12 +240,12 @@ TEST(TestNetworkVdev, ClientRstDuringTransfer) {
         asio::ip::tcp::socket client(io);
         ASSERT_TRUE(connect_with_retry(client, server.endpoint()));
         ASSERT_EQ(import_device(client, "1-1"), 0u);
-        rst_disconnect(client); // 传输中 RST
+        rst_disconnect(client); // RST during transfer
     }
     ASSERT_TRUE(wait_sessions_gone(server));
     server.stop();
 
-    // 重启后重新 import 验证设备已释放
+    // Reimport after restart verifies device release
     ASSERT_FALSE(server.start(ep));
     {
         asio::ip::tcp::socket client(io);
@@ -258,8 +258,8 @@ TEST(TestNetworkVdev, ClientRstDuringTransfer) {
 }
 
 TEST(TestNetworkVdev, TwoClientsContendForSameDevice) {
-    // 两个客户端抢同一设备：A import 成功后 B 再 import 同一设备要收到 NA；
-    // A 断开释放设备后 C 才能 import 成功
+    // Two clients contend for same device: after A imports successfully, B importing same device must receive NA;
+    // only after A disconnects and releases device can C import successfully
     asio::io_context io;
     asio::ip::tcp::endpoint ep(asio::ip::address_v4::loopback(), 0);
 
@@ -269,21 +269,21 @@ TEST(TestNetworkVdev, TwoClientsContendForSameDevice) {
 
     ASSERT_FALSE(server.start(ep));
 
-    // A 先 import 成功
+    // A imports successfully first
     asio::ip::tcp::socket client_a(io);
     ASSERT_TRUE(connect_with_retry(client_a, server.endpoint()));
     ASSERT_EQ(import_device(client_a, "1-1"), 0u);
 
-    // B import 同一设备 → NA
+    // B imports same device → NA
     asio::ip::tcp::socket client_b(io);
     ASSERT_TRUE(connect_with_retry(client_b, server.endpoint()));
     ASSERT_EQ(import_device(client_b, "1-1"), static_cast<std::uint32_t>(OperationStatuType::NA));
 
-    // A 断开，设备释放
+    // A disconnects; device released
     client_a.close();
     ASSERT_TRUE(wait_sessions_gone(server));
 
-    // C 再 import 成功
+    // C imports successfully afterward
     asio::ip::tcp::socket client_c(io);
     ASSERT_TRUE(connect_with_retry(client_c, server.endpoint()));
     ASSERT_EQ(import_device(client_c, "1-1"), 0u);
@@ -294,8 +294,8 @@ TEST(TestNetworkVdev, TwoClientsContendForSameDevice) {
 }
 
 TEST(TestNetworkVdev, ClientSendsGarbageThenDisconnects) {
-    // 发送无意义字节流后断开：解析要么报未知版本/命令，要么读中断，
-    // 服务器不能崩，session 干净退出
+    // Send meaningless byte stream then disconnect: parsing either reports unknown version/command or read is interrupted;
+    // server must not crash; session exits cleanly
     asio::io_context io;
     asio::ip::tcp::endpoint ep(asio::ip::address_v4::loopback(), 0);
 
@@ -314,9 +314,9 @@ TEST(TestNetworkVdev, ClientSendsGarbageThenDisconnects) {
 }
 
 TEST(TestNetworkVdev, StopRightAfterImportRequest) {
-    // 客户端发出 import 请求后、服务器回复之前 stop()（客户端保持连接）：
-    // immediately_stop 要在 import 处理的任意阶段打断 session。
-    // 关键断言：重启后设备不在 using_devices（没泄漏），可以再 import
+    // stop() after client sends import request but before server replies (client remains connected):
+    // immediately_stop must interrupt session at any stage of import handling.
+    // Key assertion: after restart, device not in using_devices (no leak), can be imported again
     asio::io_context io;
     asio::ip::tcp::endpoint ep(asio::ip::address_v4::loopback(), 0);
 
@@ -336,11 +336,11 @@ TEST(TestNetworkVdev, StopRightAfterImportRequest) {
         req.to_socket(client, send_ec);
         ASSERT_FALSE(send_ec);
 
-        server.stop(); // 客户端还连着，不读回复直接 stop
+        server.stop(); // Client still connected; stop directly without reading reply
     }
     client.close();
 
-    // 重启后重新 import：若设备卡在 using_devices 会收到 NA
+    // Reimport after restart: receives NA if device stuck in using_devices
     ASSERT_FALSE(server.start(ep));
     {
         asio::ip::tcp::socket client(io);
@@ -353,10 +353,10 @@ TEST(TestNetworkVdev, StopRightAfterImportRequest) {
 }
 
 TEST(TestNetworkVdev, ClientDisconnectsDuringUrbTransfer) {
-    // 客户端发出真实的 URB（CMD_SUBMIT，键盘中断 IN 端点）后立即断开：
-    // 设备 handler 正在处理 URB 或 sender 正在写 RET_SUBMIT 响应时连接断开。
-    // 覆盖设备侧在途 URB 清理（on_disconnection）和 sender 写失败分支，
-    // 设备必须释放，重启后可再次 import
+    // Client sends real URB (CMD_SUBMIT, keyboard interrupt IN endpoint) then disconnects immediately:
+    // connection breaks while device handler processes URB or sender writes RET_SUBMIT response.
+    // Covers device-side in-flight URB cleanup (on_disconnection) and sender write-failure branch;
+    // device must be released and reimportable after restart
     asio::io_context io;
     asio::ip::tcp::endpoint ep(asio::ip::address_v4::loopback(), 0);
 
@@ -370,7 +370,7 @@ TEST(TestNetworkVdev, ClientDisconnectsDuringUrbTransfer) {
         ASSERT_TRUE(connect_with_retry(client, server.endpoint()));
         ASSERT_EQ(import_device(client, "1-1"), 0u);
 
-        // 构造键盘中断 IN 端点（逻辑 ep=1，服务器侧换算为 0x81）的 URB
+        // Construct URB for keyboard interrupt IN endpoint (logical ep=1, converted server-side to 0x81)
         UsbIpCommand::UsbIpCmdSubmit submit{};
         submit.header.command = USBIP_CMD_SUBMIT;
         submit.header.seqnum = 1;
@@ -386,12 +386,12 @@ TEST(TestNetworkVdev, ClientDisconnectsDuringUrbTransfer) {
         submit.to_socket(client, send_ec);
         ASSERT_FALSE(send_ec);
 
-        rst_disconnect(client); // URB 流转中 RST，不读 RET_SUBMIT 响应
+        rst_disconnect(client); // RST during URB processing, without reading RET_SUBMIT response
     }
     ASSERT_TRUE(wait_sessions_gone(server));
     server.stop();
 
-    // 重启后重新 import 验证设备已释放
+    // Reimport after restart verifies device release
     ASSERT_FALSE(server.start(ep));
     {
         asio::ip::tcp::socket client(io);
@@ -404,8 +404,8 @@ TEST(TestNetworkVdev, ClientDisconnectsDuringUrbTransfer) {
 }
 
 TEST(TestNetworkVdev, ImportNonexistentDevice) {
-    // 客户端 import 一个不存在的设备：服务器回复 NoDev，session 正常收尾
-    // 不崩；之后 import 真实设备仍然正常
+    // Client imports nonexistent device: server replies NoDev; session cleans up normally
+    // without crashing; subsequent import of real device still works
     asio::io_context io;
     asio::ip::tcp::endpoint ep(asio::ip::address_v4::loopback(), 0);
 
@@ -423,7 +423,7 @@ TEST(TestNetworkVdev, ImportNonexistentDevice) {
     ASSERT_TRUE(wait_sessions_gone(server));
     server.stop();
 
-    // 真实设备不受影响
+    // Real device unaffected
     ASSERT_FALSE(server.start(ep));
     {
         asio::ip::tcp::socket client(io);
@@ -436,9 +436,9 @@ TEST(TestNetworkVdev, ImportNonexistentDevice) {
 }
 
 TEST(TestNetworkVdev, ClientReconnectLoop) {
-    // 服务器不重启的情况下，客户端反复 import→断开→重连→import 同一设备：
-    // 设备每次都要正确释放回可用列表。FIN 和 RST 断开方式交替，
-    // 10 轮后服务器仍然正常工作
+    // Without restarting server, client repeatedly imports→disconnects→reconnects→imports same device:
+    // device must return correctly to available list every time. Alternate FIN and RST disconnections;
+    // server still works normally after 10 rounds
     asio::io_context io;
     asio::ip::tcp::endpoint ep(asio::ip::address_v4::loopback(), 0);
 
@@ -450,14 +450,14 @@ TEST(TestNetworkVdev, ClientReconnectLoop) {
     for (int round = 0; round < 10; round++) {
         asio::ip::tcp::socket client(io);
         ASSERT_TRUE(connect_with_retry(client, server.endpoint()));
-        ASSERT_EQ(import_device(client, "1-1"), 0u) << "第 " << round << " 轮 import 失败";
+        ASSERT_EQ(import_device(client, "1-1"), 0u) << "Round " << round << " import failed";
         if (round % 2 == 0) {
-            client.close(); // 优雅断开
+            client.close(); // Graceful disconnection
         }
         else {
-            rst_disconnect(client); // RST 断开
+            rst_disconnect(client); // RST disconnection
         }
-        ASSERT_TRUE(wait_sessions_gone(server)) << "第 " << round << " 轮 session 未清理";
+        ASSERT_TRUE(wait_sessions_gone(server)) << "Round " << round << " session not cleaned up";
     }
     server.stop();
 }

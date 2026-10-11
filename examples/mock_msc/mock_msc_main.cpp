@@ -24,7 +24,7 @@ int main(int argc, char **argv) {
     auto backend = std::unique_ptr<StorageBackend>(std::make_unique<RawImageBackend>(image_path, 4096));
     auto device = UsbDevice::make(busid, 0x1234, 0x5681,
                                   {MscBulkOnlyHandler::make_interface(0x81, 0x02)},
-                                  1, 1, 0, "/usbipdcpp/mock_msc", UsbSpeed::High);  // 磁盘是高速设备，EP0 也按 High 生成（原笔误为 Full）
+                                  1, 1, 0, "/usbipdcpp/mock_msc", UsbSpeed::High);  // disk is a high-speed device, EP0 is also generated according to High (the original text was mistakenly Full)
     device->interfaces[0].with_handler<MscBulkOnlyHandler>(string_pool, std::move(backend));
     device->with_handler<SimpleVirtualDeviceHandler>(string_pool)->setup_interface_handlers();
 
@@ -34,7 +34,7 @@ int main(int argc, char **argv) {
     asio::ip::tcp::endpoint endpoint{asio::ip::tcp::v4(), port};
 
     if (auto ec = server.start(endpoint); ec) {
-        SPDLOG_ERROR("服务器启动失败：{}", ec.message());
+        SPDLOG_ERROR("Server startup failed: {}", ec.message());
         return 1;
     }
 

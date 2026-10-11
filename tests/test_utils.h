@@ -21,7 +21,7 @@
 namespace usbipdcpp {
 namespace test {
 
-// 测试专用比较函数
+// Test-only comparison function
 inline void expect_header_equal(const UsbIpHeaderBasic &actual, const UsbIpHeaderBasic &expected) {
     EXPECT_EQ(actual.command, expected.command);
     EXPECT_EQ(actual.seqnum, expected.seqnum);
@@ -42,9 +42,9 @@ inline void expect_cmd_unlink_equal(const UsbIpCommand::UsbIpCmdUnlink &actual,
         std::forward<T>(t).header;
     };
 
-// ---- 网络测试公共工具 ----
+// ---- Shared network-test utilities ----
 
-// 探测一个空闲端口。固定端口才能验证多次 start 的监听不冲突
+// Probe a free port. Fixed port needed to verify repeated start listening does not conflict
 inline std::uint16_t probe_free_port(asio::io_context &io) {
     asio::ip::tcp::acceptor probe(io);
     probe.open(asio::ip::tcp::v4());
@@ -52,7 +52,7 @@ inline std::uint16_t probe_free_port(asio::io_context &io) {
     return probe.local_endpoint().port();
 }
 
-// 连接服务器，轮询等待监听就绪。失败时重建 socket 重试，返回是否连接成功
+// Connect to server, polling until listening ready. Recreate socket and retry on failure; return connection success
 inline bool connect_with_retry(asio::ip::tcp::socket &client, const asio::ip::tcp::endpoint &ep) {
     for (int i = 0; i < 200; i++) {
         std::error_code ec;
@@ -67,18 +67,18 @@ inline bool connect_with_retry(asio::ip::tcp::socket &client, const asio::ip::tc
     return false;
 }
 
-// 以 RST 方式断开连接（linger=0 时不发送 FIN）：模拟客户端异常掉线，
-// 服务器侧读到的是连接重置错误而不是 EOF，走不同的错误分支
+// Disconnect with RST (linger=0 sends no FIN): simulate abnormal client disconnection;
+// server reads connection-reset error rather than EOF, taking a different error branch
 inline void rst_disconnect(asio::ip::tcp::socket &client) {
     std::error_code ec;
     client.set_option(asio::socket_base::linger(true, 0), ec);
     client.close();
 }
 
-// 轮询等待服务器清理完所有已断开的连接：客户端断开后 session 线程收尾
-// 并移除自身（get_session_count 返回存活会话数），归零即清理完成。连接若还
-// 停留在 accept 队列中（未创建 session）计数同样为 0，此时提前返回无碍——
-// 后续 stop() 的活跃会话计数等待（含所有已创建 session）会兜底等干净
+// Poll until server cleans up all disconnected connections: after client disconnection, session thread cleans up
+// and removes itself (get_session_count returns live sessions); zero means cleanup complete. If connection still
+// in accept queue (session not created), count also 0; early return harmless—
+// subsequent stop() active-session count wait (including all created sessions) ensures full cleanup
 inline bool wait_sessions_gone(Server &server, std::chrono::milliseconds timeout = std::chrono::seconds(5)) {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline) {
@@ -90,7 +90,7 @@ inline bool wait_sessions_gone(Server &server, std::chrono::milliseconds timeout
     return server.get_session_count() == 0;
 }
 
-// 发送 import 请求并读取回复，返回回复中的 status；任何错误返回最大值
+// Send import request and read reply; return reply status; any error returns maximum value
 inline std::uint32_t import_device(asio::ip::tcp::socket &client, const std::string &busid) {
     UsbIpCommand::OpReqImport req{.status = 0, .busid = {}};
     std::copy(busid.begin(), busid.end(), req.busid.begin());
@@ -124,7 +124,7 @@ inline std::uint32_t import_device(asio::ip::tcp::socket &client, const std::str
         std::thread sender([&]() {
             auto sock = acceptor.accept();
             usbipdcpp::data_type buffer;
-            // 发送版本号 + 命令码
+            // Send version number + command code
             usbipdcpp::vector_append_to_net(buffer, static_cast<std::uint16_t>(USBIP_VERSION));
             usbipdcpp::vector_append_to_net(buffer, (std::uint16_t) cmd);
             auto data = origin.to_bytes();
@@ -153,15 +153,15 @@ inline std::uint32_t import_device(asio::ip::tcp::socket &client, const std::str
         return received;
     }
 
-// ---- 虚拟设备数据面测试公共工具 ----
+// ---- Shared virtual-device data-plane test utilities ----
 
-// 记录型 TransferResponder 桩：捕获所有提交的应答，测试直接断言内容。
-// 替换真实 Session 后，handler/通道/调度器的数据面可脱离网络测试
+// Recording TransferResponder stub: capture all submitted responses; tests assert content directly.
+// Replacing real Session permits network-independent data-plane tests of handlers/channels/scheduler
 //
-// 生命周期：submits 里的 RetSubmit 持 TransferHandle（绑定 make_cmd_submit
-// 的 op），析构本桩时 handle 析构要调用 op 释放。因此 op 必须活得比桩久：
-// 测试里把 op 放在 stub 之前声明，或做成 fixture 成员（fixture 先于 stub
-// 声明、逆序析构时后死）——否则 clang ASan 报 stack-use-after-scope
+// Lifetime: RetSubmit entries in submits hold TransferHandle (bound to make_cmd_submit
+// op); destroying this stub destroys handles, calling op to release them. Thus op must outlive stub:
+// declare op before stub in tests, or make it a fixture member (fixture declared before stub,
+// destroyed later in reverse order)—otherwise clang ASan reports stack-use-after-scope
 class CaptureResponder : public TransferResponder {
 public:
     void submit_ret_submit(UsbIpResponse::UsbIpRetSubmit &&submit) override {
@@ -191,7 +191,7 @@ public:
     bool stopped = false;
 };
 
-// 从 RET_SUBMIT 取数据阶段（未接管 transfer 时为空，如 OUT 应答）
+// Extract data phase from RET_SUBMIT (empty when transfer not taken over, e.g. OUT response)
 inline data_type ret_submit_data(const UsbIpResponse::UsbIpRetSubmit &ret) {
     if (auto *trx = GenericTransfer::from_handle(ret.transfer.get())) {
         return trx->data;
@@ -199,7 +199,7 @@ inline data_type ret_submit_data(const UsbIpResponse::UsbIpRetSubmit &ret) {
     return {};
 }
 
-// 从字节流偏移处读小端整数（测试断言线格式数据字段用）
+// Read little-endian integer at byte-stream offset (for wire-format data-field assertions)
 inline std::uint32_t read_le32_at(const data_type &d, std::size_t offset) {
     std::uint32_t v{};
     std::memcpy(&v, d.data() + offset, sizeof(v));
@@ -212,9 +212,9 @@ inline std::uint16_t read_le16_at(const data_type &d, std::size_t offset) {
     return v;
 }
 
-// 构造 CMD_SUBMIT（对齐 CmdSubmit::from_socket 的分配：IN/OUT 都分配
-// transfer，IN 请求不读数据阶段、OUT 请求带数据）。op 由调用方持有，
-// 必须活得比 submit 长（TransferHandle 析构时用它释放）
+// Construct CMD_SUBMIT (matching CmdSubmit::from_socket allocation: both IN/OUT allocate
+// transfer; IN requests read no data phase; OUT requests carry data). Caller owns op,
+// which must outlive submit (TransferHandle destruction uses it to release)
 inline UsbIpCommand::UsbIpCmdSubmit make_cmd_submit(GenericTransferOperator &op, std::uint32_t seqnum,
                                                     std::uint8_t ep_num, std::uint32_t direction,
                                                     std::uint32_t transfer_buffer_length,
@@ -225,7 +225,7 @@ inline UsbIpCommand::UsbIpCmdSubmit make_cmd_submit(GenericTransferOperator &op,
     submit.header.seqnum = seqnum;
     submit.header.devid = 1;
     submit.header.direction = direction;
-    submit.header.ep = ep_num; // 线格式端点号（不带方向位，方向由 direction 字段给出）
+    submit.header.ep = ep_num; // Wire-format endpoint number (without direction bit; direction supplied by direction field)
     submit.transfer_flags = 0;
     submit.transfer_buffer_length = transfer_buffer_length;
     submit.start_frame = 0;

@@ -11,7 +11,7 @@
 namespace py = pybind11;
 
 void bind_device(py::module_ &m) {
-    // Version - BCD 版本号
+    // Version - BCD version number
     py::class_<usbipdcpp::Version>(m, "Version")
         .def(py::init<std::uint16_t>(), py::arg("bcd"))
         .def(py::init<std::uint8_t, std::uint8_t, std::uint8_t>(),

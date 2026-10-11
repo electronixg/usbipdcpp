@@ -22,7 +22,7 @@ void bind_endpoint(py::module_ &m) {
             .def_static("get_ep0_out", py::overload_cast<usbipdcpp::UsbSpeed>(&usbipdcpp::UsbEndpoint::get_ep0_out),
                         py::arg("speed"));
 
-    // UsbEndpoint::Direction 内部枚举
+    // UsbEndpoint::Direction nested enumeration
     py::enum_<usbipdcpp::UsbEndpoint::Direction>(m, "EndpointDirection")
             .value("In", usbipdcpp::UsbEndpoint::Direction::In)
             .value("Out", usbipdcpp::UsbEndpoint::Direction::Out)

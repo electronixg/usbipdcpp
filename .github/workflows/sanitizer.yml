@@ -1,22 +1,22 @@
-# Sanitizer 测试（ASan+UBSan / TSan）
-# 触发：push/PR 到 main（含 workflow 自身的改动——.github/** 不 ignore，
-# 工作流改动需验证语法与逻辑），也可手动 workflow_dispatch
-# 文档等非代码文件的改动不触发（sanitizer 是最贵的 job，改了 README 全量
-# 重跑纯属浪费）。ASan+UBSan 抓越界/UB：Debug + sanitizer 跑全量测试，
-# 再跑一轮竞态 stress（竞态路径最容易踩内存）。TSan 与 ASan 运行时互斥，
-# 必须独立 job：先全量跑两轮（TSan 是动态检测，竞态需两线程真正并发才
-# 触发，两轮提高调度覆盖率），再跑并发聚焦 stress（30 轮重复）。只在
-# Linux 跑（UBSan/TSan 在 Windows 上支持不完整）；静态库避免 shared +
-# sanitizer 的运行时加载问题。TSan 在 6.8+ 内核（mmap_rnd_bits=32）上会
-# "unexpected memory mapping"（GCC libtsan 不支持），CI 用 clang 且用
-# setarch -R 禁用 ASLR 兜底（本地 WSL 实测通过）
+# Sanitizer tests (ASan+UBSan / TSan)
+# Trigger: push/PR to main (including changes to workflow itself—.github/** not ignored,
+# Workflow changes require syntax and logic verification), or manual workflow_dispatch
+# Changes to non-code files such as documentation do not trigger tests (sanitizer is most expensive job; rerunning all tests
+# after README changes is wasteful). ASan+UBSan catches out-of-bounds access/UB: run full tests with Debug + sanitizer,
+# then another race stress round (race paths most likely to cause memory errors). TSan and ASan runtimes mutually exclusive,
+# requiring separate jobs: first two full rounds (TSan detects dynamically; races must involve genuinely concurrent threads
+# to trigger detection; two rounds increase scheduling coverage), then concurrency-focused stress (30 repetitions). Run only on
+# Linux (UBSan/TSan support incomplete on Windows); static library avoids runtime-loading problems with shared +
+# sanitizer. TSan encounters "unexpected memory mapping" on kernels 6.8+ (mmap_rnd_bits=32)
+# (unsupported by GCC libtsan); CI uses clang and
+# setarch -R to disable ASLR as fallback (verified locally in WSL)
 
 name: Sanitizer (ASan + UBSan + TSan)
 
 on:
   push:
     branches: [ "main" ]
-    # 文档等非代码文件的改动不触发
+    # Changes to non-code files such as documentation do not trigger tests
     paths-ignore:
       - '**/*.md'
       - 'LICENSE'
@@ -63,7 +63,7 @@ jobs:
         working-directory: build
         run: ctest --output-on-failure
 
-      # 竞态路径最容易踩内存：ASan 下再跑一轮连接/停止竞态 stress
+      # Race paths most likely to cause memory errors: run another connection/stop race stress round under ASan
       - name: Stress test (TestNetworkConnection)
         shell: bash
         working-directory: build
@@ -71,10 +71,10 @@ jobs:
           ctest --repeat until-fail:30 --timeout 120 --output-on-failure \
             -R "TestNetworkConnection\.(ServerCanRestartAfterStop|StopWithMultipleClients|StopDuringClientConnectRace)"
 
-  # TSan：独立 job（与 ASan 运行时互斥）。先全量跑两轮（单轮可能恰好调度
-  # 串行化而漏报），再跑并发聚焦 stress——连接/停止竞态、虚拟设备传输、
-  # 管道设备、传输调度器都是并发重点。setarch -R 禁用 ASLR：内核 mmap
-  # 随机化位数过高时 TSan 映射失败（见文件头注释）
+  # TSan: separate job (runtime mutually exclusive with ASan). First two full rounds (a single round may happen to be scheduled
+  # serially and miss races), then concurrency-focused stress—connection/stop races, virtual-device transfers,
+  # pipe devices, transfer scheduler are concurrency priorities. setarch -R disables ASLR: kernel mmap
+  # mapping fails for TSan when randomization bit count too high (see header comment)
   tsan:
     runs-on: ubuntu-24.04
     steps:
@@ -104,16 +104,16 @@ jobs:
       - name: Build
         run: cmake --build build --parallel
 
-      # TSan 全量先跑两轮：动态检测需两线程真正并发才报，单轮可能调度
-      # 串行化漏报，两轮提高覆盖率
+      # First two full TSan rounds: dynamic detection reports only genuinely concurrent threads; a single round may be scheduled
+      # serially, missing races; two rounds improve coverage
       - name: Test (full, 2 rounds)
         shell: bash
         working-directory: build
         run: |
           setarch $(uname -m) -R ctest --repeat until-fail:2 --timeout 120 --output-on-failure
 
-      # TSan 是动态检测，竞态需两线程真正并发访问才报——单次可能恰好调度
-      # 串行化而漏报，重复 30 轮提高调度覆盖率（TSan 慢，只能到此为止）
+      # TSan detects dynamically, reporting races only when two threads access concurrently—a single run may happen to be scheduled
+      # serially and miss races; repeat 30 rounds to improve scheduling coverage (TSan is slow; this is the practical limit)
       - name: Test (concurrency-focused)
         shell: bash
         working-directory: build

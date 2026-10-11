@@ -30,76 +30,76 @@ public:
 
 
     data_type report_descriptor{
-            // HID报告描述符 - 5按钮鼠标带滚轮
+            // HID report descriptor - 5 button mouse with wheel
             0x05, 0x01, // Usage Page (Generic Desktop)
             0x09, 0x02, // Usage (Mouse)
             0xA1, 0x01, // Collection (Application)
             0x09, 0x01, //   Usage (Pointer)
             0xA1, 0x00, //   Collection (Physical)
 
-            // 按钮区域 (5个按键 + 3位填充)
+            // button area (5 buttons + 3 bits filled)
             0x05, 0x09, //   Usage Page (Button)
             0x19, 0x01, //   Usage Minimum (Button 1)
             0x29, 0x05, //   Usage Maximum (Button 5)
             0x15, 0x00, //   Logical Minimum (0)
             0x25, 0x01, //   Logical Maximum (1)
-            0x95, 0x05, //   Report Count (5)  // 5个按钮
-            0x75, 0x01, //   Report Size (1)   // 每个按钮1位
+            0x95, 0x05, //   Report Count (5) // 5 buttons
+            0x75, 0x01, //   Report Size (1) // 1 bit per button
             0x81, 0x02, //   Input (Data,Var,Abs)
 
-            0x95, 0x01, //   Report Count (1)  // 填充3位
+            0x95, 0x01, //   Report Count (1) // 3 bits of padding
             0x75, 0x03, //   Report Size (3)
-            0x81, 0x03, //   Input (Const,Var,Abs) // 常量填充
+            0x81, 0x03, //   Input (Const,Var,Abs) // Constant padding
 
-            // 光标移动区域 (X/Y轴)
+            // Cursor movement area (X/Y axis)
             0x05, 0x01, //   Usage Page (Generic Desktop)
             0x09, 0x30, //   Usage (X)
             0x09, 0x31, //   Usage (Y)
             0x15, 0x81, //   Logical Minimum (-127)
             0x25, 0x7F, //   Logical Maximum (127)
-            0x75, 0x08, //   Report Size (8)   // 8位分辨率
-            0x95, 0x02, //   Report Count (2)  // X和Y两个轴
-            0x81, 0x06, //   Input (Data,Var,Rel) // 相对坐标
+            0x75, 0x08, //   Report Size (8) // 8 bit resolution
+            0x95, 0x02, //   Report Count (2) // X and Y axes
+            0x81, 0x06, //   Input (Data,Var,Rel) // Relative coordinates
 
-            // 滚轮区域
+            // wheel area
             0x09, 0x38, //   Usage (Wheel)
             0x15, 0x81, //   Logical Minimum (-127)
             0x25, 0x7F, //   Logical Maximum (127)
             0x75, 0x08, //   Report Size (8)
             0x95, 0x01, //   Report Count (1)
-            0x81, 0x06, //   Input (Data,Var,Rel) // 相对滚动量
+            0x81, 0x06, //   Input (Data,Var,Rel) // Relative scroll amount
 
             0xC0, //   End Collection (Physical)
             0xC0, // End Collection (Application)
 
     };
     /*
-报告描述符说明：
-按钮部分:
+report descriptor description:
+button part:
 
-5个独立按钮 (左键、右键、中键、侧键1、侧键2)
-每个按钮占用1位 (0=释放, 1=按下)
-用3位常量填充，使字节对齐
-光标移动:
+5 independent buttons (left button, right button, middle button, side button 1, side button 2)
+Each button occupies 1 bits (0=release, 1=press)
+is padded with the 3 bit constant to align the bytes
+Cursor movement:
 
-X/Y轴相对移动量
-8位有符号整数 (-127到+127)
-相对坐标模式 (REL)
-滚轮:
+X/Y axis relative movement amount
+8 bit signed integer (-127 to +127)
+relative coordinate mode (REL)
+roller:
 
-垂直滚动量
-8位有符号整数 (-127到+127)
-中键按下时作为按钮，滚动时作为滚轮
-报告格式：
-[字节0] | 按钮状态 (bit0-4) + 填充 (bit5-7)
-[字节1] | X轴移动量 (相对值)
-[字节2] | Y轴移动量 (相对值)
-[字节3] | 滚轮移动量 (相对值)
+vertical scrolling amount
+8 bit signed integer (-127 to +127)
+The middle button acts as a button when pressed and as a scroll wheel when scrolled
+Report format:
+[byte 0] | button state (bit0-4) + padding (bit5-7)
+[byte 1] | X-axis movement amount (relative value)
+[byte 2] | Y-axis movement amount (relative value)
+[Byte 3] | Wheel movement amount (relative value)
 */
 
 
     /**
-     * @brief 没加锁，请自行加锁
+     * @brief It is not locked, please lock it yourself
      */
     void reset_relative_data();
 
@@ -121,10 +121,10 @@ X/Y轴相对移动量
     std::atomic_bool should_immediately_stop = false;
 
     State current_state;
-    State last_state;  // 储存上次发送时的状态
+    State last_state;  // stores the status when last sent
     std::mutex state_mutex;
-    std::condition_variable state_cv;  // 等待状态变化
-    std::thread send_thread;  // 发送线程
+    std::condition_variable state_cv;  // Waiting for status change
+    std::thread send_thread;  // send thread
 
     std::atomic<std::int16_t> idle_speed = 1;
 };

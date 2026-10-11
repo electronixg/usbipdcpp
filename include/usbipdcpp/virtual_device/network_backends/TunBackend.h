@@ -13,41 +13,41 @@
 namespace usbipdcpp {
 
 /**
- * @brief TUN/TAP 后端：把虚拟网卡接入主机真实内核协议栈（Linux /dev/net/tun）
+ * @brief TUN/TAP backend: connect the virtual network adapter to the host's real kernel protocol stack (Linux /dev/net/tun)
  *
- * 用 IFF_TAP 创建设备（二层，行为等同真实以太网卡）：主机（USB 客户端）发来的
- * 以太网帧 write 进 tap 设备，内核按普通网卡帧处理（ARP / ICMP / TCP 由内核
- * 协议栈应答，可路由转发到真实网络）；内核写回 tap 的完整以太网帧由读线程经
- * send_to_host 推给主机。tap 接口在 fd 关闭时销毁。
+ * Create the device with IFF_TAP (layer 2, behaves like a real Ethernet adapter): write Ethernet frames from the host (USB client)
+ * into the tap device; the kernel processes them as ordinary network-adapter frames (the kernel protocol stack responds to ARP / ICMP / TCP,
+ * and can route/forward to real networks); a read thread pushes complete Ethernet frames written back to tap by the kernel to the host through
+ * send_to_host. The tap interface is destroyed when fd closes.
  *
- * @note 仅 Linux 内核平台可用（含 WSL2 / Android termux / armbian）：TUNSETIFF 与
- * 网卡配置（IP/掩码/UP）需要 root 权限。Windows/macOS 不编译该文件（macOS 的
- * utun 是三层设备且无公开 TAP 接口，tuntaposx 驱动在新系统上已被禁用）
+ * @note Available only on Linux-kernel platforms (including WSL2 / Android termux / armbian): TUNSETIFF and
+ * adapter configuration (IP/netmask/UP) require root privileges. This file is not compiled on Windows/macOS (macOS
+ * utun is layer 3 with no public TAP interface; the tuntaposx driver is disabled on newer systems)
  */
 class USBIPDCPP_API TunBackend : public NetworkBackend {
 public:
     /**
-     * @param if_name 接口名（含 %d 时内核自动分配编号，如 "usbip%d"）；创建后
-     *        用 interface_name() 查实际名
-     * @param ip 设备侧 IPv4（4 字节，如 192.168.53.1）
-     * @param netmask 子网掩码（如 255.255.255.0）
-     * @throws std::runtime_error 打开 /dev/net/tun 或 ioctl 失败（root 权限 /
-     *        内核未开 CONFIG_TUN / 接口名非法）
+     * @param if_name Interface name (the kernel assigns a number for %d, such as "usbip%d"); after creation,
+     *        query the actual name with interface_name()
+     * @param ip Device-side IPv4 (4 bytes, such as 192.168.53.1)
+     * @param netmask Subnet mask (such as 255.255.255.0)
+     * @throws std::runtime_error Failure opening /dev/net/tun or calling ioctl (root privileges /
+     *        kernel lacks CONFIG_TUN / invalid interface name)
      */
     TunBackend(std::string if_name, std::array<std::uint8_t, 4> ip, std::array<std::uint8_t, 4> netmask);
 
     ~TunBackend() override;
 
-    /// 主机发来一帧（USB 收流线程调用）：写入 tun 设备交给内核协议栈
+    /// Host sends a frame (called by the USB receive-stream thread): write to the tun device for the kernel protocol stack
     void send_frame(const std::uint8_t *data, std::size_t size) override;
 
-    /// 实际创建的接口名（TUNSETIFF 会把 %d 展开成编号）
+    /// Actual interface name created (TUNSETIFF expands %d to a number)
     [[nodiscard]] const std::string &interface_name() const {
         return if_name_;
     }
 
 private:
-    /// 阻塞读 tun 设备：内核协议栈发来的帧经 send_to_host 推给主机
+    /// Blocking read from the tun device: push frames from the kernel protocol stack to the host through send_to_host
     void read_loop();
 
     int tun_fd_ = -1;

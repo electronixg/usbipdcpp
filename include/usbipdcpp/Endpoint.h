@@ -6,13 +6,13 @@
 
 namespace usbipdcpp {
 
-/// 根据 USB 速度和端点类型返回总线允许的最大包大小（字节）
+/// Returns the maximum packet size (bytes) allowed by the bus according to the USB speed and endpoint type
 constexpr std::uint16_t max_packet_size_limit(UsbSpeed speed, EndpointAttributes type) {
     switch (speed) {
         case UsbSpeed::Low:
             if (type == EndpointAttributes::Interrupt || type == EndpointAttributes::Control)
                 return 8;
-            return 0; // 低速不支持 Bulk/Isochronous
+            return 0; // low speed does not support Bulk/Isochronous
         case UsbSpeed::Full:
             switch (type) {
                 case EndpointAttributes::Control:
@@ -53,7 +53,7 @@ constexpr std::uint16_t max_packet_size_limit(UsbSpeed speed, EndpointAttributes
     }
 }
 
-/// EP0 控制传输最大包大小
+/// EP0 Control transfer maximum packet size
 constexpr std::uint16_t ep0_max_packet_size(UsbSpeed speed) {
     return max_packet_size_limit(speed, EndpointAttributes::Control);
 }
@@ -68,7 +68,7 @@ struct UsbEndpoint {
 
 
     [[nodiscard]] Direction direction() const {
-        // 高位为1则是输入
+        // A high bit of 1 indicates input
         if ((address & 0b10000000) != 0) {
             return Direction::In;
         }
@@ -86,7 +86,7 @@ struct UsbEndpoint {
     }
 
     static UsbEndpoint get_ep0_in(std::uint16_t max_packet_size) {
-        return {.address = 0x80, // IN 端点，方向位为 1
+        return {.address = 0x80, // IN endpoint, the direction bit is 1
                 .attributes = static_cast<std::uint8_t>(EndpointAttributes::Control),
                 .max_packet_size = max_packet_size,
                 .interval = 0};
@@ -97,7 +97,7 @@ struct UsbEndpoint {
     }
 
     static UsbEndpoint get_ep0_out(std::uint16_t max_packet_size) {
-        return {.address = 0x00, // OUT 端点，方向位为 0
+        return {.address = 0x00, // OUT endpoint, the direction bit is 0
                 .attributes = static_cast<std::uint8_t>(EndpointAttributes::Control),
                 .max_packet_size = max_packet_size,
                 .interval = 0};

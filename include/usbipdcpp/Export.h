@@ -1,11 +1,11 @@
 #pragma once
 
 #if defined(_WIN32) || defined(__CYGWIN__)
-    // 如果是编译的静态库
+    // If it is a compiled static library
     #ifdef USBIPDCPP_STATIC
         #define USBIPDCPP_API
-    // 没定义则是编译的动态库
-    // 根据是否定义了 USBIPDCPP_EXPORTS 判断是在编译库还是在使用库
+    // If not defined, it is a compiled dynamic library
+    // Determines whether the library is being compiled or used based on whether USBIPDCPP_EXPORTS is defined
     #else
         #ifdef USBIPDCPP_EXPORTS
             #define USBIPDCPP_API __declspec(dllexport)

@@ -4,7 +4,7 @@
 
 #include "usbipdcpp/type.h"
 #include "usbipdcpp/utils/utils.h"
-// 通用类请求码（SET_CUR/GET_CUR 等）和类特定描述符类型（CS_INTERFACE 等）
+// general class request code (SET_CUR/GET_CUR, etc.) and class-specific descriptor type (CS_INTERFACE, etc.)
 #include "usbipdcpp/virtual_device/UsbClassConstants.h"
 
 namespace usbipdcpp {
@@ -136,20 +136,20 @@ constexpr std::uint8_t VS_FRM_H264_BASE_LEN = 44;      // H.264 frame before int
 constexpr std::uint8_t VS_FRM_H264_CONT_LEN = 56;      // 44 + 3*4
 constexpr std::uint8_t VS_COLOR_MATCHING_LEN = 6;
 
-// UVC Payload Header（UVC 1.5 Table 2-5 bmHeaderInfo：D0 FID、D1 EOH、D7 EOF）。
-// Windows usbvideo.sys 按规范位解释；Linux uvcvideo 驱动用自定义位
-// （UVC_STREAM_FID=0x80/UVC_STREAM_EOF=0x40，与规范相反），设备侧必须按规范发
+// UVC Payload Header(UVC 1.5 Table 2-5 bmHeaderInfo:D0 FID,D1 EOH,D7 EOF).
+// Windows usbvideo.sys interprets bits as specified; the Linux uvcvideo driver uses custom bits
+// (UVC_STREAM_FID=0x80/UVC_STREAM_EOF=0x40, reversed from the specification); the device must send according to the specification
 constexpr std::uint8_t UVC_PAYLOAD_HEADER_SIZE = 2;
 constexpr std::uint8_t UVC_PAYLOAD_HEADER_FID = 0x01; // D0: Frame ID bit
 constexpr std::uint8_t UVC_PAYLOAD_HEADER_EOF = 0x80; // D7: End of Frame
 
-// ==================== 固定长度描述符结构体 ====================
-// UVC 1.5 描述符长度由规范硬性规定，用 packed 结构体表示，
-// static_assert 校验 sizeof 防止字段增删导致长度偏离规范。
-// append_to 按字段序列化（多字节字段自动转小端），与平台字节序无关。
+// ==================== Fixed length descriptor structure ====================
+// UVC 1.5 descriptor lengths are mandated by the specification; represent with packed structs,
+// static_assert Verification sizeof prevents the addition and deletion of fields from causing the length to deviate from the specification.
+// append_to is serialized by field (multi-byte fields are automatically converted to little-endian), regardless of platform byte order.
 
 #pragma pack(push, 1)
-/// VC Header 描述符（UVC 1.5 Table 3-3，单 VS 接口固定 13 字节）
+/// VC Header descriptor (UVC 1.5 Table 3-3, fixed 13 bytes for one VS interface)
 struct VcHeaderDesc {
     std::uint8_t bLength;
     std::uint8_t bDescriptorType;
@@ -165,9 +165,9 @@ struct VcHeaderDesc {
                             bInCollection, baInterfaceNr);
     }
 };
-static_assert(sizeof(VcHeaderDesc) == VC_HEADER_1ITF_LEN, "VC Header 描述符必须为 13 字节");
+static_assert(sizeof(VcHeaderDesc) == VC_HEADER_1ITF_LEN, "VC Header descriptor must be 13 bytes");
 
-/// Camera Terminal 描述符（UVC 1.5 Table 3-6，固定 18 字节，bControlSize=3）
+/// Camera Terminal descriptor (UVC 1.5 Table 3-6, fixed 18 bytes, bControlSize=3)
 struct VcCameraTerminalDesc {
     std::uint8_t bLength;
     std::uint8_t bDescriptorType;
@@ -188,9 +188,9 @@ struct VcCameraTerminalDesc {
                             bControlSize, bmControls);
     }
 };
-static_assert(sizeof(VcCameraTerminalDesc) == CAMERA_TERM_LEN, "Camera Terminal 描述符必须为 18 字节");
+static_assert(sizeof(VcCameraTerminalDesc) == CAMERA_TERM_LEN, "Camera Terminal descriptor must be 18 bytes");
 
-/// Processing Unit 描述符（UVC 1.5 Table 3-8，固定 13 字节，bControlSize=3，含 bmVideoStandards）
+/// Processing Unit descriptor (UVC 1.5 Table 3-8, fixed 13 bytes, bControlSize=3, includes bmVideoStandards)
 struct VcProcessingUnitDesc {
     std::uint8_t bLength;
     std::uint8_t bDescriptorType;
@@ -208,9 +208,9 @@ struct VcProcessingUnitDesc {
                             bControlSize, bmControls, iProcessing, bmVideoStandards);
     }
 };
-static_assert(sizeof(VcProcessingUnitDesc) == PU_LEN, "Processing Unit 描述符必须为 13 字节");
+static_assert(sizeof(VcProcessingUnitDesc) == PU_LEN, "Processing Unit descriptor must be 13 bytes");
 
-/// VC Output Terminal 描述符（UVC 1.5 Table 3-5，固定 9 字节）
+/// VC Output Terminal descriptor (UVC 1.5 Table 3-5, fixed 9 bytes)
 struct VcOutputTerminalDesc {
     std::uint8_t bLength;
     std::uint8_t bDescriptorType;
@@ -226,9 +226,9 @@ struct VcOutputTerminalDesc {
                             bSourceID, iTerminal);
     }
 };
-static_assert(sizeof(VcOutputTerminalDesc) == OUTPUT_TERM_LEN, "VC Output Terminal 描述符必须为 9 字节");
+static_assert(sizeof(VcOutputTerminalDesc) == OUTPUT_TERM_LEN, "VC Output Terminal descriptor must be 9 bytes");
 
-/// VS Input Header 描述符（UVC 1.5 Table 3-14，固定 13+(p×n)，p=n=1 时 14 字节）
+/// VS Input Header descriptor (UVC 1.5 Table 3-14, fixed 13+(p×n), 14 bytes when p=n=1)
 struct VsInputHeaderDesc {
     std::uint8_t bLength;
     std::uint8_t bDescriptorType;
@@ -250,9 +250,9 @@ struct VsInputHeaderDesc {
                             bmaControls);
     }
 };
-static_assert(sizeof(VsInputHeaderDesc) == VS_INPUT_HEADER_LEN, "VS Input Header 描述符必须为 14 字节");
+static_assert(sizeof(VsInputHeaderDesc) == VS_INPUT_HEADER_LEN, "VS Input Header descriptor must be 14 bytes");
 
-/// Color Matching 描述符（UVC 1.5 各 payload spec，固定 6 字节）
+/// Color Matching descriptor (UVC 1.5 payload specifications, fixed 6 bytes)
 struct VsColorMatchingDesc {
     std::uint8_t bLength;
     std::uint8_t bDescriptorType;
@@ -266,9 +266,9 @@ struct VsColorMatchingDesc {
                             bMatrixCoefficients);
     }
 };
-static_assert(sizeof(VsColorMatchingDesc) == VS_COLOR_MATCHING_LEN, "Color Matching 描述符必须为 6 字节");
+static_assert(sizeof(VsColorMatchingDesc) == VS_COLOR_MATCHING_LEN, "Color Matching descriptor must be 6 bytes");
 
-/// VC 中断端点类特定描述符（UVC 1.5 Table 3-12，固定 5 字节）
+/// VC interrupt endpoint class-specific descriptor (UVC 1.5 Table 3-12, fixed 5 bytes)
 struct VcInterruptEndpointDesc {
     std::uint8_t bLength;
     std::uint8_t bDescriptorType;
@@ -279,7 +279,7 @@ struct VcInterruptEndpointDesc {
         vector_append_to_le(d, bLength, bDescriptorType, bDescriptorSubtype, wMaxTransferSize);
     }
 };
-static_assert(sizeof(VcInterruptEndpointDesc) == 5, "VC 中断端点类描述符必须为 5 字节");
+static_assert(sizeof(VcInterruptEndpointDesc) == 5, "VC interrupt endpoint class descriptor must be 5 bytes");
 #pragma pack(pop)
 
 // FOURCC pixel format codes
@@ -291,24 +291,24 @@ namespace UvcFourCC {
     constexpr std::uint32_t I420 = 0x30323449; // 'I420' LE
 } // namespace UvcFourCC
 
-/// UVC 格式类别 — 决定 VS 描述符子类型和 PROBE/COMMIT 字段行为
+/// UVC format category: determines VS descriptor subtypes and PROBE/COMMIT field behavior
 enum class UvcFormatCategory : std::uint8_t {
     Uncompressed, // YUY2 / NV12 / I420 — VS_DESC_FORMAT_UNCOMPRESSED
     Mjpeg,       // MJPEG — VS_DESC_FORMAT_MJPEG
-    FrameBased,  // 通用 Frame-Based (VP8 等) — VS_DESC_FORMAT_FRAME_BASED
-    H264,        // H.264 — VS_DESC_FORMAT_H264（UVC 1.5 H.264 Payload spec）
+    FrameBased,  // Generic Frame-Based (VP8, etc.): VS_DESC_FORMAT_FRAME_BASED
+    H264,        // H.264 — VS_DESC_FORMAT_H264(UVC 1.5 H.264 Payload spec)
 };
 
 inline constexpr UvcFormatCategory uvc_format_category(std::uint32_t fourcc) {
     switch (fourcc) {
     case UvcFourCC::MJPEG: return UvcFormatCategory::Mjpeg;
     case UvcFourCC::H264:  return UvcFormatCategory::H264;
-    // YUY2 / NV12 / I420 及其他未知均视为不压缩
+    // YUY2 / NV12 / I420 and other unknown formats are treated as uncompressed
     default:               return UvcFormatCategory::Uncompressed;
     }
 }
 
-/// UVC 使用的 16 字节 GUID（USB 描述符中的小端序）
+/// 16-byte GUID used by UVC (little-endian in USB descriptors)
 struct UvcGuid {
     std::uint8_t data[16];
 

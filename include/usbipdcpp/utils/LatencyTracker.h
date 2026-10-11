@@ -10,13 +10,13 @@
 namespace usbipdcpp {
 
 /**
- * @brief 延时追踪器，用于分析数据包处理的各个阶段耗时
- * 线程安全
+ * @brief Latency tracker, used to analyze the time taken at each stage of packet processing
+ * Thread-safe
  */
 class LatencyTracker {
 public:
     /**
-     * @brief 开始追踪指定 seqnum
+     * @brief Start tracking the specified seqnum
      */
     void start_tracking(std::uint32_t seqnum) {
         std::lock_guard lock(mutex_);
@@ -24,9 +24,9 @@ public:
     }
 
     /**
-     * @brief 追踪并打印自开始以来经过的时间
-     * @param seqnum 序列号
-     * @param message 格式化消息
+     * @brief Track and print elapsed time since start
+     * @param seqnum serial number
+     * @param message format message
      */
     void track(std::uint32_t seqnum, const char* message) {
         std::lock_guard lock(mutex_);
@@ -41,7 +41,7 @@ public:
     }
 
     /**
-     * @brief 结束追踪并打印总时间
+     * @brief End tracking and print the total time
      */
     void end_tracking(std::uint32_t seqnum) {
         std::lock_guard lock(mutex_);
@@ -57,7 +57,7 @@ public:
     }
 
     /**
-     * @brief 结束追踪并打印自定义消息和总时间
+     * @brief End tracking and print custom message and total time
      */
     void end_tracking(std::uint32_t seqnum, const char* message) {
         std::lock_guard lock(mutex_);
@@ -73,7 +73,7 @@ public:
     }
 
     /**
-     * @brief 检查是否正在追踪指定 seqnum
+     * @brief Check whether the specified seqnum is being tracked
      */
     [[nodiscard]] bool is_tracking(std::uint32_t seqnum) const {
         std::lock_guard lock(mutex_);
@@ -81,7 +81,7 @@ public:
     }
 
     /**
-     * @brief 清除所有追踪
+     * @brief Clear all tracking
      */
     void clear() {
         std::lock_guard lock(mutex_);
@@ -96,25 +96,25 @@ private:
 } // namespace usbipdcpp
 
 
-// 宏定义
+// macro definition
 
-// 统一开关：使用处只需 #if USBIPDCPP_TRACK_ENABLED，不用重复写长条件
+// Unified switch: only need #if USBIPDCPP_TRACK_ENABLED for use, no need to write long conditions repeatedly
 #if defined(USBIPDCPP_TRACK_PACKAGE) || defined(USBIPDCPP_FORCE_TRACK_PACKAGE)
 #define USBIPDCPP_TRACK_ENABLED 1
 
-// 在类中声明延时追踪器成员
+// Declare delay tracker members in class
 #define LATENCY_TRACKER_MEMBER(name) usbipdcpp::LatencyTracker name
 
-// 初始化追踪
+// initialization tracking
 #define LATENCY_TRACK_START(tracker, seqnum) (tracker).start_tracking(seqnum)
 
-// 追踪并打印经过的时间
+// Track and print elapsed time
 #define LATENCY_TRACK(tracker, seqnum, message) (tracker).track(seqnum, message)
 
-// 结束追踪并打印总时间
+// End tracking and print the total time
 #define LATENCY_TRACK_END(tracker, seqnum) (tracker).end_tracking(seqnum)
 
-// 结束追踪并打印自定义消息
+// End tracking and print custom message
 #define LATENCY_TRACK_END_MSG(tracker, seqnum, message) (tracker).end_tracking(seqnum, message)
 
 #else

@@ -29,14 +29,14 @@ TEST(RingBuffer, WrapAround) {
     RingBuffer rb(4);
     std::array<std::uint8_t, 4> out{};
 
-    // 写满
+    // Fill completely
     const std::array<std::uint8_t, 4> d1 = {1, 2, 3, 4};
     EXPECT_EQ(rb.write(d1.data(), 4), 4u);
     EXPECT_TRUE(rb.full());
-    // 满时再写返回 0
+    // Writing when full returns 0
     EXPECT_EQ(rb.write(d1.data(), 1), 0u);
 
-    // 读走 2 个，再写 2 个，tail 绕回
+    // Read 2, then write 2; tail wraps around
     EXPECT_EQ(rb.read(out.data(), 2), 2u);
     const std::array<std::uint8_t, 2> d2 = {5, 6};
     EXPECT_EQ(rb.write(d2.data(), 2), 2u);
@@ -52,13 +52,13 @@ TEST(RingBuffer, ZeroCapacity) {
     EXPECT_EQ(rb.write(data.data(), 1), 0u);
     EXPECT_EQ(rb.size(), 0u);
     EXPECT_TRUE(rb.empty());
-    EXPECT_TRUE(rb.full()); // 0 容量恒满
+    EXPECT_TRUE(rb.full()); // Capacity 0 always full
 }
 
 TEST(RingBuffer, PartialWrite) {
     RingBuffer rb(4);
     const std::array<std::uint8_t, 8> data = {1, 2, 3, 4, 5, 6, 7, 8};
-    // 容量 4，只写入前 4 个
+    // Capacity 4; write only first 4
     EXPECT_EQ(rb.write(data.data(), data.size()), 4u);
     EXPECT_TRUE(rb.full());
 
@@ -75,11 +75,11 @@ TEST(RingBuffer, PeekDoesNotConsume) {
 
     std::array<std::uint8_t, 2> peeked{};
     EXPECT_EQ(rb.peek(peeked.data(), 2), 2u);
-    EXPECT_EQ(rb.size(), 2u); // 未消费
+    EXPECT_EQ(rb.size(), 2u); // Not consumed
     EXPECT_EQ(peeked[0], 9);
     EXPECT_EQ(peeked[1], 8);
 
-    // peek 超过现有数据只返回已有部分
+    // peek beyond available data returns only available portion
     std::array<std::uint8_t, 8> big{};
     EXPECT_EQ(rb.peek(big.data(), 8), 2u);
 }
@@ -93,7 +93,7 @@ TEST(RingBuffer, Clear) {
     EXPECT_EQ(rb.size(), 0u);
     EXPECT_EQ(rb.available(), 4u);
 
-    // 清空后可正常复用
+    // Reusable normally after clearing
     EXPECT_EQ(rb.write(data.data(), 3), 3u);
     EXPECT_EQ(rb.size(), 3u);
 }
@@ -103,7 +103,7 @@ TEST(RingBuffer, ResizePreservesData) {
     const std::array<std::uint8_t, 4> data = {1, 2, 3, 4};
     rb.write(data.data(), 4);
 
-    // 扩大容量，保留全部数据
+    // Increase capacity, retaining all data
     rb.resize(8);
     EXPECT_EQ(rb.capacity(), 8u);
     EXPECT_EQ(rb.size(), 4u);
@@ -118,7 +118,7 @@ TEST(RingBuffer, ResizeShrinkTruncates) {
     const std::array<std::uint8_t, 4> data = {1, 2, 3, 4};
     rb.write(data.data(), 4);
 
-    // 缩小容量，保留最旧的数据（FIFO 顺序截断）
+    // Decrease capacity, retaining oldest data (truncate in FIFO order)
     rb.resize(2);
     EXPECT_EQ(rb.capacity(), 2u);
     EXPECT_EQ(rb.size(), 2u);
@@ -127,7 +127,7 @@ TEST(RingBuffer, ResizeShrinkTruncates) {
     EXPECT_EQ(out[0], 1);
     EXPECT_EQ(out[1], 2);
 
-    // 缩小后可继续写入
+    // Can keep writing after shrinking
     const std::array<std::uint8_t, 2> more = {5, 6};
     EXPECT_EQ(rb.write(more.data(), 2), 2u);
     EXPECT_EQ(rb.read(out.data(), 4), 2u);
@@ -145,7 +145,7 @@ TEST(RingBuffer, ResizeToZero) {
     EXPECT_TRUE(rb.empty());
     EXPECT_EQ(rb.write(data.data(), 4), 0u);
 
-    // 从 0 扩回可正常使用
+    // Usable normally after increasing from 0
     rb.resize(4);
     EXPECT_EQ(rb.write(data.data(), 4), 4u);
     EXPECT_EQ(rb.size(), 4u);

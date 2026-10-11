@@ -10,10 +10,10 @@
 
 namespace usbipdcpp {
 
-/// 把收流 PCM 写成 WAV 文件的音频汇（PCM 16 位小端）
-/// 收流开始时自动创建文件，每次写入后回填 RIFF 与 data 长度字段（运行期间
-/// 文件即可播放，强杀进程不会丢失头）。格式协商变化时关闭当前文件，下次
-/// 收流重新创建
+/// Audio sink writing received PCM to a WAV file (16-bit little-endian PCM)
+/// Automatically create a file when reception starts; update RIFF and data length fields after each write (the file
+/// can be played while running, and forcibly killing the process does not lose the header). Close the current file on format negotiation changes;
+/// recreate it on the next receive stream
 class USBIPDCPP_API WavFileSink : public AudioSink {
 public:
     explicit WavFileSink(std::filesystem::path path);
@@ -25,22 +25,22 @@ public:
     void write_pcm(const std::uint8_t *data, std::size_t size) override;
     void reset() override;
 
-    /// 关闭文件（幂等，析构自动调用）
+    /// Close the file (idempotent, automatically called by destructor)
     void finalize();
 
 private:
     void open_file();
-    void finalize_locked(); // 调用方必须已持有 mutex
-    void update_header_locked(); // 回填头长度字段，调用方必须已持有 mutex
+    void finalize_locked(); // Caller must already hold mutex
+    void update_header_locked(); // Update header length fields; caller must already hold mutex
     static void write_u32le(std::ofstream &file, std::uint32_t value);
     static void write_u16le(std::ofstream &file, std::uint16_t value);
 
     std::filesystem::path path;
-    mutable std::mutex mutex; // 收流线程写文件 vs 外部 finalize 并发
+    mutable std::mutex mutex; // Receive-thread file writes versus concurrent external finalize
     std::ofstream file;
     AudioFormatInfo format{1, 16, 48000};
-    std::uint32_t data_size = 0; // 已写入的 PCM 字节数
-    std::uint32_t last_reported_mb = 0; // 上次打日志的整 MB 数（只打一次阈值）
+    std::uint32_t data_size = 0; // PCM bytes written
+    std::uint32_t last_reported_mb = 0; // Last whole-MB value logged (log each threshold only once)
     bool file_open = false;
 };
 

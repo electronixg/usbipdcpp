@@ -1,7 +1,7 @@
-// RET_SUBMIT / CMD_SUBMIT 发送字节流的行为测试：方向（IN/OUT）× 传输类型
-// （bulk/iso）× actual_length 组合下，协议层按 transfer_is_in 计算的 length
-// 是否正确——核心回归：iso OUT 应答只发 iso 描述符、不得把已收数据当回发内容
-// （修复前 GenericTransferOperator 按 length>0 发数据，被 vhci 误读为描述符）
+// RET_SUBMIT / CMD_SUBMIT transmitted byte-stream behavior tests: direction (IN/OUT) × transfer type
+// (bulk/iso) × actual_length combinations; verify whether protocol-layer length calculated with transfer_is_in
+// is correct—core regression: iso OUT response sends only iso descriptors, never received data as return payload
+// (before fix, GenericTransferOperator sent data when length>0, misread by vhci as descriptors)
 
 #include <gtest/gtest.h>
 
@@ -18,7 +18,7 @@ using namespace usbipdcpp;
 
 namespace {
 
-/// 本地 TCP 回环 socket 对：send_sock 由 to_socket 写入，recv_sock 读端验证
+/// Local TCP loopback socket pair: to_socket writes send_sock; recv_sock reader verifies
 struct SocketPair {
     asio::io_context io;
     asio::ip::tcp::acceptor acceptor;
@@ -50,8 +50,8 @@ std::uint32_t be32(const std::vector<std::uint8_t> &bytes, std::size_t offset) {
            static_cast<std::uint32_t>(bytes[offset + 3]);
 }
 
-/// 模拟真实应答路径构造 RET：经 alloc_transfer_handle（记录方向）→ 填数据 →
-/// create_ret_submit。payload 为数据阶段内容，iso_actual 为各包实际字节数
+/// Construct RET simulating real response path: alloc_transfer_handle (records direction) → fill data →
+/// create_ret_submit. payload is data-phase content; iso_actual gives actual bytes per packet
 UsbIpResponse::UsbIpRetSubmit make_ret(GenericTransferOperator &op, bool is_in, std::uint32_t seqnum,
                                        std::uint32_t actual_length, int num_iso,
                                        const std::vector<std::uint8_t> &payload,
@@ -73,7 +73,7 @@ UsbIpResponse::UsbIpRetSubmit make_ret(GenericTransferOperator &op, bool is_in, 
                                                             std::move(handle));
 }
 
-/// 验证 48 字节 usbip_header（大端布局见协议文档：base 20 字节 + ret_submit 20 字节 + padding 8）
+/// Verify 48-byte usbip_header (big-endian layout in protocol documentation: base 20 bytes + ret_submit 20 bytes + padding 8)
 void expect_header(const std::vector<std::uint8_t> &hdr, std::uint32_t seqnum, std::uint32_t actual_length,
                    std::uint32_t num_packets) {
     ASSERT_EQ(hdr.size(), 48u);
@@ -86,7 +86,7 @@ void expect_header(const std::vector<std::uint8_t> &hdr, std::uint32_t seqnum, s
 
 } // namespace
 
-// ============== alloc 方向记录 ==============
+// ============== Allocation direction recording ==============
 
 TEST(TestTransferDirection, AllocRecordsDirection) {
     GenericTransferOperator op;
@@ -103,7 +103,7 @@ TEST(TestTransferDirection, AllocRecordsDirection) {
     op.free_transfer_handle(out_handle);
 }
 
-// ============== RET_SUBMIT 字节流 ==============
+// ============== RET_SUBMIT byte stream ==============
 
 TEST(TestTransferDirection, RetSubmitNonIsoInSendsData) {
     GenericTransferOperator op;
@@ -116,15 +116,15 @@ TEST(TestTransferDirection, RetSubmitNonIsoInSendsData) {
 
     auto hdr = read_n(sp.recv_sock, 48);
     expect_header(hdr, 100, 5, 0);
-    // IN：数据回发，内容与 payload 一致
+    // IN: data returned, content matches payload
     auto data = read_n(sp.recv_sock, 5);
     EXPECT_EQ(data, payload);
     EXPECT_EQ(sp.recv_sock.available(), 0u);
 }
 
 TEST(TestTransferDirection, RetSubmitNonIsoOutWithoutTransferSendsHeaderOnly) {
-    // 现有 OUT 设备的做法：不带 transfer 的应答（create_ret_submit_ok_without_data），
-    // 只发 header——actual_length 如实上报接收字节数，数据不回发
+    // Existing OUT devices' approach: response without transfer (create_ret_submit_ok_without_data),
+    // send only header—actual_length truthfully reports received byte count; data not returned
     SocketPair sp;
     auto ret = UsbIpResponse::UsbIpRetSubmit::create_ret_submit_ok_without_data(100, 64);
     usbipdcpp::error_code ec;
@@ -139,7 +139,7 @@ TEST(TestTransferDirection, RetSubmitNonIsoOutWithoutTransferSendsHeaderOnly) {
 TEST(TestTransferDirection, RetSubmitIsoInSendsDataAndDescriptors) {
     GenericTransferOperator op;
     SocketPair sp;
-    // 2 个 iso 包，每包 96 字节槽位，实际收 96 + 48
+    // 2 iso packets, each with a 96-byte slot; actual reception 96 + 48
     const std::vector<std::uint8_t> payload(144, 0x7A);
     auto ret = make_ret(op, /*is_in=*/true, 101, 144, 2, payload, {96, 48});
     usbipdcpp::error_code ec;
@@ -148,26 +148,26 @@ TEST(TestTransferDirection, RetSubmitIsoInSendsDataAndDescriptors) {
 
     auto hdr = read_n(sp.recv_sock, 48);
     expect_header(hdr, 101, 144, 2);
-    // IN：数据（紧凑，各包实际字节）先于描述符
+    // IN: data (compact, actual bytes per packet) precedes descriptors
     auto data = read_n(sp.recv_sock, 144);
     EXPECT_EQ(data, payload);
     auto desc = read_n(sp.recv_sock, 2 * 16);
-    EXPECT_EQ(be32(desc, 0), 0u);   // 包 0 offset
-    EXPECT_EQ(be32(desc, 4), 96u);  // 包 0 length
-    EXPECT_EQ(be32(desc, 8), 96u);  // 包 0 actual_length
-    EXPECT_EQ(be32(desc, 16), 96u); // 包 1 offset
-    EXPECT_EQ(be32(desc, 20), 96u); // 包 1 length
-    EXPECT_EQ(be32(desc, 24), 48u); // 包 1 actual_length
+    EXPECT_EQ(be32(desc, 0), 0u);   // Packet 0 offset
+    EXPECT_EQ(be32(desc, 4), 96u);  // Packet 0 length
+    EXPECT_EQ(be32(desc, 8), 96u);  // Packet 0 actual_length
+    EXPECT_EQ(be32(desc, 16), 96u); // Packet 1 offset
+    EXPECT_EQ(be32(desc, 20), 96u); // Packet 1 length
+    EXPECT_EQ(be32(desc, 24), 48u); // Packet 1 actual_length
     EXPECT_EQ(sp.recv_sock.available(), 0u);
 }
 
 TEST(TestTransferDirection, RetSubmitIsoOutSendsDescriptorsOnly) {
-    // 核心回归：iso OUT 应答（扬声器场景）。actual_length 如实填 576（vhci
-    // 校验 sum(iso actual) == actual_length），但数据不得回发——修复前
-    // to_socket 传 actual_length 导致 576 字节数据被 vhci 误读成描述符
+    // Core regression: iso OUT response (speaker scenario). actual_length truthfully set to 576 (vhci
+    // checks sum(iso actual) == actual_length), but data must not be returned—before fix,
+    // passing actual_length to to_socket caused vhci to misread 576 data bytes as descriptors
     GenericTransferOperator op;
     SocketPair sp;
-    const std::vector<std::uint8_t> payload(576, 0x5A); // 主机发来的 PCM（应被丢弃，不回发）
+    const std::vector<std::uint8_t> payload(576, 0x5A); // PCM sent by host (should be discarded, not returned)
     auto ret = make_ret(op, /*is_in=*/false, 102, 576, 6, payload, {96, 96, 96, 96, 96, 96});
     usbipdcpp::error_code ec;
     ret.to_socket(sp.send_sock, ec);
@@ -175,25 +175,25 @@ TEST(TestTransferDirection, RetSubmitIsoOutSendsDescriptorsOnly) {
 
     auto hdr = read_n(sp.recv_sock, 48);
     expect_header(hdr, 102, 576, 6);
-    // OUT：无数据阶段，只有 6 个描述符
+    // OUT: no data phase, only 6 descriptors
     auto desc = read_n(sp.recv_sock, 6 * 16);
     for (int i = 0; i < 6; ++i) {
         EXPECT_EQ(be32(desc, static_cast<std::size_t>(i) * 16), static_cast<std::uint32_t>(i * 96));
         EXPECT_EQ(be32(desc, static_cast<std::size_t>(i) * 16 + 4), 96u);
         EXPECT_EQ(be32(desc, static_cast<std::size_t>(i) * 16 + 8), 96u);
     }
-    // 关键断言：没有多余字节（修复前这里会读到 576 字节 PCM）
+    // Key assertion: no extra bytes (before fix, this read 576 PCM bytes)
     EXPECT_EQ(sp.recv_sock.available(), 0u);
 }
 
-// ============== CMD_SUBMIT 数据阶段方向 ==============
+// ============== CMD_SUBMIT data-phase direction ==============
 
 TEST(TestTransferDirection, CmdSubmitOutSendsDataInSendsNone) {
-    // CMD_SUBMIT 的数据阶段只在 OUT 携带（与 from_socket 对称）；IN 恒传 0，
-    // 防止 IN 的缓冲内容被误发
+    // CMD_SUBMIT carries data phase only for OUT (symmetric with from_socket); IN always passes 0,
+    // preventing accidental transmission of IN buffer contents
     GenericTransferOperator op;
 
-    // OUT：发 transfer_buffer_length 字节
+    // OUT: send transfer_buffer_length bytes
     {
         SocketPair sp;
         UsbIpHeaderBasic header{};
@@ -217,14 +217,14 @@ TEST(TestTransferDirection, CmdSubmitOutSendsDataInSendsNone) {
         EXPECT_EQ(data, (std::vector<std::uint8_t>{9, 8, 7, 6}));
     }
 
-    // IN（违反"IN 不带 transfer"约定）：也不得发数据（transfer_is_in 兜底）
+    // IN (violating "IN carries no transfer" convention): still must not send data (transfer_is_in safeguard)
     {
         SocketPair sp;
         UsbIpHeaderBasic header{};
         header.direction = UsbIpDirection::In;
         auto *raw = op.alloc_transfer_handle(4, 0, header, {});
         auto *trx = GenericTransfer::from_handle(raw);
-        trx->data = {1, 1, 1, 1}; // 缓冲里的内容不得被发出
+        trx->data = {1, 1, 1, 1}; // Buffered content must not be sent
         TransferHandle handle(raw, &op);
         UsbIpCommand::UsbIpCmdSubmit submit{};
         submit.header.command = USBIP_CMD_SUBMIT;

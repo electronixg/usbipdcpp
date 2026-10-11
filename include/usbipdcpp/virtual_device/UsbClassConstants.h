@@ -8,8 +8,8 @@
 
 namespace usbipdcpp {
 
-// ==================== USB 类特定控制请求码 ====================
-// 视频/音频等各设备类通用（UVC 1.5 §4.2 / UAC 1.0 §5.2.3）
+// ==================== USB class-specific control request codes ====================
+// Common to video/audio and other device classes (UVC 1.5 §4.2 / UAC 1.0 §5.2.3)
 constexpr std::uint8_t RC_UNDEFINED = 0x00;
 constexpr std::uint8_t SET_CUR = 0x01;
 constexpr std::uint8_t SET_CUR_ALL = 0x11;
@@ -17,21 +17,21 @@ constexpr std::uint8_t GET_CUR = 0x81;
 constexpr std::uint8_t GET_MIN = 0x82;
 constexpr std::uint8_t GET_MAX = 0x83;
 constexpr std::uint8_t GET_RES = 0x84;
-constexpr std::uint8_t GET_LEN = 0x85; // Video 类命名；Audio 规范中称 GET_MEM
+constexpr std::uint8_t GET_LEN = 0x85; // Video class naming; called GET_MEM in the Audio specification
 constexpr std::uint8_t GET_INFO = 0x86;
 constexpr std::uint8_t GET_DEF = 0x87;
 
-// ==================== USB 类特定描述符类型 ====================
+// ==================== USB class-specific descriptor types ====================
 constexpr std::uint8_t CS_INTERFACE = 0x24;
 constexpr std::uint8_t CS_ENDPOINT = 0x25;
 
-// ==================== 标准 USB 描述符结构体 ====================
-// USB 2.0 规范固定长度描述符。字段布局由规范硬性规定，
-// 用 packed 结构体表示并用 static_assert 校验 sizeof 防止字段增删偏离规范。
-// append_to 按字段序列化（多字节字段自动转小端），与平台字节序无关。
+// ==================== Standard USB descriptor structs ====================
+// Fixed-length descriptors from the USB 2.0 specification. Field layout is mandated by the specification;
+// represent with packed structs and check sizeof with static_assert to prevent field additions/removals from violating the specification.
+// append_to is serialized by field (multi-byte fields are automatically converted to little-endian), regardless of platform byte order.
 
 #pragma pack(push, 1)
-/// 设备描述符（USB 2.0 Table 9-8，固定 18 字节）
+/// Device descriptor (USB 2.0 Table 9-8, fixed 18 bytes)
 struct DeviceDesc {
     std::uint8_t bLength;
     std::uint8_t bDescriptorType;
@@ -54,9 +54,9 @@ struct DeviceDesc {
                             bNumConfigurations);
     }
 };
-static_assert(sizeof(DeviceDesc) == 18, "设备描述符固定 18 字节");
+static_assert(sizeof(DeviceDesc) == 18, "Device descriptor is fixed at 18 bytes");
 
-/// 配置描述符（USB 2.0 Table 9-10，固定 9 字节）
+/// Configuration descriptor (USB 2.0 Table 9-10, fixed 9 bytes)
 struct ConfigHeaderDesc {
     std::uint8_t bLength;
     std::uint8_t bDescriptorType;
@@ -72,9 +72,9 @@ struct ConfigHeaderDesc {
                             iConfiguration, bmAttributes, bMaxPower);
     }
 };
-static_assert(sizeof(ConfigHeaderDesc) == 9, "配置描述符固定 9 字节");
+static_assert(sizeof(ConfigHeaderDesc) == 9, "Configuration descriptor is fixed at 9 bytes");
 
-/// 接口关联描述符 IAD（USB 2.0 ECN，固定 8 字节）
+/// Interface Association Descriptor, IAD (USB 2.0 ECN, fixed 8 bytes)
 struct IadDesc {
     std::uint8_t bLength;
     std::uint8_t bDescriptorType;
@@ -85,14 +85,14 @@ struct IadDesc {
     std::uint8_t bFunctionProtocol;
     std::uint8_t iFunction;
 
-    /// 便捷构造：bLength/bDescriptorType/bFirstInterface 自动填（bFirstInterface
-    /// 由配置描述符生成逻辑按所属接口的 interface_number 回填，声明时不必关心
-    /// 接口号；详见 UsbInterface::interface_association_descriptor）
+    /// Convenience construction: automatically populate bLength/bDescriptorType/bFirstInterface (bFirstInterface
+    /// is filled by configuration descriptor generation from the owning interface's interface_number; interface numbers
+    /// need not be considered at declaration; see UsbInterface::interface_association_descriptor)
     static IadDesc make(std::uint8_t b_interface_count, std::uint8_t b_function_class,
                         std::uint8_t b_function_subclass, std::uint8_t b_function_protocol = 0,
                         std::uint8_t i_function = 0) {
         return IadDesc{0x08, static_cast<std::uint8_t>(DescriptorType::InterfaceAssociation),
-                       0, // bFirstInterface：生成时回填
+                       0, // bFirstInterface: filled during generation
                        b_interface_count, b_function_class, b_function_subclass, b_function_protocol, i_function};
     }
 
@@ -101,9 +101,9 @@ struct IadDesc {
                             bFunctionSubClass, bFunctionProtocol, iFunction);
     }
 };
-static_assert(sizeof(IadDesc) == 8, "IAD 描述符固定 8 字节");
+static_assert(sizeof(IadDesc) == 8, "IAD descriptor is fixed at 8 bytes");
 
-/// 接口描述符（USB 2.0 Table 9-12，固定 9 字节）
+/// Interface descriptor (USB 2.0 Table 9-12, fixed 9 bytes)
 struct InterfaceDesc {
     std::uint8_t bLength;
     std::uint8_t bDescriptorType;
@@ -120,12 +120,12 @@ struct InterfaceDesc {
                             bInterfaceClass, bInterfaceSubClass, bInterfaceProtocol, iInterface);
     }
 };
-static_assert(sizeof(InterfaceDesc) == 9, "接口描述符固定 9 字节");
+static_assert(sizeof(InterfaceDesc) == 9, "Interface descriptor is fixed at 9 bytes");
 
-/// 端点描述符（USB 2.0 Table 9-13，固定 7 字节）
-/// 注意：audio10.pdf Table 4-20 要求音频 ISO 端点 9 字节（bRefresh/bSynchAddress），
-/// 但 usbip-win2 基于 UDE 框架，Udecx.sys 按 7 字节解析端点描述符，9 字节会导致
-/// 后续描述符错位、Windows 枚举失败，必须保持 7 字节（勿扩展）
+/// Endpoint descriptor (USB 2.0 Table 9-13, fixed 7 bytes)
+/// Note: audio10.pdf Table 4-20 requires 9 bytes for audio ISO endpoints (bRefresh/bSynchAddress),
+/// but usbip-win2 uses the UDE framework, and Udecx.sys parses endpoint descriptors as 7 bytes; 9 bytes would misalign
+/// subsequent descriptors and fail Windows enumeration, so retain 7 bytes (do not extend)
 struct EndpointDesc {
     std::uint8_t bLength;
     std::uint8_t bDescriptorType;
@@ -138,9 +138,9 @@ struct EndpointDesc {
         vector_append_to_le(d, bLength, bDescriptorType, bEndpointAddress, bmAttributes, wMaxPacketSize, bInterval);
     }
 };
-static_assert(sizeof(EndpointDesc) == 7, "端点描述符固定 7 字节");
+static_assert(sizeof(EndpointDesc) == 7, "Endpoint descriptor is fixed at 7 bytes");
 
-/// BOS 描述符头（USB 3.0 Table 9-14 兼容 USB 2.0 设备，固定 5 字节）
+/// BOS descriptor header (USB 3.0 Table 9-14, compatible with USB 2.0 devices, fixed 5 bytes)
 struct BosHeaderDesc {
     std::uint8_t bLength;
     std::uint8_t bDescriptorType;
@@ -151,9 +151,9 @@ struct BosHeaderDesc {
         vector_append_to_le(d, bLength, bDescriptorType, wTotalLength, bNumCapabilities);
     }
 };
-static_assert(sizeof(BosHeaderDesc) == 5, "BOS 头固定 5 字节");
+static_assert(sizeof(BosHeaderDesc) == 5, "BOS header is fixed at 5 bytes");
 
-/// USB 2.0 Extension 设备能力描述符（固定 7 字节）
+/// USB 2.0 Extension device capability descriptor (fixed 7 bytes)
 struct BosUsb20ExtCapDesc {
     std::uint8_t bLength;
     std::uint8_t bDescriptorType;
@@ -164,7 +164,7 @@ struct BosUsb20ExtCapDesc {
         vector_append_to_le(d, bLength, bDescriptorType, bDevCapabilityType, bmAttributes);
     }
 };
-static_assert(sizeof(BosUsb20ExtCapDesc) == 7, "USB 2.0 Extension 能力描述符固定 7 字节");
+static_assert(sizeof(BosUsb20ExtCapDesc) == 7, "USB 2.0 Extension capability descriptor is fixed at 7 bytes");
 #pragma pack(pop)
 
 } // namespace usbipdcpp

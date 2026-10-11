@@ -7,8 +7,8 @@ function(add_test_file name)
     add_executable(${name} ${name}.cpp)
     target_link_libraries(${name} PRIVATE usbipdcpp GTest::gtest GTest::gtest_main)
     target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-    # PRE_TEST：测试发现移到 ctest 运行时，避免并行构建下多个测试可执行文件
-    # 在构建期并发启动（偶发加载动态库失败导致 JSON 解析错误，CI 上出现过）
+    # PRE_TEST: move test discovery to ctest runtime to prevent multiple test executables in parallel builds
+    # from starting concurrently during the build (occasional dynamic-library loading failures caused JSON parsing errors, observed in CI)
     gtest_discover_tests(${name} DISCOVERY_MODE PRE_TEST)
 endfunction()
 
@@ -23,8 +23,8 @@ endfunction()
 add_test_dir(test_protocol)
 
 add_test_file(test_network)
-# 连接/停止/竞态类测试（需高频重复才能暴露问题），与纯数据测试分开：
-# 高频重复直接 ctest --repeat until-fail:N -R "TestNetworkConnection"
+# Connection/stop/race tests (requiring frequent repetition to expose problems), separate from pure data tests:
+# For frequent repetition, use ctest --repeat until-fail:N -R "TestNetworkConnection" directly
 add_test_file(test_network_connection)
 add_test_file(test_stringpool)
 add_test_file(test_usb_device)
@@ -40,83 +40,83 @@ add_test_file(test_reuse_set)
 add_test_file(test_descriptors)
 add_test_file(test_ring_buffer)
 
-# 音频源在虚拟设备库中（FourierSource/SineWaveSource，无第三方依赖；
-# AudioFileSource 已随实现搬入 examples/mock_audio，其测试由 mock_audio 的 CMakeLists 添加）
+# Audio sources are in the virtual-device library (FourierSource/SineWaveSource, no third-party dependencies;
+# AudioFileSource moved with its implementation to examples/mock_audio; its tests are added by mock_audio's CMakeLists)
 if (TARGET usbipdcpp_virtual_device)
     add_test_file(test_audio_sources)
     target_link_libraries(test_audio_sources PRIVATE usbipdcpp_virtual_device)
 
-    # 虚拟设备处理器的纯逻辑测试，每种设备一个文件
+    # Pure logic tests for virtual-device handlers, one file per device type
     add_test_file(test_hid_handler)
     target_link_libraries(test_hid_handler PRIVATE usbipdcpp_virtual_device)
 
     add_test_file(test_cdc_acm_handler)
     target_link_libraries(test_cdc_acm_handler PRIVATE usbipdcpp_virtual_device)
 
-    # 走网络的虚拟设备测试（import 后 stop 等）
+    # Virtual-device tests using the network (stop after import, etc.)
     add_test_file(test_network_vdev)
     target_link_libraries(test_network_vdev PRIVATE usbipdcpp_virtual_device)
 
-    # 设备被物理移除（is_device_removed()）后的释放语义专项：丢弃语义、
-    # 断开/stop/多客户端争用等场景
+    # Dedicated release-semantics tests after physical device removal (is_device_removed()): discard semantics,
+    # disconnection/stop/contention between multiple clients, and similar scenarios
     add_test_file(test_device_removal)
     target_link_libraries(test_device_removal PRIVATE usbipdcpp_virtual_device)
 
-    # ServerObserver 通知机制专项：各事件触发时机与入参、多观察者、幂等注册、
-    # 注销、回调异常隔离、回调中查询 Server（锁外通知）、数量上限
+    # Dedicated ServerObserver notification tests: event timing and arguments, multiple observers, idempotent registration,
+    # unregistration, callback exception isolation, querying Server in callbacks (notifications outside the lock), count limit
     add_test_file(test_server_observer)
     target_link_libraries(test_server_observer PRIVATE usbipdcpp_virtual_device)
 
-    # 连接过滤器（来源准入控制）专项：放行/拒绝语义、被拒连接不建立会话也不发
-    # 通知、按来源（源端口）过滤、抛异常按拒绝处理、跨 start/stop 保留、清除
+    # Dedicated connection-filter (source admission control) tests: allow/reject semantics; rejected connections establish no session and send no
+    # notifications; source (source-port) filtering; exceptions treated as rejection; persistence across start/stop; clearing
     add_test_file(test_connection_filter)
     target_link_libraries(test_connection_filter PRIVATE usbipdcpp_virtual_device)
 
-    # 通用管道虚拟设备（PipeDeviceHandler）的端到端测试
+    # End-to-end tests for the generic pipe virtual device (PipeDeviceHandler)
     add_test_file(test_pipe_device_handler)
     target_link_libraries(test_pipe_device_handler PRIVATE usbipdcpp_virtual_device)
 
-    # MSC Bulk-Only（U 盘）BOT 状态机数据面测试
+    # MSC Bulk-Only (USB flash drive) BOT state-machine data-plane tests
     add_test_file(test_msc_handler)
     target_link_libraries(test_msc_handler PRIVATE usbipdcpp_virtual_device)
 
-    # ECM 网卡数据面测试（bulk 收/发帧）
+    # ECM network-adapter data-plane tests (bulk frame reception/transmission)
     add_test_file(test_ecm_handler)
     target_link_libraries(test_ecm_handler PRIVATE usbipdcpp_virtual_device)
 
-    # RNDIS 网卡测试（封装命令握手、OID 表、数据封装/解封装）
+    # RNDIS network-adapter tests (encapsulated-command handshake, OID table, data encapsulation/decapsulation)
     add_test_file(test_rndis_handler)
     target_link_libraries(test_rndis_handler PRIVATE usbipdcpp_virtual_device)
 
-    # Microsoft OS 1.0 描述符测试（0xEE 签名串、Compatible ID 特征描述符）
+    # Microsoft OS 1.0 descriptor tests (0xEE signature string, Compatible ID feature descriptor)
     add_test_file(test_ms_os_handler)
     target_link_libraries(test_ms_os_handler PRIVATE usbipdcpp_virtual_device)
 
-    # UVC 摄像头 iso IN 取帧/帧时钟测试
+    # UVC camera iso IN frame retrieval/frame-clock tests
     add_test_file(test_uvc_handler)
     target_link_libraries(test_uvc_handler PRIVATE usbipdcpp_virtual_device)
 
-    # UAC 扬声器（OUT 收流）iso 数据面测试（调度器延迟消费 + 流状态切换）
+    # UAC speaker (OUT stream reception) iso data-plane tests (delayed scheduler consumption + stream-state switching)
     add_test_file(test_uac_speaker_stream)
     target_link_libraries(test_uac_speaker_stream PRIVATE usbipdcpp_virtual_device)
 
-    # 传输调度器（vudc 帧调度等价物）测试
+    # Transfer scheduler (equivalent to vudc frame scheduling) tests
     add_test_file(test_transfer_scheduler)
     target_link_libraries(test_transfer_scheduler PRIVATE usbipdcpp_virtual_device)
 
-    # IN 数据通道组件（挂起-应答模式）测试
+    # IN data-channel component (pending-response pattern) tests
     add_test_file(test_in_endpoint_channel)
     target_link_libraries(test_in_endpoint_channel PRIVATE usbipdcpp_virtual_device)
 
-    # OUT 数据通道组件（NAK 背压模式）测试
+    # OUT data-channel component (NAK backpressure pattern) tests
     add_test_file(test_out_endpoint_channel)
     target_link_libraries(test_out_endpoint_channel PRIVATE usbipdcpp_virtual_device)
 
-    # 音频汇（UAC 扬声器方向）AC/AS 描述符拓扑测试
+    # Audio sink (UAC speaker direction) AC/AS descriptor topology tests
     add_test_file(test_audio_sinks)
     target_link_libraries(test_audio_sinks PRIVATE usbipdcpp_virtual_device)
 
-    # WavFileSink（库内音频汇）WAV 文件写入测试
+    # WavFileSink (audio sink in the library) WAV file-writing tests
     add_test_file(test_wav_file_sink)
     target_link_libraries(test_wav_file_sink PRIVATE usbipdcpp_virtual_device)
 endif ()

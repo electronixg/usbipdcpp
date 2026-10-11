@@ -1,29 +1,29 @@
 # usbipdcpp
 
-一个用于创建 usbip 服务器的 C++ 库
+A C++ library for creating usbip servers
 
 > [English Documentation](README.md)
 
-## 功能特性
+## Features
 
-- ✅ **USBIP 服务器**: 基于 libusb 实现，支持所有 libusb 兼容平台
-- ✅ **四种 USB 传输类型**（控制、批量、中断、同步）均通过 libusb 后端测试
-- ✅ **虚拟设备**: HID（鼠标、键盘、手柄、触摸屏）、MSC（U盘）、CDC ACM（串口）、CDC ECM/RNDIS（网卡）、UVC（摄像头）、UAC（麦克风、扬声器）、webcam（UVC 摄像头 + UAC 麦克风复合设备）—— 无需 libusb
-- 🔌 **热插拔支持**: 自动检测设备插入/拔出（LibusbServer）
-- 🧩 **可扩展设计**: 提供完善的抽象接口供开发者扩展
+- ✅ **USB/IP server**: Implemented with libusb, supports all libusb-compatible platforms
+- ✅ **Four USB transfer types** (control, bulk, interrupt, isochronous) all passed the libusb backend test
+- ✅ **Virtual devices**: HID (mouse, keyboard, gamepad, touchscreen), MSC (USB flash drive), CDC ACM (serial port), CDC ECM/RNDIS (network adapter), UVC (camera), UAC (microphone, speaker), webcam (composite UVC camera + UAC microphone device) — no libusb required
+- 🔌 **Hotplug support**: Automatically detects device insertion/removal (LibusbServer)
+- 🧩 **Extensible design**: Provides a complete abstract interface for developers to extend
 
-欢迎贡献代码！🚀
+Code contributions are welcome! 🚀
 
-> 💡 **提示**: 如果这个项目对你有用，请考虑给它一个 ⭐，这能帮助更多人发现它。
+> 💡 **Tip**: If this project is useful to you, please consider giving it a ⭐, which can help more people discover it.
 
 ---
 
-## 快速开始
+## Quick Start
 
-> ⚠️ **版本提示**：本库仍在初期阶段，不同小版本之间 API 可能发生变化（暂不保证严格的语义化版本兼容）。
-> 建议在项目中锁定一个具体版本使用（例如开始使用时的最新发布版），升级前先查看提交记录了解改动。
+> ⚠️ **Version Tips**: This library is still in its early stages, and the API may change between different minor versions (strict semantic version compatibility is not guaranteed yet).
+> It is recommended to pin a specific version in your project (for example, the latest release when you start using it) and review the commit history for changes before upgrading.
 
-最简单的虚拟键盘设备（完整示例见 `examples/mock_keyboard`）：
+The simplest virtual keyboard device (see `examples/mock_keyboard` for a complete example):
 
 ```cpp
 #include <cstdint>
@@ -39,126 +39,126 @@ using namespace usbipdcpp;
 int main() {
     StringPool string_pool;
 
-    // 1. 用 KeyboardHandler::make_interface 建 HID 键盘接口描述符模板
-    //    （类/子类/协议 + 给定地址的中断 IN 端点）；make_interface 不绑 handler，
-    //    绑定须在设备创建后（接口入设备、地址稳定，见下）
-    // 2. 从接口列表创建设备——UsbDevice::make 为其余字段提供合理默认
-    //    （speed=Full、EP0 按它自动生成等）；先绑接口 handler 再绑设备级 handler
+    // 1. Use KeyboardHandler::make_interface to build HID keyboard interface descriptor template
+    // (class/subclass/protocol + interrupt IN endpoint at the given address); make_interface does not bind a handler,
+    // Binding must happen after device creation (the interface is stored in the device and its address is stable; see below)
+    // 2. Create device from interface list - UsbDevice::make provides reasonable defaults for remaining fields
+    //    (speed=Full, EP0 automatically generated from speed, etc.); bind interface handlers before the device-level handler
     auto device = UsbDevice::make("1-1", 0x1234, 0x5679,
                                   {KeyboardHandler::make_interface(0x81)});
     device->interfaces[0].with_handler<KeyboardHandler>(string_pool);
     device->with_handler<SimpleVirtualDeviceHandler>(string_pool)->setup_interface_handlers();
 
-    // 3. 启动 USB/IP 服务器（TCP，监听 53240 端口）
+    // 3. Start USB/IP server (TCP, listen on 53240 port)
     Server server;
     server.add_device(std::move(device));
 
     asio::ip::tcp::endpoint ep{asio::ip::tcp::v4(), 53240};
     if (auto ec = server.start(ep); ec) {
-        std::cerr << "服务器启动失败: " << ec.message() << std::endl;
+        std::cerr << "Server startup failed: " << ec.message() << std::endl;
         return 1;
     }
-    // 客户端连接: usbip attach -r <主机> -b 1-1
-    // 连接后可在任意线程驱动 KeyboardHandler，
-    // 例如 kb->press_key(HIDKey::A) / kb->release_key(HIDKey::A)
+    // Client connection: usbip attach -r <host> -b 1-1
+    // After connection, KeyboardHandler can be driven in any thread.
+    // For example kb->press_key(HIDKey::A) / kb->release_key(HIDKey::A)
 
-    std::cin.get(); // 回车退出
+    std::cin.get(); // Press Enter to exit
     server.stop();
 }
 ```
 
-本库支持两类设备：**虚拟设备**（纯软件，如上所示——见 `examples/mock_keyboard`、`mock_mouse`、`mock_msc` 等）和 **libusb 设备**（通过网络共享物理 USB 设备——见 `examples/libusb_server`）。
+This library supports two types of devices: **virtual devices** (pure software, as shown above - see `examples/mock_keyboard`, `mock_mouse`, `mock_msc`, etc.) and **libusb devices** (physical USB devices shared over the network - see `examples/libusb_server`).
 
 ---
 
-## 编译安装
+## Compile and install
 
-### 预编译二进制
+### Precompiled binary
 
-每次推送版本 tag 后，各平台的预编译包都会发布到 [Releases](https://github.com/yunsmall/usbipdcpp/releases) 页面。
+Every time the version tag is pushed, the precompiled packages for each platform will be released to the [Releases](https://github.com/yunsmall/usbipdcpp/releases) page.
 
-如果你不想等版本发布就想拿到包，或者想从某个特定提交构建：
+If you want to get the package without waiting for the release, or want to build from a specific commit:
 
-1. **Fork** 本仓库
-2. 在 fork 仓库的 **Actions** 页签中选择 **"Build packages (manual)"** → **"Run workflow"**
-3. 工作流跑完后，下载对应平台的构建产物
+1. **Fork** this repository
+2. Select **"Build packages (manual)"** → **"Run workflow"** in the **Actions** tab of the fork repository
+3. After the workflow completes, download the build artifact for your platform
 
-> ⚠️ `linux-aarch64` 任务需要 ARM64 runner，GitHub 仅对**公开**仓库免费提供。
-> 如果你的 fork 是私有的，该任务会被跳过，其余三个平台仍会正常构建。
+> ⚠️ The `linux-aarch64` task requires the ARM64 runner, which GitHub provides for free only to **public** repositories.
+> If your fork is private, this task will be skipped and the remaining three platforms will still build normally.
 
-### 编译器要求
+### Compiler requirements
 
-若使用gcc编译，最低gcc版本为**gcc13**。gcc13 虽然支持 C++23，但
-`std::println` 是从 gcc14 才开始支持的，gcc13 下只能用 `std::format`。
-为了兼容 gcc13，本库代码统一使用 `std::format`，不用 `std::println`。
+If compiled with gcc, the minimum gcc version is **gcc13**. Although gcc13 supports C++23,
+`std::println` is only supported from gcc14, and only `std::format` can be used under gcc13.
+In order to be compatible with gcc13, this library code uses `std::format` instead of `std::println`.
 
-### CMake 选项
+### CMake options
 
-有多个CMake选项用于控制相应模块是否编译：
+There are multiple CMake options used to control whether the corresponding module is compiled:
 
-| 选项 | 默认值 | 说明 |
+| Options | Default | Description |
 |------|--------|------|
-| `USBIPDCPP_BUILD_LIBUSB_COMPONENTS` | ON | 编译基于libusb的服务器组件 |
-| `USBIPDCPP_BUILD_VIRTUAL_DEVICE` | ON | 编译虚拟设备组件 |
-| `USBIPDCPP_BUILD_SHARED_LIBS` | ON | 编译为动态库（符合 LGPL 合规要求，推荐）；设为 OFF 编译静态库 |
-| `USBIPDCPP_BUILD_EXAMPLES` | ON (顶级项目) | 编译所有示例程序 |
-| `USBIPDCPP_BUILD_TESTS` | ON (顶级项目) | 编译测试套件 |
-| `USBIPDCPP_USE_PKGCONF_ASIO` | OFF | 改用 pkgconf 查找 asio，而非 CMake 的 `find_package`。asio 只提供 `asio.pc`、没有 CMake config 时必须开启（apt 装的 `libasio-dev`、Termux 的 `libasio` 都是这样）；vcpkg 的 asio 自带 CMake config，无需此项 |
+| `USBIPDCPP_BUILD_LIBUSB_COMPONENTS` | ON | Compile server components based on libusb |
+| `USBIPDCPP_BUILD_VIRTUAL_DEVICE` | ON | Compile virtual device components |
+| `USBIPDCPP_BUILD_SHARED_LIBS` | ON | Compile as a dynamic library (in line with LGPL compliance requirements, recommended); set to OFF to compile a static library |
+| `USBIPDCPP_BUILD_EXAMPLES` | ON (top-level project) | Compile all sample programs |
+| `USBIPDCPP_BUILD_TESTS` | ON (top-level project) | Compile test suite |
+| `USBIPDCPP_USE_PKGCONF_ASIO` | OFF | Use pkgconf to find asio instead of CMake's `find_package`. asio only provides `asio.pc` and must be enabled when there is no CMake config (this is the case for `libasio-dev` installed by apt and `libasio` by Termux); asio of vcpkg comes with CMake config, so this is not required |
 
-更多选项详见 `CMakeLists.txt`
+For more options, see `CMakeLists.txt`
 
-### 完整编译命令：
+### Complete compilation command:
 
-#### Linux (Ubuntu/Debian) — 不使用 vcpkg
+#### Linux (Ubuntu/Debian) — does not use vcpkg
 
-直接通过 apt 安装依赖，无需 vcpkg：
+Install dependencies directly through apt without vcpkg:
 
 ```bash
-# 必需
+# required
 sudo apt install libasio-dev libspdlog-dev
 
-# 如果需要编译示例（默认 USBIPDCPP_BUILD_EXAMPLES=ON）
+# If you need to compile the example (default USBIPDCPP_BUILD_EXAMPLES=ON)
 sudo apt install libcxxopts-dev
 
-# 如果需要编译测试（默认 USBIPDCPP_BUILD_TESTS=ON）
+# If you need to compile and test (default USBIPDCPP_BUILD_TESTS=ON)
 sudo apt install libgtest-dev
 
-# 如果需要 libusb 转发物理设备（默认 USBIPDCPP_BUILD_LIBUSB_COMPONENTS=ON）
+# If you need libusb forwarding of physical devices (default USBIPDCPP_BUILD_LIBUSB_COMPONENTS=ON)
 sudo apt install libusb-1.0-0-dev
 
-# 如果需要 mock_audio 的 --audio 音频文件播放 / mock_speaker 的本机播放（可选，位于 universe 软件源；不装则自动跳过）
+# If you need --audio audio file playback of mock_audio / local playback of mock_speaker (optional, located in the universe software source; automatically skipped if not installed)
 sudo apt install libminiaudio-dev
 
-# 编译
-# apt 的 libasio-dev 只提供 asio.pc、没有 CMake config，所以要开 USBIPDCPP_USE_PKGCONF_ASIO
+# Compile
+# apt's libasio-dev provides only asio.pc, without CMake config, so enable USBIPDCPP_USE_PKGCONF_ASIO
 cmake -B build -DUSBIPDCPP_USE_PKGCONF_ASIO=ON
 cmake --build build
 cmake --install build
 ```
 
-禁用对应功能时可跳过相应的 apt 包和 cmake 选项：
-- `-DUSBIPDCPP_BUILD_EXAMPLES=OFF` → 可不装 `libcxxopts-dev`
-- `-DUSBIPDCPP_BUILD_TESTS=OFF` → 可不装 `libgtest-dev`
-- `-DUSBIPDCPP_BUILD_LIBUSB_COMPONENTS=OFF` → 可不装 `libusb-1.0-0-dev`
+When disabling a feature with a CMake option, its corresponding apt package can be omitted:
+- `-DUSBIPDCPP_BUILD_EXAMPLES=OFF` → No need to install `libcxxopts-dev`
+- `-DUSBIPDCPP_BUILD_TESTS=OFF` → No need to install `libgtest-dev`
+- `-DUSBIPDCPP_BUILD_LIBUSB_COMPONENTS=OFF` → No need to install `libusb-1.0-0-dev`
 
-如果你的软件源里没有 `libminiaudio-dev`，可以从 [miniaudio](https://miniaudio.app/) 官网
-下载 `miniaudio.h` 放到 include 路径——找不到 miniaudio 头文件时
-mock_audio 的 `--audio` 选项（`AudioFileSource`）会自动跳过（configure 时有 WARNING），
-其他音源不受影响。miniaudio 查找支持两种方式：直接找头文件，找不到走 pkgconf。
-stb_vorbis 的布局差异（vcpkg 在 include 根、Termux 在 include/stb/）由源码
-`__has_include` 自适应，缺 stb 时仅 OGG 解码不可用（WAV/MP3/FLAC 正常）。
+If there is no `libminiaudio-dev` in your software source, you can download it from the official website of [miniaudio](https://miniaudio.app/)
+Download `miniaudio.h` and place it in the include path. If the miniaudio header cannot be found,
+the mock_audio `--audio` option (`AudioFileSource`) is automatically skipped (a WARNING is emitted during configuration).
+Other audio sources are not affected. miniaudio supports two search methods: directly search for the header file, or use pkgconf if it cannot be found.
+The source code adapts to the differing stb_vorbis layouts (vcpkg: include root; Termux: include/stb/) through
+`__has_include`; if stb is absent, only OGG decoding is unavailable (WAV/MP3/FLAC work normally).
 
 #### Windows — vcpkg
 
-安装 [Visual Studio](https://visualstudio.microsoft.com/)（勾选"使用 C++ 的桌面开发"工作负载）和 [vcpkg](https://github.com/microsoft/vcpkg)。
+Install [Visual Studio](https://visualstudio.microsoft.com/) (select the "Desktop development with C++" workload) and [vcpkg](https://github.com/microsoft/vcpkg).
 
-安装依赖：
+Install dependencies:
 
 ```bash
 ./vcpkg install asio libusb spdlog cxxopts gtest miniaudio
 ```
 
-配置并编译（不指定生成器，默认使用 Visual Studio 生成器和 MSVC）：
+Configure and compile (do not specify a generator, use the Visual Studio generator and MSVC by default):
 
 ```bash
 cmake -B build -DCMAKE_TOOLCHAIN_FILE=/path/to/vcpkg/scripts/buildsystems/vcpkg.cmake
@@ -166,24 +166,24 @@ cmake --build build --config Release
 cmake --install build
 ```
 
-注意事项：
+Notes:
 
-- Visual Studio 生成器是多配置的：`cmake --build` 和 `ctest` 需要加 `--config Release`（或 Debug）。
-- Windows 下依赖库是 DLL，`cmake --install` 会自动把依赖 DLL 拷贝到可执行文件旁。
-- 禁用对应功能时可跳过相应的 vcpkg 包：测试 → `gtest`、示例 → `cxxopts`、libusb 组件 → `libusb`、mock_audio 的音频文件播放 / mock_speaker 的本机播放 → `miniaudio`。
+- The Visual Studio generator supports multiple configurations: add `--config Release` (or Debug) to `cmake --build` and `ctest`.
+- The dependent library under Windows is a DLL. `cmake --install` will automatically copy the dependent DLL next to the executable file.
+- Skip the corresponding vcpkg packages when disabling their features: tests → `gtest`, examples → `cxxopts`, libusb components → `libusb`, mock_audio audio-file playback / mock_speaker local playback → `miniaudio`.
 
 #### Termux (Android)
 
-Termux 使用 clang 编译，不受上文 gcc13 版本限制。
+Termux is compiled using clang and is not restricted by the gcc13 version above.
 
-安装依赖：
+Install dependencies:
 
 ```bash
 pkg update
 pkg install clang cmake ninja pkg-config libasio libspdlog googletest libusb libc++
 ```
 
-Termux 仓库中没有 `cxxopts`。如需编译示例，请手动安装（以下以安装到 `$PREFIX/opt/cxxopts` 为例）：
+There is no `cxxopts` in the Termux repository. If you need to compile the example, please install it manually (the following uses installation to `$PREFIX/opt/cxxopts` as an example):
 
 ```bash
 git clone https://github.com/jarro2783/cxxopts.git
@@ -193,7 +193,7 @@ cmake --build build
 cmake --install build
 ```
 
-配置并编译：
+Configure and build:
 
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release -GNinja \
@@ -203,26 +203,26 @@ cmake --build build
 cmake --install build --prefix $PREFIX
 ```
 
-注意事项：
+Notes:
 
-- 必须开启 `-DUSBIPDCPP_USE_PKGCONF_ASIO=ON`：Termux 的 libasio 是 autotools 构建，只提供 `asio.pc`，没有 CMake config。
-- 依赖里点名安装 `libc++`：libc++ 的头文件由 `ndk-sysroot` 提供、运行时库（`libc++_shared.so`）由 `libc++` 包提供，仓库升了前者却没带上后者时两者会错位，链接期报 `std::__ndk1::__hash_memory` 未定义。点名安装可让两者保持同一版本。
-- 不装 cxxopts 也可以，examples 会被整块跳过（configure 时会有 WARNING）；也可通过 `-DUSBIPDCPP_BUILD_EXAMPLES=OFF -DUSBIPDCPP_BUILD_TESTS=OFF` 只编译库。
-- `libevdev_mouse` 和 `mock_uvc_ffmpeg` 依赖的 libevdev / FFmpeg 在 Termux 没有 dev 包，configure 时自动跳过，无需额外选项。
-- Termux 仓库没有 miniaudio，mock_audio 的 `--audio` 选项（`AudioFileSource`）与 mock_speaker 的本机播放自动跳过；可手动安装头文件启用。stb 头文件在 Termux 放在 `include/stb/` 子目录（vcpkg 在 include 根目录），源码用 `__has_include` 自适应两种布局。
-- 如需编译 termux_libusb_server 示例，添加 `-DUSBIPDCPP_BUILD_EXAMPLE_TERMUX_LIBUSB_SERVER=ON`；运行它需要 `pkg install termux-api`（提供 termux-usb 命令）。
+- `-DUSBIPDCPP_USE_PKGCONF_ASIO=ON` must be turned on: Termux's libasio is built with autotools and only provides `asio.pc` without CMake config.
+- Explicitly install `libc++` among the dependencies: libc++ headers come from `ndk-sysroot`, while its runtime library (`libc++_shared.so`) comes from the `libc++` package. If the former is upgraded to the repository version without the latter, their versions become mismatched, causing an undefined `std::__ndk1::__hash_memory` error at link time. Explicit installation keeps both at the same version.
+- It is also possible not to install cxxopts, the examples will be skipped entirely (there will be a WARNING when configure); you can also compile only the library through `-DUSBIPDCPP_BUILD_EXAMPLES=OFF -DUSBIPDCPP_BUILD_TESTS=OFF`.
+- `libevdev_mouse` and `mock_uvc_ffmpeg` depend on libevdev/FFmpeg, which does not have a dev package in Termux and is automatically skipped during configure without additional options.
+- There is no miniaudio in the Termux repository, and the `--audio` option (`AudioFileSource`) of mock_audio and the native playback of mock_speaker are automatically skipped; the header file can be manually installed to enable it. The stb header file is placed in the `include/stb/` subdirectory in Termux (vcpkg is in the include root directory), and the source code uses `__has_include` to adapt to the two layouts.
+- To compile the termux_libusb_server example, add `-DUSBIPDCPP_BUILD_EXAMPLE_TERMUX_LIBUSB_SERVER=ON`; running it requires `pkg install termux-api` (provides the termux-usb command).
 
-#### 使用vcpkg包管理器
-请提前装好asio libusb libevdev spdlog等库。
-如需编译示例，还需安装 cxxopts：
+#### Using vcpkg package manager
+Please install asio libusb libevdev spdlog and other libraries in advance.
+If you want to compile the example, you also need to install cxxopts:
 ```bash
 ./vcpkg install asio libusb libevdev spdlog cxxopts
 ```
-如需编译测试，还需安装 gtest：
+If you need to compile the tests, also install gtest:
 ```bash
 ./vcpkg install gtest
 ```
-如需 mock_audio 的音频文件播放（`AudioFileSource`）或 mock_speaker 的本机播放，还需安装 miniaudio：
+If you want to play the audio files of mock_audio (`AudioFileSource`) or the local playback of mock_speaker, you also need to install miniaudio:
 ```bash
 ./vcpkg install miniaudio
 ```
@@ -234,7 +234,7 @@ cmake --build build
 cmake --install build
 ```
 
-#### 使用conan作为包管理器：
+#### Use conan as the package manager:
 ```bash
 conan install . --build=missing -s build_type=Release
 cmake --preset conan-release
@@ -242,31 +242,31 @@ cmake --build build/Release
 cmake --install build/Release
 ```
 
-### 运行测试
+### Run tests
 
-开启测试编译（顶级项目默认开启）后运行：
+After turning on test compilation (top-level projects are enabled by default), run:
 
 ```bash
 ctest --test-dir build --output-on-failure
 ```
 
-网络测试套件覆盖：
+network test suite covers:
 
-- 服务器重启循环（`start` → `stop` → `start`），包括 100 轮循环和 stop 与连接并发竞争
-- 客户端在各个协议阶段的断连：空闲期（未发数据）、请求收到一半、垃圾数据、import 后立即断连、URB 传输中断连——优雅断开（FIN）和异常断开（RST）两种方式
-- 设备生命周期：反复 import/释放、多客户端抢占同一设备、import 不存在的设备
+- Server restart cycles (`start` → `stop` → `start`), including 100 cycles and concurrent races between stop and connections
+- Client disconnection at various protocol stages: idle period (no data sent), half request received, garbage data, immediate disconnection after import, URB transfer disconnection - two methods: graceful disconnection (FIN) and abnormal disconnection (RST)
+- Device life cycle: repeated import/release, multiple clients seizing the same device, importing non-existent devices
 
-### Python 绑定
+### Python bindings
 
-Python 绑定使用 pybind11，需要先安装 `pybind11`（vcpkg 或 pip 均可）。
+Python binding uses pybind11, you need to install `pybind11` first (either vcpkg or pip).
 
-**编译：**
+**Compile:**
 ```bash
 cmake -B build -DUSBIPDCPP_BUILD_PYTHON_BINDINGS=ON
 cmake --build build
 ```
 
-编译后设置 PYTHONPATH 并测试：
+After building, set PYTHONPATH and test:
 ```bash
 # Windows
 set PYTHONPATH=build/python_package
@@ -276,525 +276,525 @@ export PYTHONPATH=build/python_package
 python examples/python/test_absolute_mouse.py
 ```
 
-**依赖：**
-- pybind11（vcpkg 安装：`./vcpkg install pybind11`，或 pip：`pip install pybind11`）
-- 可选，用于生成 `.pyi` 存根文件：`pip install pybind11-stubgen`
+**Dependencies:**
+- pybind11 (vcpkg installation: `./vcpkg install pybind11`, or pip: `pip install pybind11`)
+- Optional, used to generate `.pyi` stub file: `pip install pybind11-stubgen`
 
-**注意事项：**
-- `send_input_report()` 接收 `bytes`：`handler.send_input_report(b'\x01\x00\x00\x00')`
-- Python 可继承 `HidVirtualInterfaceHandler` 实现自定义 HID 设备（参考 `examples/python/flip_left_button.py`）
-- `start()` 和 `stop()` 会释放 Python GIL，可在主线程安全调用
-- Python 可调用 `Session.immediately_stop()`；正常情况下该接口仅供服务器停止流程内部使用
+**Note:**
+- `send_input_report()` accepts `bytes`: `handler.send_input_report(b'\x01\x00\x00\x00')`
+- Python can inherit `HidVirtualInterfaceHandler` to implement custom HID devices (reference `examples/python/flip_left_button.py`)
+- `start()` and `stop()` will release the Python GIL and can be safely called in the main thread
+- Python can call `Session.immediately_stop()`; under normal circumstances, this interface is only used internally by the server stop process.
 
-### Python 绑定开发状态 🚧
+### Python binding development status 🚧
 
-Python 绑定正在**积极开发中**，可能存在 bug 或崩溃问题。
+The Python bindings are **under active development** and may contain bugs or cause crashes.
 
-如果你遇到报错：
+If you encounter an error:
 
-1. **提 issue**，附上完整的 Python 回溯（traceback）
-2. **获取 C++ 堆栈**：在 CLion 中调试原生应用程序
+1. **Report an issue**, attach a complete Python traceback (traceback)
+2. **Get C++ stack**: Debugging native applications in CLion
    - Run → Edit Configurations → Add New → **Native Application**
-   - Target：选择 `usbipdcpp_python`
-   - Executable：选择 `python.exe` 路径
-   - Program arguments：目标脚本路径（如 `examples/python/flip_left_button.py`）
-   - Working directory：项目根目录
+   - Target: Select `usbipdcpp_python`
+   - Executable: Select `python.exe` path
+   - Program arguments: target script path (such as `examples/python/flip_left_button.py`)
+   - Working directory: project root directory
    
-   CLion 会在崩溃时断住，显示完整的 C++ 调用栈。
+   CLion will stop on crash and display the complete C++ call stack.
 
-3. 请提供：
-   - Python 版本和操作系统
-   - 使用的构建配置
-   - 完整的错误输出（Python 回溯 + C++ 堆栈）
-   - 最小可复现代码
+3. Please provide:
+   - Python version and operating system
+   - Build configuration used
+   - Full error output (Python traceback + C++ stack)
+   - Minimal reproducible code
 
 ---
 
-## 使用
+## Use
 
 ```cmake
 find_package(usbipdcpp CONFIG REQUIRED)
 target_link_libraries(main PRIVATE usbipdcpp::usbipdcpp)
 
-# 或者想使用libusb功能
+# Or you want to use the libusb function
 
 find_package(usbipdcpp CONFIG REQUIRED COMPONENTS libusb)
 target_link_libraries(main PRIVATE usbipdcpp::usbipdcpp usbipdcpp::libusb)
 ```
 
-### 扩展功能
+### Extended functions
 
-实现自定义设备完整指南（含两种实现方法与完整代码示例）见 [docs/custom-device.md](docs/custom-device.md)。
+A complete guide to implementing custom devices (including two implementation methods and complete code examples) is available at [docs/custom-device.md](docs/custom-device.md).
 
-实现自定义 USB 设备：
+Implement a custom USB device:
 
-1. 使用 `usbipdcpp::UsbDevice` 定义设备描述符
-2. 继承 `AbstDeviceHandler` 实现设备逻辑
-3. 使用 `VirtualInterfaceHandler` 处理接口操作，同时实现接口内的端点的逻辑
+1. Use `usbipdcpp::UsbDevice` to define the device descriptor
+2. Inherit `AbstDeviceHandler` to implement device logic
+3. Use `VirtualInterfaceHandler` to process interface operations and implement the endpoint logic within the interface.
 
-接口定义建议用各 handler 的 `make_interface` 工厂——它创建的接口与 handler 内部
-预期的端点结构一致（手写 `UsbInterface` 可能和接口 handler 的硬编码假设不符）。
-工厂只返回描述符模板、不绑定 handler：接口 handler 构造持接口引用，须在设备创建
-完成后（接口入 `device->interfaces`、地址稳定）用 `device->interfaces[i].with_handler<T>(...)` 绑定。
-`UsbDevice` 本身则完全可以手动构造，方便更灵活的配置。
+Use each handler's `make_interface` factory to define interfaces: it creates an interface matching the handler's expected
+endpoint structure (a handwritten `UsbInterface` may conflict with hardcoded assumptions in the interface handler).
+The factory returns only a descriptor template, without binding a handler: the interface handler constructor retains an interface reference, so bind it after device creation
+is complete (the interface is in `device->interfaces` and its address is stable) using `device->interfaces[i].with_handler<T>(...)`.
+`UsbDevice` itself can be completely constructed manually to facilitate more flexible configuration.
 
-简单设备可直接使用 `SimpleVirtualDeviceHandler`，它为标准请求提供了空实现
+Simple devices can directly use `SimpleVirtualDeviceHandler`, which provides an empty implementation for standard requests
 
-> ⚠️ **重要提示**：重写 `VirtualInterfaceHandler::on_new_connection()` 和 `on_disconnection()` 时，**必须**调用父类实现。父类会设置/清除 `session` 指针，该指针用于提交响应数据。
+> ⚠️ **IMPORTANT NOTE**: When overriding `VirtualInterfaceHandler::on_new_connection()` and `on_disconnection()`, you **must** call the parent class implementation. The parent class sets/clears the `session` pointer, which is used to submit response data.
 
-### 自定义 USB 字符串
+### Custom USB string
 
-在启动服务器**之前**调用 `change_string_*` 修改设备字符串：
+Call `change_string_*` **before** starting the server to modify device strings:
 
-**设备级字符串**（通过 `VirtualDeviceHandler`）：
+**Device Level String** (via `VirtualDeviceHandler`):
 ```cpp
-device_handler->change_string_manufacturer(L"我的公司");
-device_handler->change_string_product(L"我的 USB 设备");
+device_handler->change_string_manufacturer(L"My Company");
+device_handler->change_string_product(L"My USB Device");
 device_handler->change_string_serial(L"1234567890");
-device_handler->change_string_configuration(L"我的配置");
+device_handler->change_string_configuration(L"My Configuration");
 ```
 
-**接口字符串**（通过 `VirtualInterfaceHandler`）：
+**Interface String** (via `VirtualInterfaceHandler`):
 ```cpp
-interface_handler->change_string_interface(L"我的 HID 接口");
+interface_handler->change_string_interface(L"My HID Interface");
 ```
 
-所有 `change_string_*` 方法最终调用 `StringPool::change_string()`，若字符串索引无效会抛异常。
+All `change_string_*` methods eventually call `StringPool::change_string()`. If the string index is invalid, an exception will be thrown.
 
 ---
 
-## 例子
+## Example
 
 **1. libevdev_mouse**
 
-   使用libevdev库，在支持evdev的系统上，通过读取`/dev/input/event*`，模拟一个usbip的鼠标，实现转发本地的鼠标信号
+   uses the libevdev library to simulate a usbip mouse by reading `/dev/input/event*` on a system that supports evdev to forward local mouse signals.
 **2. mock_mouse**
 
-   基于 `RelativeMouseHandler` 的相对鼠标示例。默认每秒切换左键状态，
-   加 `--circle` 参数则控制光标绕圈移动。
+   A relative mouse example based on `RelativeMouseHandler`. By default, the left button state is switched every second.
+   plus `--circle` parameter controls the cursor movement in circles.
 **3. mock_keyboard**
 
-   一个键盘示例，基于 `KeyboardHandler` 类，内置 Consumer Control（音量、播放暂停等媒体键）。
-   每秒模拟按下和释放'A'键。
+   A keyboard example, based on the `KeyboardHandler` class, with built-in Consumer Control (media keys such as volume, playback and pause).
+   Simulates pressing and releasing the 'A' key every second.
 **4. mock_gamepad**
 
-   一个游戏手柄示例，基于 `GamepadHandler` 类。D-pad 八方向旋转，左摇杆画圆，按钮 0 交替开关。
+   A gamepad example based on `GamepadHandler`. The D-pad rotates through eight directions, the left stick traces a circle, and button 0 alternates on/off.
 **5. mock_cdc_acm**
 
-   虚拟串口（CDC ACM）示例，展示 USB Bulk 端点的双向数据传输。
+   virtual serial port (CDC ACM) example, showing bidirectional data transfer of USB Bulk endpoint.
 **6. mock_cdc_throttle**
 
-   限流虚拟串口（CDC ACM）示例，演示 **OUT NAK 背压**：固定窗口 `--window-sec` 秒内最多接收
-   `--limit-bytes` 字节；额度用完即停止接收（OUT NAK——主机 URB 挂起），窗口结束恢复并排空
-   挂起的请求。数据处理器同时统计收到的 `'1'` 字符数，每半个窗口把累计数发回主机
-   （`<数字>\n`）。使用：`mock_cdc_throttle -l 64 -w 5`。
+   Rate-limited virtual serial port (CDC ACM) example, demonstrating **OUT NAK backpressure**: within a fixed window of `--window-sec` seconds, receive at most
+   `--limit-bytes` bytes; once the quota is exhausted, stop receiving (OUT NAK: host URBs remain pending), then resume and drain
+   pending requests when the window ends. The data processor also counts received `'1'` characters, returning the cumulative count to the host every half-window
+   (`<number>\n`). Use: `mock_cdc_throttle -l 64 -w 5`.
 **7. multi_devices**
 
-   包含10个虚拟HID设备的示例。展示了如何使用工厂模式创建多个设备。
+   An example containing 10 virtual HID devices, demonstrating how to create multiple devices with the factory pattern.
 **8. absolute_mouse**
 
-   绝对坐标鼠标虚拟设备示例，提供完整的鼠标操作API：
-   - **屏幕坐标API**：使用像素坐标定位，通过 `set_screen_bounds()` 设置屏幕边界
-   - **HID原始坐标API**：使用 `_raw` 后缀的方法直接操作HID坐标（0-32767）
-   - **移动函数**：`move(from, to)` 和 `humanized_move(from, to)` 接受起点终点参数
-   - **拖动功能**：`drag(from, to)` 和 `humanized_drag(from, to)` 按下左键移动
-   - **按钮操作**：左键、右键、中键、点击、双击
+   Absolute coordinate mouse virtual device example, providing a complete mouse operation API:
+   - **Screen coordinate API**: Use pixel coordinate positioning and set the screen boundary through `set_screen_bounds()`
+   - **Raw HID coordinate API**: Methods with the `_raw` suffix operate directly on HID coordinates (0-32767)
+   - **Movement function**: `move(from, to)` and `humanized_move(from, to)` accept start and end parameters
+   - **Drag function**: `drag(from, to)` and `humanized_drag(from, to)` press the left button to move
+   - **Button operation**: left button, right button, middle button, click, double click
    
-   `set_screen_bounds(x1, y1, x2, y2)` 工作原理：
-   - 定义屏幕坐标的有效范围边界，如 `bounds(0, 0, 1920, 1080)` 表示屏幕范围 [0, 1920] × [0, 1080]
-   - 屏幕坐标通过线性映射转换为 HID 坐标 [0, 32767]
-   - 超出 bounds 的坐标会被 clamp 到边界值
-   - 注意：Windows 主机不接受 HID (0, 0)，建议屏幕坐标避开 (x1, y1) 边界
+   `set_screen_bounds(x1, y1, x2, y2)` Working principle:
+   - defines the valid range boundary of screen coordinates, such as `bounds(0, 0, 1920, 1080)` represents the screen range [0, 1920] × [0, 1080]
+   - Screen coordinates are converted by a linear mapping into HID coordinates [0, 32767]
+   - Coordinates beyond bounds will be clamped to the boundary value
+   - Note: Windows hosts do not accept HID (0, 0) and it is recommended that screen coordinates avoid (x1, y1) boundaries
 **9. libusb_server**
 
-   转发本机的usb设备，带一个非常简陋的命令行，输入`h`查看用法，可自行选择转发哪些设备。
-   与虚拟设备共享同一个 usbip server：`LibusbServer` 内部组合一个 `Server`，
-   物理设备经 bind 进入其设备表，虚拟设备用 `get_server().add_device(虚拟设备)` 加入
-   同一个 Server，一个监听端口即可同时导出两类设备（Server 对设备后端无感知）。
-   混用时注意 busid 唯一性——客户端按 busid attach，虚拟设备默认 busid 常与真实
-   设备的总线号（如 "1-1"）撞车，撞车时 `add_device` 会拒绝添加（返回 `AlreadyBound`），
-   需给虚拟设备另行指定不冲突的 busid
+   forwards the local USB device with a very simple command line. Enter `h` to view the usage, and you can choose which devices to forward.
+   Shares the same usbip server with virtual devices: `LibusbServer` contains a `Server`;
+   physical devices enter its device table through bind, and virtual devices are added with `get_server().add_device(virtual device)` to
+   the same Server. One listening port exports both device types (Server is unaware of the device backend).
+   Ensure busid uniqueness when mixing them: clients attach by busid, and a virtual device's default busid often conflicts with a physical
+   device's bus number (such as "1-1"); on conflict, `add_device` rejects insertion (returns `AlreadyBound`),
+   so assign the virtual device a separate, nonconflicting busid
 **10. mock_msc**
 
-   虚拟 USB 大容量存储（U盘）设备，用磁盘镜像文件作为存储介质。
-   支持 BOT (Bulk-Only Transport) 协议和常见 SCSI 命令（INQUIRY、READ CAPACITY、
-   READ(10)、WRITE(10)、MODE SENSE 等）。通过 `StorageBackend` 抽象接口可替换底层存储
-   —— 示例使用 `RawImageBackend` 以内存映射文件实现，也可通过多态接入 qcow2 等自定义后端。
+   is a virtual USB mass storage (USB flash drive) device that uses disk image files as storage media.
+   supports BOT (Bulk-Only Transport) protocol and common SCSI commands (INQUIRY, READ CAPACITY,
+   READ(10), WRITE(10), MODE SENSE, etc.). The underlying storage can be replaced through the `StorageBackend` abstract interface
+   - The example uses `RawImageBackend` to implement it as a memory mapped file. It can also be polymorphically connected to custom backends such as qcow2.
 
-   使用：`mock_msc [disk.img]`（默认 `disk.img`，4096 块 × 512 字节 = 2 MiB）
+   uses: `mock_msc [disk.img]` (default `disk.img`, 4096 blocks × 512 bytes = 2 MiB)
 
-   **启用 discard/TRIM（打洞）**：
+   **Enable discard/TRIM (hole punching)**:
 
-   Linux 内核默认对 USB 存储设备跳过 VPD 查询，导致 UNMAP 命令无法下发。需在客户端启用：
+   The Linux kernel skips VPD query for USB storage devices by default, causing the UNMAP command to fail to be issued. Need to be enabled on the client:
 
    ```bash
-   # 查看设备 SCSI 路径
+   # View device SCSI path
    ls /sys/class/scsi_disk/
-   # 对找到的路径写入 unmap（替换 X:0:0:0 为实际值）
+   # Write unmap to the found path (replace X:0:0:0 with the actual value)
    echo unmap > /sys/class/scsi_disk/X:0:0:0/provisioning_mode
    ```
 
-   或创建 udev 规则持久生效：
+   or create udev rules to take effect permanently:
    ```bash
    # /etc/udev/rules.d/50-usb-ssd-trim.rules
    ACTION=="add|change", SUBSYSTEM=="scsi_disk", ATTR{provisioning_mode}="unmap"
    ```
 
-   启用后通过 `sudo fstrim -v /mountpoint` 手动触发 discard，
-   或 `sudo systemctl enable fstrim.timer` 开启定时 trim。
+   After enabling, manually trigger discard with `sudo fstrim -v /mountpoint`,
+   or enable scheduled trim with `sudo systemctl enable fstrim.timer`.
 
 **11. mock_uvc**
 
-   虚拟 UVC 摄像头，使用 `ColorBarSource` 输出 320×240 YUY2 彩条测试图。
-   演示如何实现 `UvcVideoControlHandler` + `UvcVideoStreamingHandler` + `VideoSource` 组合。
-   Linux 和 Windows 均可使用。
+   virtual UVC camera, use `ColorBarSource` to output 320×240 YUY2 color bar test pattern.
+   demonstrates how to implement the `UvcVideoControlHandler` + `UvcVideoStreamingHandler` + `VideoSource` combination.
+   is available for both Linux and Windows.
 
 **12. mock_uvc_ffmpeg**
 
-   虚拟 UVC 摄像头，通过 FFmpeg 读取视频文件作为视频源。支持 FFmpeg 能解码的所有格式
-   （MP4、MKV、AVI 等），可选 MJPEG/H264 透传模式。
+   virtual UVC camera, reads video files as video source through FFmpeg. Supports all formats that FFmpeg can decode
+   (MP4, MKV, AVI, etc.), with optional MJPEG/H264 passthrough mode.
 
-   使用：`mock_uvc_ffmpeg --video video.mp4`（添加 `--passthrough` 启用 MJPEG/H264 透传）
+   Usage: `mock_uvc_ffmpeg --video video.mp4` (add `--passthrough` to enable MJPEG/H264 passthrough)
 
-   需要 FFmpeg 库（libavformat、libavcodec、libswscale、libavutil）。
+   requires FFmpeg libraries (libavformat, libavcodec, libswscale, libavutil).
 
 **13. mock_audio**
 
-   虚拟 USB 麦克风（UAC 1.0）。演示
-   `UacAudioControlHandler` + `UacAudioStreamingSourceHandler` + `AudioSource` 组合
-   （Feature Unit 静音/音量控制、采样率协商、ISO PCM 推流）。
+   Virtual USB Microphone (UAC 1.0). Demo
+   `UacAudioControlHandler` + `UacAudioStreamingSourceHandler` + `AudioSource` combination
+   (Feature Unit mute/volume control, sample rate negotiation, ISO PCM push).
 
-   支持三种音源：
-   - 正弦波测试音（默认）：`--freq 440 --amp 50`
-   - 傅里叶级数合成：`--harmonics "440:50,880:25"`（频率Hz : 幅度% [: 相位弧度]）
-   - 音频文件播放：`--audio music.mp3`（WAV/MP3/FLAC/OGG，基于 miniaudio，默认循环播放；
-     需安装 miniaudio，未找到时自动跳过）
+   supports three audio sources:
+   - Sine wave test tone (default): `--freq 440 --amp 50`
+   - Fourier series synthesis: `--harmonics "440:50,880:25"` (frequency Hz: amplitude % [: phase rad])
+   - Audio file playback: `--audio music.mp3` (WAV/MP3/FLAC/OGG, based on miniaudio, default loop playback;
+     requires miniaudio to be installed, automatically skipped if not found)
 
-   使用：`mock_audio --rates 48000,16000,8000`（首个为初始采样率）
+   Use: `mock_audio --rates 48000,16000,8000` (the first one is the initial sampling rate)
 
 **14. mock_speaker**
 
-   虚拟 USB 扬声器（UAC 1.0，ISO OUT 收流方向）。演示
-   `UacAudioControlHandler` + `UacAudioStreamingSinkHandler` + `AudioSink` 组合
-   （Feature Unit 静音/音量控制、采样率协商、ISO OUT PCM 收流消费）。
+   Virtual USB speaker (UAC 1.0, ISO OUT receive-stream direction). Demonstrates the
+   `UacAudioControlHandler` + `UacAudioStreamingSinkHandler` + `AudioSink` combination
+   (Feature Unit mute/volume control, sample-rate negotiation, reception and consumption of ISO OUT PCM streams).
 
-   三种消费方式：
-   - 本机播放（默认）：基于 miniaudio，需安装 miniaudio，未找到时自动跳过
-   - WAV 落盘：`--output out.wav`（收下的 PCM 写入 WAV 文件，无需 miniaudio）
-   - 丢弃计数（无 miniaudio 且未指定 `--output`）：仅统计接收字节
+   Three consumption methods:
+   - local playback (default): based on miniaudio, miniaudio needs to be installed, automatically skipped if not found
+   - Save WAV to disk: `--output out.wav` (write received PCM to a WAV file, no miniaudio required)
+   - Discard and count (no miniaudio and no `--output`): only count received bytes
 
-   使用：`mock_speaker --rates 48000,44100,96000 --channels 2`（首个为初始采样率；
-   播放设备用 `--device <名称>` 指定，默认系统默认设备）
+   uses: `mock_speaker --rates 48000,44100,96000 --channels 2` (the first one is the initial sampling rate;
+   specify playback device with `--device <name>`; defaults to the system's default device)
 
 **15. termux_libusb_server**
 
-   可在非root安卓设备的termux中使用的libusb server，通过
-   `termux-usb -e /path/to/termux_libusb_server /dev/bus/usb/xxx/xxx`启动。
+   libusb server that can be used in termux on non-rooted Android devices, via
+   `termux-usb -e /path/to/termux_libusb_server /dev/bus/usb/xxx/xxx` starts.
 
-   由于termux-usb只支持传入一个fd，因此可使用不同端口启动多个服务器以支持多个设备。
-   使用`USBIPDCPP_LISTEN_PORT`环境变量来指定监听端口
+   Since termux-usb passes only one fd, start multiple servers on different ports to support multiple devices.
+   Use the `USBIPDCPP_LISTEN_PORT` environment variable to specify the listening port
 
-   termux-usb的使用可查看termux官方的相关文档
+   For the use of  termux-usb, please check the official termux related documents.
 
 **16. multi_interface_hid**
 
-   复合 USB 设备示例，在单个设备上同时实现**两个 HID 接口**（鼠标 + 键盘）。
-   展示如何使用 `SimpleVirtualDeviceHandler` 创建多接口虚拟设备。
+   Composite USB device example, implementing **two HID interfaces** (mouse + keyboard) simultaneously on a single device.
+   shows how to use `SimpleVirtualDeviceHandler` to create a multi-interface virtual device.
 
 **17. mock_pipe**
 
-   通用虚拟管道设备（vendor 类接口，bulk IN + bulk OUT）。展示 `PipeDeviceHandler` 的
-   read()/write() 接口：像读写文件一样操作虚拟设备的端点数据流（FunctionFS 风格的
-   FIFO 阻塞语义；非标准控制请求也通过 read() 以带 setup_req 的 PipeXfer 返回）。
+   Universal virtual pipe device (vendor class interface, bulk IN + bulk OUT). Showing `PipeDeviceHandler`
+   read()/write() interface: operate the endpoint data stream of the virtual device like reading and writing files (FunctionFS style
+   FIFO blocking semantics; non-standard control requests are also returned via read() in PipeXfer with setup_req).
 
 **18. mock_pipe_hid**
 
-   用通用 `PipeDeviceHandler` 实现的 **HID 键盘**（无需 `KeyboardHandler`）——"任意
-   bulk/interrupt 设备只需 read/write 就能实现"的教程示例。HID 设备的关键步骤：
+   A **HID keyboard** implemented using generic `PipeDeviceHandler` (without `KeyboardHandler`): a tutorial showing that "any
+   bulk/interrupt device can be implemented with read/write alone". Key steps for HID devices:
 
    ```cpp
-   // 1. 构造 HID 接口描述符（Boot 键盘，中断 IN 端点）
+   // 1. Construct HID interface descriptor (Boot keyboard, interrupt IN endpoint)
    auto pipe = device->with_handler<PipeDeviceHandler>(string_pool);
-   // 2. 设置 HID 描述符（0x21）：追加在接口描述符后，驱动加载必需
+   // 2. Set HID descriptor (0x21): appended after the interface descriptor, necessary for driver loading
    pipe->set_class_specific_descriptor({0x09, 0x21, 0x11, 0x01, 0x00, 0x01, 0x22, 0x3F, 0x00});
-   // 3. 设置报告描述符（0x22）：GET_DESCRIPTOR 时返回
+   // 3. Set the report descriptor (0x22): returned on GET_DESCRIPTOR
    pipe->set_custom_descriptor(0x22, keyboard_report_descriptor);
-   // 4. 数据面就是阻塞 read/write
-   pipe->write(PipeXfer{.ep = 0x81, .data = {0x00, 0x00, 0x04, 0, 0, 0, 0, 0}}); // 按下 A 键
+   // 4. The data plane consists of blocking read/write
+   pipe->write(PipeXfer{.ep = 0x81, .data = {0x00, 0x00, 0x04, 0, 0, 0, 0, 0}}); // Press the A key
    ```
 
-   控制请求（GET_REPORT / SET_REPORT 等 class 请求）经 read() 以带 setup_req 的
-   PipeXfer 返回，IN 方向用 `write(PipeXfer{.ep = 0, .data = ...})` 应答。
+   Control requests (GET_REPORT / SET_REPORT and other class requests) are returned by read() as a
+   PipeXfer carrying setup_req; respond in the IN direction with `write(PipeXfer{.ep = 0, .data = ...})`.
 
 **19. mock_ecm**
 
-   虚拟以太网卡（CDC ECM，在主机上表现为一块网卡）。两种后端：
+   Virtual Ethernet card (CDC ECM, appears as a network card on the host). Two backends:
 
-   - 默认：纯用户态 `EthernetEchoBackend`——应答 ARP/ICMP/TCP echo（不需要 root，
-     所有平台可用）
-   - `--tun <接口名>`（仅 Linux/Android，需要 root）：`TunBackend` 经 TAP 接口把虚拟
-     网卡接入本机内核协议栈（如 `usbip%d`），ARP/ICMP/TCP 与路由全由真实内核处理
+   - Default: user-space `EthernetEchoBackend` - respond to ARP/ICMP/TCP echo (no root required,
+     Available on all platforms)
+   - `--tun <interface name>` (Linux/Android only, requires root): `TunBackend` connects the virtual
+     network adapter to the local kernel protocol stack through a TAP interface (such as `usbip%d`); the real kernel handles ARP/ICMP/TCP and routing
 
-   用法：`mock_ecm --tun usbip%d`，主机侧 `ip addr add 192.168.53.2/24 dev usbX` 后
-   `ping 192.168.53.1`。macOS 没有 TAP 接口（utun 是三层设备，tuntaposx 驱动在新系统
-   已禁用），因此 macOS 不编译 `--tun` 选项。
+   Usage: `mock_ecm --tun usbip%d`, after `ip addr add 192.168.53.2/24 dev usbX` on the host side
+   `ping 192.168.53.1`. macOS has no TAP interface (utun is a layer-3 device, and the tuntaposx driver is disabled on newer
+   systems), so the `--tun` option is not compiled on macOS.
 
 **20. libusb_windows_service**
 
-   将 libusb 服务器包装为 **Windows 服务**（仅 Windows）。使用 Windows SCM API 运行
-   `LibusbServer`，支持完整的服务生命周期管理（通过 `net start`/`net stop` 或
-   `sc.exe` 启停）。支持启动时自动绑定所有已连接的 USB 设备。
+   Wraps the libusb server as a **Windows service** (Windows only). Run using Windows SCM API
+   `LibusbServer`, supports complete service lifecycle management (via `net start`/`net stop` or
+   `sc.exe` start and stop). Supports automatic binding of all connected USB devices on startup.
 
 **21. mock_rndis**
 
-   虚拟以太网卡（CDC RNDIS）——**Windows 免驱**（"远程 NDIS 兼容设备"），这是与
-   `mock_ecm` 的关键区别（ECM 在 Windows 上需要第三方驱动）。后端与用法同
-   mock_ecm（默认纯用户态 echo，或 Linux/Android 的 `--tun`）。RNDIS 控制通道
-   （CDC 封装命令走 INIT/QUERY/SET）、OID 表与数据封装均对齐 Linux 内核 gadget
-   实现（f_rndis.c / rndis.c）。
+   Virtual Ethernet adapter (CDC RNDIS): **no additional Windows driver required** ("Remote NDIS Compatible Device"). This is the key difference from
+   `mock_ecm` (ECM requires a third-party driver on Windows). Backends and usage match
+   mock_ecm (default user-space echo, or `--tun` on Linux/Android). The RNDIS control channel
+   (CDC encapsulated commands for INIT/QUERY/SET), OID table, and data encapsulation all follow the Linux kernel gadget
+   implementation (f_rndis.c/rndis.c).
 
-   用法：`mock_rndis --tun usbip%d`，主机侧 `ip addr add 192.168.53.2/24 dev usbX` 后
-   `ping 192.168.53.1`。
+   Usage: `mock_rndis --tun usbip%d`, after `ip addr add 192.168.53.2/24 dev usbX` on the host side
+   `ping 192.168.53.1`.
 
 **22. mock_webcam**
 
-   虚拟 **UVC 摄像头 + UAC 麦克风** 复合设备——单个 USB 设备同时呈现摄像头与麦克风，
-   即外接摄像头的真实形态，**Windows 免驱**（同一时间枚举出"USB 摄像头"和"麦克风"，
-   与物理摄像头一致）。UVC 功能组声明 IAD；摄像头（ISO IN 视频帧）与麦克风（ISO IN
-   音频）同时从服务器推流。
+   Virtual **UVC Camera + UAC Microphone** Composite device - a single USB device presents the camera and microphone simultaneously,
+   matching a real external webcam, **without an additional Windows driver** ("USB camera" and "microphone" enumerate simultaneously,
+   just as with a physical webcam). The UVC function group declares an IAD; camera (ISO IN video frames) and microphone (ISO IN
+   audio) stream simultaneously from the server.
 
-   用法：`mock_webcam --width 640 --height 480 --fps 30 --rates 48000`（mock_uvc 的
-   `--width/--height/--fps` 与 mock_audio 的 `--freq/--rates/--channels/--amp/--harmonics/--audio` 合并）。
+   Usage: `mock_webcam --width 640 --height 480 --fps 30 --rates 48000` (mock_uvc’s
+   `--width/--height/--fps` merged with `--freq/--rates/--channels/--amp/--harmonics/--audio` of mock_audio).
 
 ---
 
-## 架构设计
+## Architecture design
 
-USB 通信和网络通信都是 I/O 密集型任务，本项目的架构组合如下：
+USB communication and network communication are both I/O-intensive tasks. The architecture combination of this project is as follows:
 
-- 使用 **asio** 处理网络 I/O——连接接收为异步（网络线程上由协程驱动的 accept 循环）
-- 每个 session 线程内使用**同步阻塞 socket I/O**——编写简单、易于推理
-- 使用 libusb 异步接口处理 USB 通信（物理设备）
+- Using **asio** to handle network I/O - connection reception is asynchronous (coroutine driven accept loop on network thread)
+- Use **synchronous blocking socket I/O** in each session thread - simple to write and easy to reason
+- Handle USB communication (physical device) using libusb asynchronous interface
 
-### 为什么 Session I/O 采用同步
+### Why Session I/O Is Synchronous
 
-早期版本曾使用 C++20 协程处理 session 数据，但后来改成了同步阻塞 socket I/O，原因如下：
+Earlier versions used C++20 coroutines for session data, but later switched to synchronous blocking socket I/O for these reasons:
 
-1. **架构不匹配**：本项目采用"每连接一线程"模型，每个客户端连接有独立的线程和 `io_context`。协程的核心优势是"单线程处理多任务"，在这种架构下无法发挥。
+1. **Architecture mismatch**: This project adopts the "one thread per connection" model, and each client connection has an independent thread and `io_context`. The core advantage of coroutines is "single thread processing multiple tasks", which cannot be brought into play under this architecture.
 
-2. **代码复杂度**：协程版本和非协程版本的逻辑几乎相同，但需要维护两套代码，增加了维护成本。
+2. **Code complexity**: The logic of the coroutine version and the non-coroutine version is almost the same, but two sets of codes need to be maintained, which increases maintenance costs.
 
-3. **编译开销**：协程相关的模板实例化会显著增加编译时间。
+3. **Compilation overhead**: Coroutine-related template instantiation will significantly increase the compilation time.
 
-4. **ESP32 考量**：对于嵌入式平台，更推荐使用 FreeRTOS 原生任务而非协程，或者改用单线程事件循环架构。
+4. **ESP32 Consideration**: For embedded platforms, it is more recommended to use FreeRTOS native tasks instead of coroutines, or to use a single-thread event loop architecture instead.
 
-网络线程上的 accept 循环（`Server::do_accept`）仍保留单个协程——它足够简单、自成一体，上述问题都不适用于它。
+The network thread's accept loop (`Server::do_accept`) still uses a single coroutine: it is sufficiently simple and self-contained that none of the above issues apply.
 
-如果未来需要支持大量并发连接（数百/数千），可以考虑重构为单 `io_context` + 协程模型，届时协程优势才能真正体现。
+If you need to support a large number of concurrent connections (hundreds/thousands) in the future, you can consider refactoring it into a single `io_context` + coroutine model, then the advantages of coroutines can be truly reflected.
 
-### 依赖项
+### Dependencies
 
-| 依赖 | 是否必需 | 说明 |
+| Dependency | Required? | Description |
 |------|----------|------|
-| asio | ✅ 必需 | 异步I/O库 |
-| spdlog | ✅ 必需 | 日志库 |
-| libusb-1.0 | 可选 | 用于物理USB设备转发 |
-| libevdev | 可选 (仅Linux) | 用于evdev输入设备转发 |
-| cxxopts | 可选 | 用于编译示例程序 |
-| GTest | 可选 | 用于编译测试 |
-| miniaudio + stb | 可选 | mock_audio 的音频文件播放（--audio）与 mock_speaker 的本机播放（纯头文件） |
+| asio | ✅ Required | Asynchronous I/O library |
+| spdlog | ✅ Required | Log library |
+| libusb-1.0 | Optional | For physical USB device forwarding |
+| libevdev | Optional (Linux only) | For evdev input device forwarding |
+| cxxopts | Optional | Used to compile sample programs |
+| GTest | Optional | For building tests |
+| miniaudio + stb | Optional | mock_audio audio-file playback (--audio) and mock_speaker local playback (header-only) |
 
-### 平台支持
+### Platform support
 
-| 平台 | 虚拟设备 | 物理设备 (libusb) | 备注 |
+| Platform | Virtual Device | Physical Device (libusb) | Remarks |
 |------|----------|-------------------|------|
-| Windows | ✅ | ⚠️ 需安装WinUSB驱动 | 适合虚拟HID设备 |
-| Linux | ✅ | ✅ | 完全支持 |
-| macOS | ✅ | ✅ | 完全支持 |
-| Android (Termux) | ✅ | ✅ 通过termux-usb | 支持非root访问 |
-| ESP32 | ✅ | ✅ | 使用ESP-IDF和asio组件 |
+| Windows | ✅ | ⚠️ WinUSB driver required | Suitable for virtual HID devices |
+| Linux | ✅ | ✅ | Fully supported |
+| macOS | ✅ | ✅ | Fully supported |
+| Android (Termux) | ✅ | ✅ Via termux-usb | Supports non-root access |
+| ESP32 | ✅ | ✅ | Using ESP-IDF and asio components |
 
-### 核心类
+### Core classes
 
-| 类 | 说明 |
+| Class | Description |
 |----|------|
-| `Server` | 主服务器类，管理设备列表并接受连接 |
-| `Session` | 表示客户端连接，处理USBIP协议 |
-| `UsbDevice` | USB设备描述符和配置 |
-| `AbstDeviceHandler` | 所有设备处理器的抽象基类 |
-| `LibusbServer` | 物理USB设备转发服务器封装（基于libusb） |
-| `StringPool` | 管理USB字符串描述符（最多255个） |
+| `Server` | Main server class, manages the device list and accepts connections |
+| `Session` | Represents client connection and handles USBIP protocol |
+| `UsbDevice` | USB device descriptor and configuration |
+| `AbstDeviceHandler` | Abstract base class for all device handlers |
+| `LibusbServer` | Server wrapper for forwarding physical USB devices (based on libusb) |
+| `StringPool` | Manage USB string descriptors (up to 255) |
 
-### 设备被移除后的释放语义
+### Release semantics after the device is removed
 
-设备被物理移除（`AbstDeviceHandler::is_device_removed()` 返回 true；后端收到系统拔出通知后通过 `on_device_removed()` 等途径告知 handler，何时置位由 handler 自行决定）后：
+After a device is physically removed (`AbstDeviceHandler::is_device_removed()` returns true; after receiving a system removal notification, the backend informs the handler through `on_device_removed()` or similar paths, and the handler decides when to set the flag):
 
-- **释放时丢弃**：会话断开 / `stop()` 时设备直接从"使用中"列表丢弃，不再放回可用列表——后端只在设备消失那一刻扫过一遍列表，放回去就是没人再清得掉的僵尸（下次导入时白跑一次打开失败）
-- **导入必然失败**：仍残留在列表里的已移除设备被导入时打不开，失败后同样被丢弃
-- 因此不需要后台扫描或会话退出时的兜底清理，僵尸从源头就不会产生
+- **Discard on release**: On session disconnection / `stop()`, discard the device directly from the "in-use" list instead of returning it to the available list. The backend scans the list only at the moment the device disappears; returning it would leave an unremovable zombie (and merely incur a failed open on the next import)
+- **Import must fail**: Removed devices that still remain in the list cannot be opened when imported, and will also be discarded after failure.
+- No background scan or fallback cleanup on session exit is therefore needed; zombies are prevented at their source
 
-### 传输数据载体
+### Transfer data carriers
 
-传输数据通过 [`TransferHandle`](include/protocol.h) 类管理，这是一个 RAII 包装类，析构时自动释放传输句柄。支持移动语义转移所有权，注意 `release()` 方法会放弃所有权，需手动释放。
+Transfer data is managed by [`TransferHandle`](include/protocol.h), a RAII wrapper that automatically frees the transfer handle on destruction. Move semantics transfer ownership; note that `release()` relinquishes ownership, requiring manual release.
 
-### 工具类
+### Tools
 
-| 类 | 说明 |
+| Class | Description |
 |----|------|
-| `ObjectPool<T, PoolSize, ThreadSafe, LifeManager, Reset>` | 固定大小对象池，支持自定义创建/销毁/重置策略。alloc O(1)，free O(log n)。 |
+| `ObjectPool<T, PoolSize, ThreadSafe, LifeManager, Reset>` | Fixed size object pool, supporting custom creation/destroy/reset strategies. alloc O(1), free O(log n). |
 
-### 虚拟设备类
+### Virtual device class
 
-| 类 | 说明 |
+| Class | Description |
 |----|------|
-| `VirtualDeviceHandler` | 虚拟USB设备的基类 |
-| `SimpleVirtualDeviceHandler` | 简单设备处理器，提供标准请求的空实现 |
-| `VirtualInterfaceHandler` | 实现虚拟USB接口的基类 |
-| `HidVirtualInterfaceHandler` | HID设备基类（鼠标、键盘等） |
-| `AbsoluteMouseHandler` | 绝对坐标鼠标，支持屏幕坐标映射和人性化移动 |
-| `RelativeMouseHandler` | 相对坐标鼠标，偏移量累积发送，5 键 + 滚轮 |
-| `KeyboardHandler` | USB HID 键盘，内置 Consumer Control 媒体键支持 |
-| `GamepadHandler` | USB HID 游戏手柄，16 按钮 + 十字键 + 4 模拟轴 |
-| `DigitizerHandler` | USB HID 触摸屏，支持按压力度 |
-| `MscBulkOnlyHandler` | USB 大容量存储 BOT 协议处理器，实现 SCSI 命令处理 |
-| `StorageBackend` | 块存储后端抽象接口，为 MSC 设备提供读写能力 |
-| `RawImageBackend` | 基于内存映射的磁盘镜像文件后端（跨平台） |
-| `MemoryBackend` | 基于内存的块存储后端，用于 MSC 测试 |
-| `CdcAcmCommunicationInterfaceHandler` | CDC ACM 通信接口处理器 |
-| `CdcAcmDataInterfaceHandler` | CDC ACM 数据接口处理器 |
-| `UvcVideoControlHandler` | UVC VideoControl 接口（摄像头控制、状态中断） |
-| `UvcVideoStreamingHandler` | UVC VideoStreaming 接口（PROBE/COMMIT、ISO 视频流） |
-| `VideoSource` | UVC 虚拟摄像头视频源抽象接口 |
-| `ColorBarSource` | 彩条测试图视频源 |
-| `UacAudioControlHandler` | UAC AudioControl 接口（Feature Unit 静音/音量控制） |
-| `UacAudioStreamingSourceHandler` | UAC AudioStreaming 接口（ISO PCM 推流） |
-| `AudioSource` | UAC 虚拟麦克风 PCM 音频源抽象接口 |
-| `UacAudioStreamingSinkHandler` | UAC AudioStreaming 接口（ISO OUT 收流消费，扬声器方向） |
-| `AudioSink` | UAC 虚拟扬声器 PCM 消费端抽象接口 |
-| `SineWaveSource` | 正弦波测试音源 |
-| `FourierSource` | 傅里叶级数合成音源（多谐波叠加，各谐波独立相位） |
-| `AudioFileSource` | mock_audio 示例的音源（WAV/MP3/FLAC/OGG，基于 miniaudio，支持重采样和循环播放；在 examples/mock_audio/） |
-| `EcmCommunicationInterfaceHandler` | CDC ECM 通信接口（以太网连接/状态通知） |
-| `EcmDataInterfaceHandler` | CDC ECM 数据接口（以太网帧收发） |
-| `NetworkBackend` | 虚拟以太网卡的网络后端抽象（帧收发 + 统计） |
-| `EthernetEchoBackend` | mock_ecm 的纯用户态 echo 后端（应答 ARP/ICMP/TCP echo，不需要 root） |
-| `TunBackend` | Linux TAP 后端：把虚拟网卡帧接入本机内核协议栈（仅 Linux/Android，需要 root） |
-| `RndisCommunicationInterfaceHandler` | CDC RNDIS 通信接口（封装命令通道、RNDIS 状态机与 OID 表） |
-| `RndisDataInterfaceHandler` | CDC RNDIS 数据接口（RNDIS_MSG_PACKET 封装/解封装，帧收发） |
+| `VirtualDeviceHandler` | Base class for virtual USB devices |
+| `SimpleVirtualDeviceHandler` | Simple device handler, providing empty implementation of standard requests |
+| `VirtualInterfaceHandler` | Base class for implementing virtual USB interface |
+| `HidVirtualInterfaceHandler` | HID device base class (mouse, keyboard, etc.) |
+| `AbsoluteMouseHandler` | Absolute coordinate mouse, supports screen coordinate mapping and humanized movement |
+| `RelativeMouseHandler` | Relative-coordinate mouse, accumulates offsets for transmission, 5 buttons + scroll wheel |
+| `KeyboardHandler` | USB HID keyboard with built-in Consumer Control media key support |
+| `GamepadHandler` | USB HID gamepad, 16 buttons + D-pad + 4 analog axes |
+| `DigitizerHandler` | USB HID touchscreen with pressure support |
+| `MscBulkOnlyHandler` | USB mass storage BOT protocol handler implementing SCSI commands |
+| `StorageBackend` | Block storage backend abstract interface, providing read and write capabilities for MSC devices |
+| `RawImageBackend` | Memory-mapped disk image file backend (cross-platform) |
+| `MemoryBackend` | Memory-based block storage backend for MSC testing |
+| `CdcAcmCommunicationInterfaceHandler` | CDC ACM communication interface handler |
+| `CdcAcmDataInterfaceHandler` | CDC ACM data interface handler |
+| `UvcVideoControlHandler` | UVC VideoControl interface (camera control, status interrupt) |
+| `UvcVideoStreamingHandler` | UVC VideoStreaming interface (PROBE/COMMIT, ISO video streaming) |
+| `VideoSource` | UVC virtual camera video source abstract interface |
+| `ColorBarSource` | Color-bar test-pattern video source |
+| `UacAudioControlHandler` | UAC AudioControl interface (Feature Unit mute/volume control) |
+| `UacAudioStreamingSourceHandler` | UAC AudioStreaming interface (ISO PCM push streaming) |
+| `AudioSource` | UAC virtual microphone PCM audio source abstract interface |
+| `UacAudioStreamingSinkHandler` | UAC AudioStreaming interface (ISO OUT stream reception/consumption, speaker direction) |
+| `AudioSink` | UAC virtual speaker PCM consumer abstract interface |
+| `SineWaveSource` | Sine wave test sound source |
+| `FourierSource` | Fourier series synthetic sound source (multiple harmonics superimposed, each harmonic has independent phase) |
+| `AudioFileSource` | Audio source for mock_audio example (WAV/MP3/FLAC/OGG, based on miniaudio, supports resampling and looping; in examples/mock_audio/) |
+| `EcmCommunicationInterfaceHandler` | CDC ECM communication interface (Ethernet connection/status notification) |
+| `EcmDataInterfaceHandler` | CDC ECM data interface (Ethernet frame sending and receiving) |
+| `NetworkBackend` | Network backend abstraction of virtual Ethernet card (frame sending and receiving + statistics) |
+| `EthernetEchoBackend` | mock_ecm user-space echo backend (ARP/ICMP/TCP echo replies, no root required) |
+| `TunBackend` | Linux TAP backend: feed virtual network adapter frames into the local kernel protocol stack (Linux/Android only, requires root) |
+| `RndisCommunicationInterfaceHandler` | CDC RNDIS communication interface (encapsulated command channel, RNDIS state machine and OID table) |
+| `RndisDataInterfaceHandler` | CDC RNDIS data interface (RNDIS_MSG_PACKET encapsulation/decapsulation, frame transmission and reception) |
 
-### 类继承关系
+### Class inheritance relationship
 
 ```
 AbstDeviceHandler
-├── LibusbDeviceHandler    (通过libusb的物理设备)
-└── VirtualDeviceHandler   (虚拟设备)
+├── LibusbDeviceHandler    (physical devices through libusb)
+└── VirtualDeviceHandler   (virtual devices)
     └── SimpleVirtualDeviceHandler
 ```
 
-### 线程模型
+### Thread model
 
-一个服务器实例使用到的线程：
+Threads used by a server instance:
 
-1. **网络 I/O 线程**：每个 `Server` 一个——运行 `asio::io_context::run()` 和 accept 协程，等待客户端连接
-2. **Session 线程**：每个连接一个——同步阻塞 socket I/O 和设备处理器调用
-3. **Sender 线程**：每次传输一个——从响应队列取数据写入 socket
-4. **libusb 事件线程**：运行 `libusb_handle_events()` 循环，仅 libusb 后端（`LibusbServer`）使用
-5. **主线程**：调用 `start()` / `stop()`，控制服务器
+1. **Network I/O thread**: one for each `Server` - running `asio::io_context::run()` and accept coroutines, waiting for client connections
+2. **Session thread**: one per connection - synchronously blocking socket I/O and device handler calls
+3. **Sender thread**: One per transfer — take data from the response queue and write to the socket
+4. **libusb event thread**: Run `libusb_handle_events()` loop, only used by libusb backend (`LibusbServer`)
+5. **Main thread**: Call `start()` / `stop()`, control server
 
-每个连接使用独立线程，保证一个连接上的阻塞操作（如设备同步）不会卡住其他连接。
+Each connection uses an independent thread to ensure that blocking operations on one connection (such as device synchronization) will not block other connections.
 
-`start()` / `stop()` 可以反复调用以重启服务器。`stop()` 会关闭监听、打断所有活跃 session，并在返回前 join 所有 session 线程——返回后可以安全析构 `Server`。
+`start()` / `stop()` can be called repeatedly to restart the server. `stop()` closes the listener, interrupts all active sessions, and joins all session threads before returning; `Server` can then be safely destroyed.
 
-数据传输流程：
+data transfer process:
 
 ```
-客户端 → session 线程（读取 URB）→ 设备处理器 → sender 线程（写响应）→ 客户端
+client → session thread (read URB) → device handler → sender thread (write response) → client
 ```
 
-该架构通过最小化线程竞争实现高 CPU 效率。
+This architecture achieves high CPU efficiency by minimizing thread contention.
 
-### 虚拟设备实现
+### Virtual device implementation
 
-开发虚拟设备时需注意：
+When developing virtual devices, please note:
 
-- 避免阻塞网络线程
-- 在工作线程中处理请求
-- 通过回调提交响应数据
+- Avoid blocking network threads
+- Process the request in the working thread
+- Submit response data through callback
 
-#### 为什么需要请求队列
+#### Why do we need a request queue?
 
-客户端只负责发送 URB，服务端负责接收。在原版 USBIP 中，服务端收到 URB 后会存储起来，然后由 USB 控制器按顺序发送给真实设备，这保证了同时只有一个 URB 在传输。
+The client is only responsible for sending URBs, and the server is responsible for receiving them. In the original USBIP, the server will store the URB after receiving it, and then send it to the real device in order by the USB controller. This ensures that only one URB is being transferred at the same time.
 
-虚拟设备需要模拟这个"按顺序存储 URB"的行为，因此使用请求队列（`std::deque`）来存储收到的请求，按顺序逐个处理。
+The virtual device needs to simulate this "store URBs in order" behavior, so the request queue (`std::deque`) is used to store the received requests and process them one by one in order.
 
-## 平台说明
+## Platform description
 
-### Windows：libusb 需要替换驱动
+### Windows: libusb needs to replace the driver
 
-在 Windows 使用 libusb 服务器需要替换驱动：
+When using libusb server on Windows, you need to replace the driver:
 
-1. 使用 [Zadig](https://zadig.akeo.ie/) 安装 WinUSB 驱动
-    - 选择目标设备（找不到设备时启用"列出所有设备"）
-    - **警告**：替换鼠标/键盘驱动会导致输入失效
-2. 使用后通过设备管理器回滚驱动：
-    - `Win+X` → 设备管理器 → 选择设备 → 回滚驱动程序
+1. Use [Zadig](https://zadig.akeo.ie/) to install the WinUSB driver
+    - Select target device (enable "List all devices" when device not found)
+    - **WARNING**: Replacing the mouse/keyboard driver will cause input failure
+2. After use, roll back the driver through the device manager:
+    - `Win+X` → Device Manager → Select Device → Roll Back Driver
 
-对于物理设备，推荐使用 [usbipd-win](https://github.com/dorssel/usbipd-win) ，
-该项目使用VBoxUSB从驱动层面实现上述功能
-本项目更适合在 Windows 实现**虚拟 USB 设备**
+For physical devices, it is recommended to use [usbipd-win](https://github.com/dorssel/usbipd-win),
+That project implements the above functionality at the driver level using VBoxUSB
+This project is more suitable for realizing **virtual USB device** in Windows
 
 ---
 
-## 贡献指南
+## Contribution Guide
 
-### 代码说明
+### Code description
 
-> 📝 **语言说明**：公开 API 文档（doxygen）和运行时消息使用**英语**。内部实现注释可使用**中文或英语**——这是项目中仅允许的两种语言，其他语言的 PR 不予接受。
+> 📝 **Language policy**: Public API documentation (doxygen) and runtime messages use **English**. Internal implementation comments may use **Chinese or English** — these are the project's only permitted languages; PRs in other languages are not accepted.
 
-### 分支工作流
+### Branch workflow
 
-本项目采用单 main 分支工作流：
+This project uses a single main branch workflow:
 
-- 修复和小改动直接提交到 main
-- 较大的或实验性改动在独立分支开发，完成后合并回 main
-- 外部贡献者：fork 本仓库并针对 main 提交 PR
-- 发布版本：更新 CMakeLists.txt 中的版本号并提交推送，然后推送 v* tag，CI 自动构建并发布包
+- Fixes and minor changes are committed directly to main
+- Larger or experimental changes are developed in a separate branch and merged back into main after completion
+- External contributor: fork this repository and submit a PR for main
+- Releases: update the version in CMakeLists.txt, commit and push, then push a v* tag; CI automatically builds and publishes packages
 
 ---
 
-## 许可证
+## License
 
-本项目使用 [LGPLv3](LICENSE) 许可证。
+This project uses the [LGPLv3](LICENSE) license.
 
-> **必须署名**：无论以任意形式使用本库——包括源码引用、动态/静态链接、修改后的
-> 衍生作品，以及在任意产品或服务中分发——都**必须**在醒目位置（如产品的"关于/
-> 致谢"页面或文档中）明确标识使用了本库：
+> **Attribution required**: Any use of this library — including source-code inclusion, dynamic/static linking, modified
+> derivative works, and distribution in any product or service — **must** clearly identify its use in a prominent location (such as the product's "About/
+> Acknowledgments" page or documentation):
 >
 > ```text
-> 本产品使用了 usbipdcpp（https://github.com/yunsmall/usbipdcpp），遵循 LGPLv3 许可证。
+> This product uses usbipdcpp (https://github.com/yunsmall/usbipdcpp) and follows the LGPLv3 license.
 > ```
 
-usbipdcpp 是我业余时间一个人用爱发电维护的项目。对这样的库来说，署名往往是使用者
-知道它存在的主要途径——这也是上面这条要求的意义所在。
+usbipdcpp is a project I maintain alone in my spare time as a labor of love. For a library like this, attribution is often the main way users
+learn that it exists — that is the purpose of the requirement above.
 
-修改本库代码后如需以闭源方式分发，请联系：yun_small@163.com
-
----
-
-## 谁在使用 usbipdcpp
-
-- [moonlight-qt](https://github.com/qiin2333/moonlight-qt) —— macOS 端 USB 转发 helper
-  （`moonlight-usbd`，随 macOS 版一起打包）
-- [moonlight-vplus](https://github.com/qiin2333/moonlight-vplus) —— Android 端 USB/IP
-  导出后端（`usbip-backend`）
-
-你也用 usbipdcpp 做了东西？欢迎提 PR 在这里加一行——记得按[许可证](#许可证)一节显示署名。
+For closed-source distribution after modifying this library's code, please contact: yun_small@163.com
 
 ---
 
-## 致谢
+## Who is using usbipdcpp
 
-本项目受益于以下开源项目：
+- [moonlight-qt](https://github.com/qiin2333/moonlight-qt) —— USB forwarding helper on macOS
+  (`moonlight-usbd`, packaged with macOS version)
+- [moonlight-vplus](https://github.com/qiin2333/moonlight-vplus) —— Android USB/IP
+  export backend (`usbip-backend`)
+
+Have you built something with usbipdcpp too? Submit a PR to add a line here — remember to provide attribution as described in the [License](#license) section.
+
+---
+
+## Acknowledgments
+
+This project benefits from the following open source projects:
 
 - [usbipd-libusb](https://github.com/raydudu/usbipd-libusb)
 - [usbip](https://github.com/jiegec/usbip)

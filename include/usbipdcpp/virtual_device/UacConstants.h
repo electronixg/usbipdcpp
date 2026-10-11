@@ -3,7 +3,7 @@
 #include <bit>
 #include <cstdint>
 
-// 通用类请求码（SET_CUR/GET_CUR 等）和类特定描述符类型（CS_INTERFACE 等）
+// general class request code (SET_CUR/GET_CUR, etc.) and class-specific descriptor type (CS_INTERFACE, etc.)
 #include "usbipdcpp/type.h"
 #include "usbipdcpp/utils/utils.h"
 #include "usbipdcpp/virtual_device/UsbClassConstants.h"
@@ -29,12 +29,12 @@ constexpr std::uint8_t AS_DESC_UNDEFINED = 0x00;
 constexpr std::uint8_t AS_DESC_GENERAL = 0x01;
 constexpr std::uint8_t AS_DESC_FORMAT_TYPE = 0x02;
 
-// ==================== AS 类特定端点描述符 ====================
-// Linux snd-usb-audio 依赖 bmAttributes 的 SamplingFreqControl 位判断是否
-// 支持采样率协商；缺失时驱动跳过 SET_CUR 直接按请求速率开流
+// ==================== AS class-specific endpoint descriptor ====================
+// Linux snd-usb-audio relies on the SamplingFreqControl bit of bmAttributes to determine whether
+// supports sampling rate negotiation; if missing, the driver skips SET_CUR and directly opens the stream at the requested rate.
 constexpr std::uint8_t AS_EP_DESC_GENERAL = 0x01; // bDescriptorSubtype: EP_GENERAL
 constexpr std::uint8_t AS_EP_ATTR_SAMPLING_FREQ = 0x01; // bmAttributes: SamplingFreqControl
-constexpr std::uint8_t AS_EP_DESC_GENERAL_LEN = 7; // 类特定 ISO 音频数据端点描述符
+constexpr std::uint8_t AS_EP_DESC_GENERAL_LEN = 7; // class-specific ISO audio data endpoint descriptor
 
 // ==================== Terminal Types ====================
 constexpr std::uint16_t TT_USB_STREAMING = 0x0101;
@@ -46,7 +46,7 @@ constexpr std::uint16_t CHANNEL_CONFIG_MONO = 0x0004; // LEFT_FRONT
 constexpr std::uint16_t CHANNEL_CONFIG_STEREO = 0x0003; // LEFT_FRONT | RIGHT_FRONT
 
 // ==================== Entity IDs ====================
-// 前缀 UAC_ 避免与 UvcConstants.h 中的 ENTITY_* 常量重名
+// prefix UAC_ to avoid duplicate names with ENTITY_* constants in UvcConstants.h
 constexpr std::uint8_t UAC_ENTITY_INPUT_TERMINAL = 0x01;
 constexpr std::uint8_t UAC_ENTITY_FEATURE_UNIT = 0x02;
 constexpr std::uint8_t UAC_ENTITY_OUTPUT_TERMINAL = 0x03;
@@ -60,33 +60,33 @@ constexpr std::uint8_t FU_VOLUME_CONTROL = 0x02;
 constexpr std::uint8_t AS_CONTROL_UNDEFINED = 0x00;
 constexpr std::uint8_t AS_SAMPLING_FREQ_CONTROL = 0x01;
 
-// ==================== UAC1 状态字（AC 接口中断端点）====================
-// 对齐内核 include/uapi/linux/usb/audio.h 的 UAC1_STATUS_TYPE_*：状态字 2 字节
-// （bStatusType + bOriginator），FU 控制变化时经 AC 中断端点推送（audio_notify）
+// ==================== UAC1 status word (AC interface interrupt endpoint) ====================
+// UAC1_STATUS_TYPE_* of aligned kernel include/uapi/linux/usb/audio.h: status word 2 bytes
+// (bStatusType + bOriginator), push via AC interrupt endpoint when FU control changes (audio_notify)
 constexpr std::uint8_t UAC1_STATUS_TYPE_ORIG_AUDIO_CONTROL_IF = 0x00;
 constexpr std::uint8_t UAC1_STATUS_TYPE_IRQ_PENDING = 0x01;
 
-// ==================== 音频格式常量 ====================
+// ==================== Audio format constants ====================
 constexpr std::uint16_t AUDIO_FORMAT_PCM = 0x0001; // wFormatTag: PCM
 
-// ==================== 描述符尺寸常量 ====================
+// ==================== descriptor size constant ====================
 constexpr std::uint8_t AC_HEADER_LEN = 9;
 constexpr std::uint8_t AC_INPUT_TERMINAL_LEN = 12;
 constexpr std::uint8_t AC_OUTPUT_TERMINAL_LEN = 9;
-// Feature Unit 固定字节数：bLength..bControlSize 共 6 字节 + 末尾 iFeature 1 字节。
-// 总长 = 固定 7 + bmaControls 字节数，其中 bmaControls 字节数 = 声道数 + 1（master + 每个逻辑通道）
+// Feature Unit Fixed number of bytes: bLength..bControlSize total 6 bytes + end iFeature 1 bytes.
+// total length = fixed 7 + bmaControls bytes, where bmaControls bytes = number of channels + 1 (master + each logical channel)
 constexpr std::uint8_t AC_FEATURE_UNIT_FIXED_LEN = 7;
 constexpr std::uint8_t AS_GENERAL_LEN = 7;
-constexpr std::uint8_t AS_FORMAT_TYPE_I_BASE_LEN = 8; // bLength..bSamFreqType 共 8 字节
-constexpr std::uint8_t AS_SAMFREQ_ENTRY_LEN = 3; // 每个采样率占 3 字节（tSamFreq）
+constexpr std::uint8_t AS_FORMAT_TYPE_I_BASE_LEN = 8; // bLength..bSamFreqType total 8 bytes
+constexpr std::uint8_t AS_SAMFREQ_ENTRY_LEN = 3; // Each sampling rate occupies 3 bytes (tSamFreq)
 
-// ==================== 固定长度描述符结构体 ====================
-// UAC 1.0 描述符长度由规范硬性规定，用 packed 结构体表示，
-// static_assert 校验 sizeof 防止字段增删导致长度偏离规范。
-// append_to 按字段序列化（多字节字段自动转小端），与平台字节序无关。
+// ==================== Fixed length descriptor structure ====================
+// UAC 1.0 descriptor length is rigidly specified by the specification and is represented by a packed structure.
+// static_assert Verification sizeof prevents the addition and deletion of fields from causing the length to deviate from the specification.
+// append_to is serialized by field (multi-byte fields are automatically converted to little-endian), regardless of platform byte order.
 
 #pragma pack(push, 1)
-/// AC Header 描述符（UAC 1.0 Table 4-2，单 AS 接口固定 9 字节）
+/// AC Header descriptor (UAC 1.0 Table 4-2, single AS interface fixed 9 bytes)
 struct AcHeaderDesc {
     std::uint8_t bLength;
     std::uint8_t bDescriptorType;
@@ -101,9 +101,9 @@ struct AcHeaderDesc {
                             baInterfaceNr);
     }
 };
-static_assert(sizeof(AcHeaderDesc) == AC_HEADER_LEN, "AC Header 描述符必须为 9 字节");
+static_assert(sizeof(AcHeaderDesc) == AC_HEADER_LEN, "AC Header descriptor must be 9 bytes");
 
-/// Input Terminal 描述符（UAC 1.0 Table 4-3，固定 12 字节）
+/// Input Terminal descriptor (UAC 1.0 Table 4-3, fixed 12 bytes)
 struct AcInputTerminalDesc {
     std::uint8_t bLength;
     std::uint8_t bDescriptorType;
@@ -121,9 +121,9 @@ struct AcInputTerminalDesc {
                             bNrChannels, wChannelConfig, iChannelNames, iTerminal);
     }
 };
-static_assert(sizeof(AcInputTerminalDesc) == AC_INPUT_TERMINAL_LEN, "Input Terminal 描述符必须为 12 字节");
+static_assert(sizeof(AcInputTerminalDesc) == AC_INPUT_TERMINAL_LEN, "Input Terminal descriptor must be 12 bytes");
 
-/// Output Terminal 描述符（UAC 1.0 Table 4-4，固定 9 字节）
+/// Output Terminal descriptor (UAC 1.0 Table 4-4, fixed 9 bytes)
 struct AcOutputTerminalDesc {
     std::uint8_t bLength;
     std::uint8_t bDescriptorType;
@@ -139,9 +139,9 @@ struct AcOutputTerminalDesc {
                             bSourceID, iTerminal);
     }
 };
-static_assert(sizeof(AcOutputTerminalDesc) == AC_OUTPUT_TERMINAL_LEN, "Output Terminal 描述符必须为 9 字节");
+static_assert(sizeof(AcOutputTerminalDesc) == AC_OUTPUT_TERMINAL_LEN, "Output Terminal descriptor must be 9 bytes");
 
-/// Feature Unit 描述符固定头部（UAC 1.0 Table 4-7，bLength..bControlSize 共 6 字节）
+/// Feature Unit descriptor fixed header (UAC 1.0 Table 4-7, bLength..bControlSize total 6 bytes)
 struct AcFeatureUnitHead {
     std::uint8_t bLength;
     std::uint8_t bDescriptorType;
@@ -150,7 +150,7 @@ struct AcFeatureUnitHead {
     std::uint8_t bSourceID;
     std::uint8_t bControlSize;
 
-    /// 追加完整 Feature Unit 描述符：固定头 + bmaControls[ch+1]（所有声道共享同一组控制）+ iFeature
+    /// Add complete Feature Unit descriptor: fixed head + bmaControls[ch+1] (all channels share the same set of controls) + iFeature
     void append_to(data_type &d, std::uint8_t bma_controls, std::uint8_t channels) const {
         vector_append_to_le(d, bLength, bDescriptorType, bDescriptorSubtype, bUnitID, bSourceID, bControlSize);
         for (int i = 0; i < channels + 1; ++i)
@@ -158,9 +158,9 @@ struct AcFeatureUnitHead {
         d.push_back(0x00); // iFeature
     }
 };
-static_assert(sizeof(AcFeatureUnitHead) == 6, "Feature Unit 固定头部必须为 6 字节");
+static_assert(sizeof(AcFeatureUnitHead) == 6, "Feature Unit fixed header must be 6 bytes");
 
-/// AS General 描述符（UAC 1.0 Table 4-19，固定 7 字节）
+/// AS General descriptor (UAC 1.0 Table 4-19, fixed 7 bytes)
 struct AsGeneralDesc {
     std::uint8_t bLength;
     std::uint8_t bDescriptorType;
@@ -173,9 +173,9 @@ struct AsGeneralDesc {
         vector_append_to_le(d, bLength, bDescriptorType, bDescriptorSubtype, bTerminalLink, bDelay, wFormatTag);
     }
 };
-static_assert(sizeof(AsGeneralDesc) == AS_GENERAL_LEN, "AS General 描述符必须为 7 字节");
+static_assert(sizeof(AsGeneralDesc) == AS_GENERAL_LEN, "AS General descriptor must be 7 bytes");
 
-/// Format Type I 描述符固定头部（bLength..bSamFreqType 共 8 字节）
+/// Format Type I descriptor fixed header (bLength..bSamFreqType total 8 bytes)
 struct AsFormatTypeIHead {
     std::uint8_t bLength;
     std::uint8_t bDescriptorType;
@@ -186,9 +186,9 @@ struct AsFormatTypeIHead {
     std::uint8_t bBitResolution;
     std::uint8_t bSamFreqType;
 
-    /// 追加完整 Format Type I 描述符：固定头 + tSamFreq[3×n]（每项为 24 位小端）
+    /// Append complete Format Type I descriptor: fixed header + tSamFreq[3×n] (each item is 24 bit little-endian)
     void append_to(data_type &d, const std::vector<std::uint32_t> &rates) const {
-        // 一次 reserve 全部可变部分，避免循环内反复扩容
+        // reserves all variable parts at one time to avoid repeated expansion in the loop
         d.reserve(d.size() + sizeof(AsFormatTypeIHead) + rates.size() * AS_SAMFREQ_ENTRY_LEN);
         vector_append_to_le(d, bLength, bDescriptorType, bDescriptorSubtype, bFormatType, bNrChannels, bSubframeSize,
                             bBitResolution, bSamFreqType);
@@ -198,9 +198,9 @@ struct AsFormatTypeIHead {
         }
     }
 };
-static_assert(sizeof(AsFormatTypeIHead) == AS_FORMAT_TYPE_I_BASE_LEN, "Format Type I 固定头部必须为 8 字节");
+static_assert(sizeof(AsFormatTypeIHead) == AS_FORMAT_TYPE_I_BASE_LEN, "Format Type I fixed header must be 8 bytes");
 
-/// EP_GENERAL 类特定端点描述符（UAC 1.0 Table 4-21，固定 7 字节）
+/// EP_GENERAL class-specific endpoint descriptor (UAC 1.0 Table 4-21, fixed 7 bytes)
 struct AsEpGeneralDesc {
     std::uint8_t bLength;
     std::uint8_t bDescriptorType;
@@ -213,10 +213,10 @@ struct AsEpGeneralDesc {
         vector_append_to_le(d, bLength, bDescriptorType, bDescriptorSubtype, bmAttributes, bLockDelayUnits, wLockDelay);
     }
 };
-static_assert(sizeof(AsEpGeneralDesc) == AS_EP_DESC_GENERAL_LEN, "EP_GENERAL 端点描述符必须为 7 字节");
+static_assert(sizeof(AsEpGeneralDesc) == AS_EP_DESC_GENERAL_LEN, "EP_GENERAL endpoint descriptor must be 7 bytes");
 #pragma pack(pop)
 
-// ==================== UAC 版本 ====================
+// ==================== UAC version ====================
 constexpr std::uint16_t UAC_BCD_1_00 = 0x0100;
 
 } // namespace usbipdcpp

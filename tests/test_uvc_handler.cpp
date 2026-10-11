@@ -1,6 +1,6 @@
-// UVC 视频流接口（VS）数据面测试：iso IN 取帧拆包、帧时钟空包门控、
-// 流状态（SET_INTERFACE + VS_COMMIT）控制。控制面（描述符、PROBE 协商）
-// 不在本文件
+// UVC video-streaming interface (VS) data-plane tests: iso IN frame retrieval/packetization, frame-clock empty-packet gating,
+// stream-state (SET_INTERFACE + VS_COMMIT) control. Control plane (descriptors, PROBE negotiation)
+// outside this file
 
 #include <gtest/gtest.h>
 
@@ -20,8 +20,8 @@ using namespace usbipdcpp::test;
 
 namespace {
 
-// 固定帧大小的测试视频源（YUY2 640x480，帧间隔 1/30s = 333333×100ns）。
-// frame_size 可配（测跨 URB 大帧），fail_next 模拟取帧失败
+// Test video source with fixed frame size (YUY2 640x480, frame interval 1/30s = 333333×100ns).
+// frame_size configurable (test large frames across URBs); fail_next simulates frame retrieval failure
 struct StubSource : VideoSource {
     explicit StubSource(std::size_t frame_size = 64) : data(frame_size) {
         for (std::size_t i = 0; i < data.size(); i++) {
@@ -72,8 +72,8 @@ struct StubSource : VideoSource {
 
 struct UvcTestEnv {
     StringPool pool;
-    // 传输分配器：必须声明在 stub 之前（成员逆序析构，op 后死）——
-    // submits 里的 RetSubmit 持 TransferHandle，析构时要用 op 释放
+    // Transfer allocator: must be declared before stub (members destroyed in reverse order; op dies later)—
+    // RetSubmit entries in submits hold TransferHandle; destruction uses op to release it
     GenericTransferOperator op;
     UsbInterface intf{.interface_class = 0x0E, .interface_subclass = 0x02, .interface_protocol = 0x00};
     StubSource *source = nullptr;
@@ -86,24 +86,24 @@ struct UvcTestEnv {
         handler.on_new_connection(stub, ec);
     }
 
-    // 走 Linux 驱动的开流顺序：SET_INTERFACE(1) → VS_COMMIT(SET_CUR) →
-    // SET_INTERFACE(1)（第二次才真正 streaming）
+    // Follow Linux driver's stream-start order: SET_INTERFACE(1) → VS_COMMIT(SET_CUR) →
+    // SET_INTERFACE(1) (streaming actually starts on second call)
     void start_streaming() {
         std::uint32_t status = 0;
         handler.request_set_interface(1, &status);
         EXPECT_EQ(status, 0u);
 
-        // VS_COMMIT 数据：bFormatIndex=1, bFrameIndex=1, dwFrameInterval=333333
+        // VS_COMMIT data: bFormatIndex=1, bFrameIndex=1, dwFrameInterval=333333
         data_type commit(26, 0);
         commit[2] = 1;
         commit[3] = 1;
-        commit[4] = 0x15; // 333333 = 0x00051615 小端
+        commit[4] = 0x15; // 333333 = 0x00051615 little-endian
         commit[5] = 0x16;
         commit[6] = 0x05;
         const SetupPacket setup{
                 .request_type = 0x21, // Class | Interface | OUT
                 .request = 0x01,      // SET_CUR
-                .value = static_cast<std::uint16_t>(VS_COMMIT_CONTROL << 8), // wValue 高字节 = 控制选择子
+                .value = static_cast<std::uint16_t>(VS_COMMIT_CONTROL << 8), // wValue high byte = control selector
                 .index = 0,
                 .length = 26,
         };
@@ -117,7 +117,7 @@ struct UvcTestEnv {
         EXPECT_EQ(status, 0u);
     }
 
-    // 发一个 iso IN URB（默认 4 包 × 512 字节）
+    // Send one iso IN URB (default 4 packets × 512 bytes)
     void deliver_iso_in(std::uint32_t seqnum, int num_packets = 4) {
         auto submit = make_cmd_submit(op, seqnum, 0x01, UsbIpDirection::In, num_packets * 512, {}, {}, num_packets);
         auto *trx = GenericTransfer::from_handle(submit.transfer.get());
@@ -137,7 +137,7 @@ struct UvcTestEnv {
 } // namespace
 
 TEST(TestUvcHandler, IsoInBeforeCommitStalls) {
-    // 未开流（未 SET_INTERFACE / 未 COMMIT）时 iso IN 回 EPIPE
+    // Before streaming (no SET_INTERFACE / no COMMIT), iso IN returns EPIPE
     UvcTestEnv env;
 
     env.deliver_iso_in(2);
@@ -149,14 +149,14 @@ TEST(TestUvcHandler, IsoInBeforeCommitStalls) {
 }
 
 TEST(TestUvcHandler, IsoInServesFrameWithHeaders) {
-    // 开流后 iso IN 从源取帧拆包：每包 2 字节 payload header + 数据，
-    // 首包带 FID 位、末包带 EOF 位（单包传完整帧），iso 描述符 status 清零
+    // After streaming starts, iso IN retrieves and packetizes source frame: each packet has 2-byte payload header + data,
+    // first packet has FID bit, last has EOF bit (whole frame in one packet); iso descriptor status cleared
     UvcTestEnv env;
     env.start_streaming();
 
     env.deliver_iso_in(2);
 
-    // 应答：seqnum 2，总发送 = 2 字节 header + 64 字节帧
+    // Response: seqnum 2, total sent = 2-byte header + 64-byte frame
     const auto *ret = &env.stub.submits.back();
     ASSERT_EQ(ret->header.seqnum, 2u);
     EXPECT_EQ(ret->status, 0u);
@@ -165,9 +165,9 @@ TEST(TestUvcHandler, IsoInServesFrameWithHeaders) {
 
     auto *trx = GenericTransfer::from_handle(ret->transfer.get());
     ASSERT_EQ(trx->iso_descriptors.size(), 4u);
-    // 第一包：header(2) + 全部帧数据，FID(0x01) + EOF(0x80)
+    // First packet: header(2) + entire frame data, FID(0x01) + EOF(0x80)
     EXPECT_EQ(trx->iso_descriptors[0].actual_length, 66u);
-    EXPECT_EQ(trx->iso_descriptors[0].status, 0); // 初始 -EXDEV，已清零
+    EXPECT_EQ(trx->iso_descriptors[0].status, 0); // Initially -EXDEV, now cleared
     EXPECT_EQ(trx->data[0], UVC_PAYLOAD_HEADER_SIZE);
     EXPECT_EQ(trx->data[1], UVC_PAYLOAD_HEADER_FID | UVC_PAYLOAD_HEADER_EOF);
     data_type expected_frame(64);
@@ -175,7 +175,7 @@ TEST(TestUvcHandler, IsoInServesFrameWithHeaders) {
         expected_frame[i] = static_cast<std::uint8_t>(i);
     }
     EXPECT_EQ(data_type(trx->data.begin() + UVC_PAYLOAD_HEADER_SIZE, trx->data.begin() + 66), expected_frame);
-    // 其余包无数据
+    // Other packets have no data
     for (int i = 1; i < 4; i++) {
         EXPECT_EQ(trx->iso_descriptors[i].actual_length, 0u);
         EXPECT_EQ(trx->iso_descriptors[i].status, 0);
@@ -183,42 +183,42 @@ TEST(TestUvcHandler, IsoInServesFrameWithHeaders) {
 }
 
 TEST(TestUvcHandler, FrameIntervalGateEmitsEmptyPacket) {
-    // 第一帧传完立即再发 iso IN：帧间隔（33ms）未到 → 空包（actual_length=0），
-    // 避免主机拉得快时快放
+    // Immediately issue another iso IN after first frame completes: frame interval (33ms) not elapsed → empty packet (actual_length=0),
+    // avoiding accelerated playback when host pulls quickly
     UvcTestEnv env;
     env.start_streaming();
 
-    env.deliver_iso_in(2); // 传完第一帧
-    env.deliver_iso_in(3); // 立即第二帧：帧间隔未到
+    env.deliver_iso_in(2); // First frame sent
+    env.deliver_iso_in(3); // Second frame immediately: frame interval not elapsed
 
     ASSERT_GE(env.stub.submits.size(), 2u);
     const auto *ret = &env.stub.submits.back();
     ASSERT_EQ(ret->header.seqnum, 3u);
     EXPECT_EQ(ret->status, 0u);
-    EXPECT_EQ(ret->actual_length, 0u); // 空包
+    EXPECT_EQ(ret->actual_length, 0u); // Empty packet
 }
 
 TEST(TestUvcHandler, LargeFrameSpansMultipleUrbs) {
-    // 大帧（3000 字节）一 URB 装不下：跨多个 URB 续传（frame_offset_ 累积），
-    // 帧时钟检查在帧未传完时跳过，EOF 只出现在最后一包的末段，各 URB 数据
-    // 拼接后等于整帧
+    // Large frame (3000 bytes) does not fit one URB: continue across multiple URBs (accumulate frame_offset_),
+    // skip frame-clock check while frame incomplete; EOF appears only in final segment of last packet; data from URBs
+    // concatenates to entire frame
     UvcTestEnv env(3000);
     env.start_streaming();
 
-    // 2 包 URB 容量 = 2×510 = 1020 字节/次；3000 = 1020 + 1020 + 960
+    // 2-packet URB capacity = 2×510 = 1020 bytes/operation; 3000 = 1020 + 1020 + 960
     env.deliver_iso_in(2, 2);
     env.deliver_iso_in(3, 2);
     env.deliver_iso_in(4, 2);
 
-    // 三个 URB 的数据按序拼接 = 整帧
+    // Data from three URBs concatenated in order = entire frame
     data_type assembled;
     std::size_t eof_found_at = 0;
     for (std::uint32_t seq : {2u, 3u, 4u}) {
-        const auto *ret = &env.stub.submits[seq - 1]; // submits[0] 是 commit ack
+        const auto *ret = &env.stub.submits[seq - 1]; // submits[0] is commit ack
         ASSERT_EQ(ret->header.seqnum, seq);
         EXPECT_EQ(ret->status, 0u);
         auto *trx = GenericTransfer::from_handle(ret->transfer.get());
-        // 两包各 2 字节头 + 数据
+        // Two packets, each with 2-byte header + data
         ASSERT_EQ(trx->iso_descriptors.size(), 2u);
         for (auto &iso : trx->iso_descriptors) {
             ASSERT_GE(iso.actual_length, UVC_PAYLOAD_HEADER_SIZE);
@@ -231,7 +231,7 @@ TEST(TestUvcHandler, LargeFrameSpansMultipleUrbs) {
         }
     }
     EXPECT_EQ(assembled.size(), 3000u);
-    EXPECT_EQ(eof_found_at, 3000u); // EOF 只在整帧末尾
+    EXPECT_EQ(eof_found_at, 3000u); // EOF only at whole-frame end
 
     data_type expected(3000);
     for (std::size_t i = 0; i < expected.size(); i++) {
@@ -241,7 +241,7 @@ TEST(TestUvcHandler, LargeFrameSpansMultipleUrbs) {
 }
 
 TEST(TestUvcHandler, GetFrameFailureStalls) {
-    // 源取帧失败（get_frame 返回 false）：iso IN 回 EPIPE（驱动重试）
+    // Source frame retrieval fails (get_frame returns false): iso IN returns EPIPE (driver retries)
     UvcTestEnv env;
     env.source->fail_next = true;
     env.start_streaming();
@@ -254,15 +254,15 @@ TEST(TestUvcHandler, GetFrameFailureStalls) {
 }
 
 TEST(TestUvcHandler, ShortCommitFallsBackToDefaults) {
-    // VS_COMMIT 数据不足 26 字节（最小解析长度）：不拒绝（容错不完整的主机
-    // 提交），格式保持默认（probe_data_ 初值），流照常可开
+    // VS_COMMIT data shorter than 26 bytes (minimum parsing length): do not reject (tolerate incomplete host
+    // submissions); retain default format (probe_data_ initial value), streaming still starts normally
     UvcTestEnv env;
 
     std::uint32_t status = 0;
     env.handler.request_set_interface(1, &status);
     EXPECT_EQ(status, 0u);
 
-    data_type commit(10, 0); // 过短
+    data_type commit(10, 0); // Too short
     const SetupPacket setup{
             .request_type = 0x21,
             .request = 0x01,
@@ -274,12 +274,12 @@ TEST(TestUvcHandler, ShortCommitFallsBackToDefaults) {
             1, UsbEndpoint::get_ep0_in(UsbSpeed::High), 0, 10, setup,
             make_cmd_submit(env.op, 1, 0x00, UsbIpDirection::Out, 10, setup, commit).transfer, env.ec);
     EXPECT_FALSE(env.ec);
-    EXPECT_EQ(env.stub.submits.back().status, 0u); // commit ack 成功
+    EXPECT_EQ(env.stub.submits.back().status, 0u); // commit ack successful
 
     env.handler.request_set_interface(1, &status);
     env.deliver_iso_in(2);
 
-    // 流正常取帧（默认格式）
+    // Stream retrieves frames normally (default format)
     ASSERT_GE(env.stub.submits.size(), 2u);
     EXPECT_EQ(env.stub.submits.back().header.seqnum, 2u);
     EXPECT_EQ(env.stub.submits.back().status, 0u);

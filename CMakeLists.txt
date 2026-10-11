@@ -3,10 +3,10 @@ project(usbipdcpp VERSION 1.0.9)
 
 set(CMAKE_CXX_STANDARD 23)
 
-# find_package 统一 config 优先、Find 模块兜底（CMake 3.15+ 的
-# CMAKE_FIND_PACKAGE_PREFER_CONFIG）：vcpkg/新版依赖导出 *Config.cmake 走
-# config 模式；只有老式布局（无 config、仅 CMake 内置 Find 模块如 FindGTest）
-# 的环境自动落模块模式。因此全项目 find_package 一律不写 CONFIG/MODULE 关键字
+# Make find_package consistently prefer config mode, with Find modules as the fallback (CMake 3.15+
+# CMAKE_FIND_PACKAGE_PREFER_CONFIG): vcpkg/newer dependencies exporting *Config.cmake use
+# config mode; only environments with legacy layouts (no config, only built-in CMake Find modules such as FindGTest)
+# automatically fall back to module mode. Therefore, all find_package calls in the project omit the CONFIG/MODULE keywords
 set(CMAKE_FIND_PACKAGE_PREFER_CONFIG TRUE)
 
 include(GNUInstallDirs)
@@ -129,8 +129,8 @@ file(GLOB VIRTUAL_DEVICE_VIDEO_SOURCES_SRC_FILES CONFIGURE_DEPENDS src/virtual_d
 file(GLOB VIRTUAL_DEVICE_AUDIO_SOURCES_SRC_FILES CONFIGURE_DEPENDS src/virtual_device/audio_sources/*.cpp)
 file(GLOB VIRTUAL_DEVICE_AUDIO_SINKS_SRC_FILES CONFIGURE_DEPENDS src/virtual_device/audio_sinks/*.cpp)
 file(GLOB VIRTUAL_DEVICE_NETWORK_BACKENDS_SRC_FILES CONFIGURE_DEPENDS src/virtual_device/network_backends/*.cpp)
-# TunBackend 依赖 Linux 的 /dev/net/tun + TUNSETIFF ioctl（Android/termux 内核同样
-# 提供），macOS 无此接口（utun 是三层设备且无公开 TAP API），不编译
+# TunBackend relies on Linux’s /dev/net/tun + TUNSETIFF ioctl (Android/termux kernel also
+# provides these), but macOS lacks this interface (utun is a layer-3 device with no public TAP API), so do not compile it there
 list(FILTER VIRTUAL_DEVICE_NETWORK_BACKENDS_SRC_FILES EXCLUDE REGEX ".*TunBackend\\.cpp$")
 if (UNIX AND NOT APPLE)
     list(APPEND VIRTUAL_DEVICE_NETWORK_BACKENDS_SRC_FILES
@@ -138,11 +138,11 @@ if (UNIX AND NOT APPLE)
 endif ()
 file(GLOB LIBUSB_SRC_FILES CONFIGURE_DEPENDS src/LibusbHandler/*.cpp)
 
-# 控制编译动态库还是静态库
+# controls whether to compile a dynamic library or a static library
 set(LIB_TYPE STATIC)
 if (USBIPDCPP_BUILD_SHARED_LIBS)
     set(LIB_TYPE SHARED)
-    # 表明这是动态库，add_compile_definitions 定义的宏不会传播到使用者
+    # indicates that this is a dynamic library, and the macros defined by add_compile_definitions will not be propagated to users.
     add_compile_definitions(USBIPDCPP_EXPORTS)
 
     set(CMAKE_BUILD_RPATH_USE_ORIGIN ON)
@@ -160,9 +160,9 @@ if (USBIPDCPP_BUILD_SHARED_LIBS)
     endif ()
 endif ()
 
-# 核心库（不含虚拟设备）
+# core library (excluding virtual devices)
 add_library(${PROJECT_NAME} ${LIB_TYPE} ${BASE_SRC_FILES} ${UTILS_SRC_FILES} ${DEVICE_HANDLER_SRC_FILES} ${INTERFACE_HANDLER_SRC_FILES})
-# 链接依赖库
+# link dependent library
 if (USBIPDCPP_USE_PKGCONF_ASIO)
     target_link_libraries(${PROJECT_NAME} PUBLIC PkgConfig::asio)
 else ()
@@ -171,24 +171,24 @@ endif ()
 target_link_libraries(${PROJECT_NAME} PUBLIC spdlog::spdlog)
 target_include_directories(${PROJECT_NAME} PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>" "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
 
-# 设置是否强制延时追踪
+# Set whether to force delayed tracking
 if (USBIPDCPP_FORCE_TRACK_PACKAGE)
     message(STATUS "USBIPDCPP: Force tracking package")
     target_compile_definitions(${PROJECT_NAME} PUBLIC USBIPDCPP_FORCE_TRACK_PACKAGE)
 endif ()
-# 在创建目标后定义 USBIPDCPP_STATIC 宏，设为 PUBLIC 能传播到使用者使用时
+# Define the USBIPDCPP_STATIC macro after creating the target, and set it to PUBLIC to propagate it to users.
 if (NOT USBIPDCPP_BUILD_SHARED_LIBS)
     target_compile_definitions(${PROJECT_NAME} PUBLIC USBIPDCPP_STATIC)
 endif()
-# std::signal 在部分嵌入式平台（如 ESP-IDF）的 libc 只有声明没有实现，链接失败。
-# 默认关闭；不经过本 CMakeLists 的构建系统（如 esp32 的 IDF）直接定义
-# USBIPDCPP_DISABLE_SIGNAL 宏即可，效果等同此选项
+# On some embedded platforms (such as ESP-IDF), libc declares std::signal without implementing it, causing link failures.
+# Disabled by default; build systems that do not use this CMakeLists (such as esp32 IDF) can directly define
+# the USBIPDCPP_DISABLE_SIGNAL macro for the same effect as this option
 option(USBIPDCPP_DISABLE_SIGNAL "Disable std::signal usage (platforms whose libc declares it but has no implementation)" OFF)
 if (USBIPDCPP_DISABLE_SIGNAL)
     target_compile_definitions(${PROJECT_NAME} PUBLIC USBIPDCPP_DISABLE_SIGNAL)
 endif ()
 
-# 虚拟设备库
+# virtual device library
 if (USBIPDCPP_BUILD_VIRTUAL_DEVICE)
     add_library(${PROJECT_NAME}_virtual_device ${LIB_TYPE} ${VIRTUAL_DEVICE_SRC_FILES} ${VIRTUAL_DEVICE_DEVICES_SRC_FILES} ${VIRTUAL_DEVICE_STORAGE_BACKENDS_SRC_FILES} ${VIRTUAL_DEVICE_VIDEO_SOURCES_SRC_FILES} ${VIRTUAL_DEVICE_AUDIO_SOURCES_SRC_FILES} ${VIRTUAL_DEVICE_AUDIO_SINKS_SRC_FILES} ${VIRTUAL_DEVICE_NETWORK_BACKENDS_SRC_FILES})
     set_target_properties(${PROJECT_NAME}_virtual_device PROPERTIES EXPORT_NAME virtual_device)
@@ -207,8 +207,8 @@ if (USBIPDCPP_BUILD_LIBUSB_COMPONENTS)
 endif ()
 
 if (USBIPDCPP_BUILD_TESTS)
-    # 必须在 add_subdirectory 之前调用，否则 examples 等子树不生成
-    # CTestTestfile.cmake，其 gtest_discover_tests 测试不会被 ctest 收录
+    # Must be called before add_subdirectory; otherwise, subtrees such as examples do not generate
+    # CTestTestfile.cmake, and ctest does not include their gtest_discover_tests tests
     enable_testing()
 endif ()
 
@@ -239,7 +239,7 @@ if (IS_TOP_LEVEL)
             FILE ${PROJECT_NAME}Targets.cmake
     )
 
-    # 安装头文件
+    # installation header file
     if (USBIPDCPP_BUILD_VIRTUAL_DEVICE)
         if (USBIPDCPP_BUILD_LIBUSB_COMPONENTS)
             install(DIRECTORY include/${PROJECT_NAME}/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/${PROJECT_NAME})
@@ -314,10 +314,10 @@ if (IS_TOP_LEVEL)
     )
 
     if (WIN32)
-        # 安装构建目录中 vcpkg 依赖 DLL 到 bin 目录
-        # CMAKE_INSTALL_CONFIG_NAME 在 install(CODE) 脚本模式下会设置，
-        # 但 CMAKE_CONFIGURATION_TYPES 不会。同时 glob 根目录和配置子目录，
-        # 兼容单配置生成器（Ninja，DLL 在 build/）和多配置生成器（VS，DLL 在 build/<Config>/）
+        # Install vcpkg dependent DLL in the build directory to the bin directory
+        # CMAKE_INSTALL_CONFIG_NAME will be set in install(CODE) script mode,
+        # but not CMAKE_CONFIGURATION_TYPES. At the same time, glob root directory and configuration subdirectory,
+        # is compatible with single configuration generator (Ninja, DLL in build/) and multi-configuration generator (VS, DLL in build/<Config>/)
         install(CODE "
             file(GLOB dlls
                 \"${CMAKE_BINARY_DIR}/*.dll\"

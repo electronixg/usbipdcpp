@@ -10,24 +10,24 @@ FourierSource::FourierSource(std::vector<FourierHarmonic> harmonics, std::vector
                              std::uint16_t channels, bool normalize) :
     harmonics(std::move(harmonics)), sample_rates(std::move(sample_rates)), channels(channels),
     normalize(normalize) {
-    // 注意：初始化列表已完成 move，函数体内必须用 this-> 访问成员（参数已失效）
-    // 过滤非法项：频率必须为整数 Hz（1 秒循环无缝）；
-    // 幅度/相位非有限值（NaN/Inf）会污染整个输出（sin(NaN) 转整数是未定义行为），直接剔除
+    // Note: the initializer list has already moved the arguments; use this-> to access members in the function body (arguments are no longer valid)
+    // Filter invalid entries: frequencies must be integer Hz (seamless 1-second loop);
+    // nonfinite amplitude/phase (NaN/Inf) corrupts the entire output (converting sin(NaN) to integer is undefined behavior), so remove them directly
     std::erase_if(this->harmonics, [](const FourierHarmonic &h) {
         return h.frequency == 0 || !std::isfinite(h.amplitude) || !std::isfinite(h.phase);
     });
     for (auto &h: this->harmonics) {
-        // 幅度允许负值（反相，等价于相位翻转 π）；|幅度| > 1 的单项超出满幅，
-        // 没有意义（叠加超限由 normalize/削波统一处理）
+        // Negative amplitudes are allowed (inversion, equivalent to a π phase shift); a single term with |amplitude| > 1 exceeds full scale
+        // and is meaningless (superimposed overflow is handled consistently by normalize/clipping)
         h.amplitude = std::clamp(h.amplitude, -1.0, 1.0);
     }
-    // 过滤非法采样率（保留所有正值：UAC 设备支持任意采样率，8kHz 倍数的
-    // 历史限制会让 44100 等非 8kHz 整数倍采样率被静默丢弃，见 SineWaveSource 注释）
+    // Filter invalid sample rates (retain all positive values: UAC devices support arbitrary sample rates; the historical restriction to
+    // multiples of 8kHz silently discarded rates such as 44100 that are not integer multiples of 8kHz; see SineWaveSource comments)
     std::erase_if(this->sample_rates, [](std::uint32_t r) { return r == 0; });
     if (this->sample_rates.empty()) {
         this->sample_rates.push_back(48000);
     }
-    // 首个为初始采样率（用户传入的第一个，不排序——排序会改变初始值）
+    // The first is the initial sample rate (first supplied by the user, without sorting: sorting would change the initial value)
     sample_rate = this->sample_rates.front();
     regenerate();
 }
@@ -67,7 +67,7 @@ bool FourierSource::get_chunk(AudioChunk &chunk) {
 
 void FourierSource::set_normalize(bool normalize) {
     if (this->normalize == normalize) {
-        // 方案未变时跳过重生成（regenerate 生成 1 秒 PCM，无谓调用浪费）
+        // Skip regeneration if the policy has not changed (regenerate produces 1 second of PCM; unnecessary calls are wasteful)
         return;
     }
     this->normalize = normalize;
@@ -75,20 +75,20 @@ void FourierSource::set_normalize(bool normalize) {
 }
 
 void FourierSource::regenerate() {
-    // 1 秒 PCM：各谐波频率为整数 Hz 时恰好包含整周期数，循环播放无缝
+    // 1 second of PCM: integer-Hz harmonic frequencies give exactly whole cycles, ensuring seamless looped playback
     auto total_samples = sample_rate * channels;
     buffer.resize(total_samples * 2);
 
     const double two_pi = 2.0 * std::numbers::pi;
     auto *dst = reinterpret_cast<std::int16_t *>(buffer.data());
-    // 先计算全部采样点的叠加值并记录峰值：峰值超过满幅时，normalize 模式
-    // 整体除以峰值（波形形状不变、不削波），削波模式保持原值交给下方 clamp
+    // First calculate superimposed values for all samples and record the peak; if exceeding full scale, normalize mode
+    // divides all samples by the peak (preserve waveform shape, no clipping); clipping mode leaves values for clamp below
     std::vector<double> samples(sample_rate);
     double peak = 0.0;
     for (std::uint32_t sample = 0; sample < sample_rate; ++sample) {
         double value = 0.0;
         for (auto &h: harmonics) {
-            // y(t) = Σ A_k·sin(2π·f_k·t + φ_k)，各谐波独立初始相位
+            // y(t) = Σ A_k·sin(2π·f_k·t + φ_k), with independent initial phase for each harmonic
             value += h.amplitude *
                      std::sin(two_pi * static_cast<double>(h.frequency) * sample / sample_rate + h.phase);
         }
@@ -97,15 +97,15 @@ void FourierSource::regenerate() {
             peak = std::abs(value);
         }
     }
-    // 仅当峰值超过满幅时才缩放：不超限时保持用户指定的幅度（50% 幅度就是 50% 音量）。
-    // 除以峰值后理论峰值为 1.0，下方 clamp 仅兜底浮点舍入误差
+    // Scale only if the peak exceeds full scale: otherwise retain the user-specified amplitude (50% amplitude means 50% volume).
+    // After division by the peak, the theoretical peak is 1.0; clamp below only guards against floating-point rounding errors
     if (normalize && peak > 1.0) {
         for (auto &s: samples) {
             s /= peak;
         }
     }
     for (std::uint32_t sample = 0; sample < sample_rate; ++sample) {
-        // 裁剪到满幅防溢出（normalize 模式下此时不应触发）
+        // Clip to full scale to prevent overflow (should not trigger here in normalize mode)
         auto clamped = static_cast<std::int16_t>(
                 std::clamp(samples[sample], -1.0, 1.0) * 32767.0);
         for (std::uint16_t ch = 0; ch < channels; ++ch) {

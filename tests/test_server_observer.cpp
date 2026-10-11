@@ -1,6 +1,6 @@
-// ServerObserver 通知机制测试：各事件的触发时机与入参、多观察者、幂等注册、
-// 注销后不再收到、回调抛异常不波及服务器与其他观察者、回调中查询/操作 Server
-// 不死锁（锁外通知的证明）、观察者数量上限
+// ServerObserver notification tests: event timing and arguments, multiple observers, idempotent registration,
+// no notifications after unregistration, callback exceptions affecting neither server nor other observers, querying/operating Server in callbacks
+// without deadlock (proof of notifications outside locks), observer-count limit
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -25,13 +25,13 @@ using namespace usbipdcpp;
 using namespace usbipdcpp::test;
 
 namespace {
-// 记录所有事件的观察者。回调跑在会话/后端线程上，内部加锁
+// Observer recording all events. Callbacks run on session/backend threads, with internal locking
 class RecordingObserver : public ServerObserver {
 public:
     struct Event {
         std::string kind;
         std::uint64_t session_id = 0;
-        std::string text; // started 记 peer，attached/released 记 busid
+        std::string text; // started records peer; attached/released record busid
         DeviceReleaseReason reason = DeviceReleaseReason::ClientDisconnected;
     };
 
@@ -92,9 +92,9 @@ std::size_t count_events(const std::vector<RecordingObserver::Event> &events, co
     });
 }
 
-// 轮询等待观察者收到至少 expected 个指定事件。用于"连接后立刻就断开"的
-// 场景：此时连接可能还在 accept 队列里（session 尚未创建，
-// get_session_count 为 0），wait_sessions_gone 会提前返回而事件还没发出
+// Poll until observer receives at least expected specified events. For "disconnect immediately after connection"
+// scenarios: connection may still be in accept queue (session not created,
+// get_session_count is 0); wait_sessions_gone would return early before event emission
 bool wait_for_event_count(const RecordingObserver &observer, const std::string &kind, std::size_t expected,
                           std::chrono::milliseconds timeout = std::chrono::seconds(5)) {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
@@ -107,8 +107,8 @@ bool wait_for_event_count(const RecordingObserver &observer, const std::string &
     return observer.count(kind) >= expected;
 }
 
-// Server 析构前必须已 stop（契约见 Server.h），否则网络线程仍 joinable 直接
-// terminate。测试中途 ASSERT 失败会提前 return，靠 RAII 保证 stop 一定执行
+// Server must already be stopped before destruction (contract in Server.h); otherwise the still-joinable network thread directly
+// terminates the process. ASSERT failure midway through test returns early; RAII guarantees stop executes
 class ServerStopper {
 public:
     explicit ServerStopper(Server &server) : server(server) {
@@ -125,13 +125,13 @@ private:
     Server &server;
 };
 
-// 每次回调都抛异常的观察者（on_session_started 抛 std::exception，
-// on_device_released 抛非 std::exception，两条 catch 分支都要覆盖）
+// Observer throwing from every callback (on_session_started throws std::exception,
+// on_device_released throws a non-std::exception; cover both catch branches)
 class ThrowingObserver : public ServerObserver {
 public:
     void on_session_started(std::uint64_t, const std::string &) override {
         started_calls.fetch_add(1);
-        throw std::runtime_error("测试异常");
+        throw std::runtime_error("Test exception");
     }
 
     void on_device_released(const std::string &, DeviceReleaseReason) override {
@@ -143,8 +143,8 @@ public:
     std::atomic<int> released_calls{0};
 };
 
-// 在回调里查询 Server 的观察者：通知若在锁内发出，这里必然死锁
-// （devices_mutex / session_list_mutex 都是非递归锁），测试会超时失败
+// Observer querying Server inside callbacks: notifying while holding locks would necessarily deadlock here
+// (devices_mutex / session_list_mutex both nonrecursive); test would fail by timeout
 class QueryingObserver : public ServerObserver {
 public:
     Server *server = nullptr;
@@ -163,8 +163,8 @@ public:
     }
 };
 
-// 收到第一个会话开始事件就注销自己：通知遍历用的是锁内快照，
-// 回调里改注册表（含注销自己）是安全的
+// Unregister itself on first session-start event: notification iteration uses snapshot taken under lock,
+// so modifying registry inside callbacks (including self-unregistration) is safe
 class SelfRemovingObserver : public ServerObserver {
 public:
     Server *server = nullptr;
@@ -176,7 +176,7 @@ public:
     }
 };
 
-// 可标记"已物理移除"的设备级 handler
+// Device-level handler markable as "physically removed"
 class ToggleRemovedDeviceHandler : public SimpleVirtualDeviceHandler {
 public:
     using SimpleVirtualDeviceHandler::SimpleVirtualDeviceHandler;
@@ -188,7 +188,7 @@ public:
     }
 };
 
-// 构造测试用虚拟键盘；removed_flag 非空时设备级 handler 可被标记"已物理移除"
+// Construct test virtual keyboard; nonempty removed_flag permits device-level handler to be marked "physically removed"
 std::shared_ptr<UsbDevice> make_keyboard(StringPool &string_pool,
                                          std::shared_ptr<std::atomic_bool> removed_flag = nullptr,
                                          const std::string &busid = "1-1") {
@@ -239,8 +239,8 @@ std::shared_ptr<UsbDevice> make_keyboard(StringPool &string_pool,
 } // namespace
 
 TEST(TestServerObserver, SessionAndDeviceEventsOnClientDisconnect) {
-    // 完整一轮：连接 → 导入 → 断开。事件顺序：started 最先、ended 最后，
-    // attached / released 居中（导入成功与客户端断开各一次）
+    // Full round: connect → import → disconnect. Event order: started first, ended last,
+    // attached / released between them (once for successful import and client disconnection respectively)
     asio::io_context io;
     StringPool string_pool;
     RecordingObserver observer;
@@ -254,16 +254,16 @@ TEST(TestServerObserver, SessionAndDeviceEventsOnClientDisconnect) {
     ASSERT_TRUE(connect_with_retry(client, server.endpoint()));
     ASSERT_EQ(import_device(client, "1-1"), 0u);
     client.close();
-    // 等事件发完而不是等会话计数：remove_session 是锁内 erase、锁外通知，
-    // get_session_count 归零时 on_session_ended 可能还在发出途中
+    // Wait for events to finish rather than session count: remove_session erases under lock and notifies outside lock;
+    // when get_session_count reaches zero, on_session_ended may still be in progress
     ASSERT_TRUE(wait_for_event_count(observer, "ended", 1));
 
     const auto events = observer.snapshot();
     ASSERT_FALSE(events.empty());
-    // 观察者注册晚于 add_device：收不到 on_device_added，首个事件即会话开始
+    // Observer registered after add_device: no on_device_added; first event is session start
     EXPECT_EQ(events.front().kind, "started");
     EXPECT_NE(events.front().session_id, 0u);
-    EXPECT_FALSE(events.front().text.empty()); // peer 形如 "ip:port"
+    EXPECT_FALSE(events.front().text.empty()); // peer shaped as "ip:port"
 
     const auto *attached = find_event(events, "attached");
     ASSERT_NE(attached, nullptr);
@@ -277,7 +277,7 @@ TEST(TestServerObserver, SessionAndDeviceEventsOnClientDisconnect) {
     EXPECT_EQ(events.back().kind, "ended");
     EXPECT_EQ(events.back().session_id, events.front().session_id);
 
-    // 每个事件各一次，没有重复
+    // Each event exactly once, without duplicates
     EXPECT_EQ(observer.count("started"), 1u);
     EXPECT_EQ(observer.count("attached"), 1u);
     EXPECT_EQ(observer.count("released"), 1u);
@@ -287,7 +287,7 @@ TEST(TestServerObserver, SessionAndDeviceEventsOnClientDisconnect) {
 }
 
 TEST(TestServerObserver, DeviceReleasedReasonDeviceRemoved) {
-    // 传输期间设备被物理拔出，客户端断开释放时归因 DeviceRemoved
+    // Device physically unplugged during transfer; release on client disconnection attributed to DeviceRemoved
     asio::io_context io;
     StringPool string_pool;
     RecordingObserver observer;
@@ -302,7 +302,7 @@ TEST(TestServerObserver, DeviceReleasedReasonDeviceRemoved) {
     ASSERT_TRUE(connect_with_retry(client, server.endpoint()));
     ASSERT_EQ(import_device(client, "1-1"), 0u);
 
-    removed_flag->store(true); // 传输期间设备被物理拔出
+    removed_flag->store(true); // Device physically unplugged during transfer
     client.close();
     ASSERT_TRUE(wait_for_event_count(observer, "ended", 1));
 
@@ -316,7 +316,7 @@ TEST(TestServerObserver, DeviceReleasedReasonDeviceRemoved) {
 }
 
 TEST(TestServerObserver, DeviceReleasedReasonServerStopped) {
-    // 客户端还连着直接 stop()：设备释放归因 ServerStopped
+    // Client still connected; stop() directly: device release attributed to ServerStopped
     asio::io_context io;
     StringPool string_pool;
     RecordingObserver observer;
@@ -330,7 +330,7 @@ TEST(TestServerObserver, DeviceReleasedReasonServerStopped) {
     ASSERT_TRUE(connect_with_retry(client, server.endpoint()));
     ASSERT_EQ(import_device(client, "1-1"), 0u);
 
-    server.stop(); // 不关客户端，走 stop 打断路径
+    server.stop(); // Without closing client, take stop interruption path
 
     const auto events = observer.snapshot();
     const auto *attached = find_event(events, "attached");
@@ -373,7 +373,7 @@ TEST(TestServerObserver, MultipleObserversAllNotified) {
 }
 
 TEST(TestServerObserver, AddObserverIsIdempotent) {
-    // 同一指针注册两次只保留一个，每个事件仍只通知一次
+    // Registering same pointer twice retains only one; each event still notified once
     asio::io_context io;
     StringPool string_pool;
     RecordingObserver observer;
@@ -397,7 +397,7 @@ TEST(TestServerObserver, AddObserverIsIdempotent) {
 }
 
 TEST(TestServerObserver, RemovedObserverStopsReceiving) {
-    // 注销后不再收到任何事件；未注销的观察者不受影响
+    // No further events after unregistration; other registered observers unaffected
     asio::io_context io;
     StringPool string_pool;
     RecordingObserver observer_a;
@@ -414,13 +414,13 @@ TEST(TestServerObserver, RemovedObserverStopsReceiving) {
     ASSERT_EQ(import_device(client, "1-1"), 0u);
 
     server.remove_observer(&observer_a);
-    server.remove_observer(&observer_a); // 重复注销无害
+    server.remove_observer(&observer_a); // Repeated unregistration harmless
 
     client.close();
     ASSERT_TRUE(wait_for_event_count(observer_b, "ended", 1));
 
-    EXPECT_EQ(observer_a.count("started"), 1u); // 注销前的 started 收到过
-    EXPECT_EQ(observer_a.count("ended"), 0u);   // 注销后的 ended 收不到
+    EXPECT_EQ(observer_a.count("started"), 1u); // Received started before unregistration
+    EXPECT_EQ(observer_a.count("ended"), 0u);   // No ended received after unregistration
     EXPECT_EQ(observer_a.count("released"), 0u);
     EXPECT_EQ(observer_b.count("ended"), 1u);
     EXPECT_EQ(observer_b.count("released"), 1u);
@@ -429,7 +429,7 @@ TEST(TestServerObserver, RemovedObserverStopsReceiving) {
 }
 
 TEST(TestServerObserver, CallbackExceptionDoesNotAffectServer) {
-    // 抛异常的观察者既不影响服务器正常服务，也不影响其他观察者的通知
+    // Throwing observer affects neither normal server service nor other observers' notifications
     asio::io_context io;
     StringPool string_pool;
     ThrowingObserver thrower;
@@ -443,7 +443,7 @@ TEST(TestServerObserver, CallbackExceptionDoesNotAffectServer) {
 
     asio::ip::tcp::socket client(io);
     ASSERT_TRUE(connect_with_retry(client, server.endpoint()));
-    ASSERT_EQ(import_device(client, "1-1"), 0u); // 服务不受异常影响
+    ASSERT_EQ(import_device(client, "1-1"), 0u); // Service unaffected by exception
     client.close();
     ASSERT_TRUE(wait_for_event_count(observer, "ended", 1));
 
@@ -454,7 +454,7 @@ TEST(TestServerObserver, CallbackExceptionDoesNotAffectServer) {
     EXPECT_EQ(observer.count("released"), 1u);
     EXPECT_EQ(observer.count("ended"), 1u);
 
-    // 异常之后服务仍然可用：再来一轮完整流程
+    // Service still usable after exception: another full round
     asio::ip::tcp::socket client2(io);
     ASSERT_TRUE(connect_with_retry(client2, server.endpoint()));
     EXPECT_EQ(import_device(client2, "1-1"), 0u);
@@ -466,7 +466,7 @@ TEST(TestServerObserver, CallbackExceptionDoesNotAffectServer) {
 }
 
 TEST(TestServerObserver, CallbackCanQueryServerWithoutDeadlock) {
-    // 通知在锁外发出：回调里可以调 Server 的加锁接口（锁内通知会死锁）
+    // Notifications outside locks: callbacks may call locking Server interfaces (notification under lock would deadlock)
     asio::io_context io;
     StringPool string_pool;
     QueryingObserver observer;
@@ -483,7 +483,7 @@ TEST(TestServerObserver, CallbackCanQueryServerWithoutDeadlock) {
     client.close();
     ASSERT_TRUE(wait_sessions_gone(server));
 
-    EXPECT_EQ(observer.session_count_seen.load(), 1u); // started 时会话已在表里
+    EXPECT_EQ(observer.session_count_seen.load(), 1u); // Session already in table at started
     EXPECT_TRUE(observer.attached_device_bound.load());
     EXPECT_EQ(observer.using_count_seen.load(), 1u);
 
@@ -491,7 +491,7 @@ TEST(TestServerObserver, CallbackCanQueryServerWithoutDeadlock) {
 }
 
 TEST(TestServerObserver, CallbackCanRemoveItself) {
-    // 回调里注销自己：通知遍历用快照，改注册表不影响本次遍历
+    // Self-unregistration in callback: notification iteration uses snapshot; registry modification does not affect current iteration
     asio::io_context io;
     StringPool string_pool;
     SelfRemovingObserver observer;
@@ -509,7 +509,7 @@ TEST(TestServerObserver, CallbackCanRemoveItself) {
     ASSERT_TRUE(wait_sessions_gone(server));
     EXPECT_EQ(observer.started_count.load(), 1);
 
-    // 已注销：第二次连接的 started 收不到
+    // Unregistered: no started for second connection
     asio::ip::tcp::socket client2(io);
     ASSERT_TRUE(connect_with_retry(client2, server.endpoint()));
     client2.close();
@@ -520,8 +520,8 @@ TEST(TestServerObserver, CallbackCanRemoveItself) {
 }
 
 TEST(TestServerObserver, ObserverLimitIgnoresExtraRegistrations) {
-    // 上限 8（与 Server::MAX_OBSERVERS 同步）：超出的注册被忽略，
-    // 已有观察者不受影响
+    // Limit 8 (matching Server::MAX_OBSERVERS): excess registrations ignored,
+    // existing observers unaffected
     constexpr std::size_t kMaxObservers = 8;
     asio::io_context io;
     StringPool string_pool;
@@ -542,19 +542,19 @@ TEST(TestServerObserver, ObserverLimitIgnoresExtraRegistrations) {
     ASSERT_TRUE(wait_for_event_count(*observers[0], "ended", 1));
 
     for (std::size_t i = 0; i < kMaxObservers; ++i) {
-        EXPECT_EQ(observers[i]->count("started"), 1u) << "观察者 " << i;
+        EXPECT_EQ(observers[i]->count("started"), 1u) << "Observer " << i;
     }
-    EXPECT_EQ(observers[kMaxObservers]->count("started"), 0u); // 超限的被忽略
+    EXPECT_EQ(observers[kMaxObservers]->count("started"), 0u); // Excess ignored
 
     server.stop();
 }
 
 TEST(TestServerObserver, NoDeviceEventsWhenNeverImported) {
-    // 连接后不导入就直接断开：没有设备事件（attached 只在真正导入成功时发）。
-    // FIN 断开必定建立会话（内核把 socket 交给 accept，服务器读到 EOF 后
-    // 收尾），会话事件必定发出；RST 则可能在 accept 之前就被内核丢弃
-    // （accept 返回 connection_aborted，服务器不创建会话），RST 分支只等
-    // 可能的会话收尾，不断言会话事件
+    // Connect and disconnect without import: no device events (attached emitted only after actual successful import).
+    // FIN disconnection necessarily establishes session (kernel passes socket to accept; server reads EOF and
+    // cleans up), so session events necessarily emitted; RST may be discarded by kernel before accept
+    // (accept returns connection_aborted; server creates no session); RST branch waits only
+    // for possible session cleanup, without asserting session events
     for (bool use_rst: {false, true}) {
         asio::io_context io;
         StringPool string_pool;
@@ -572,7 +572,7 @@ TEST(TestServerObserver, NoDeviceEventsWhenNeverImported) {
         }
         else {
             client.close();
-            // 等事件而不是等会话计数：连接可能还在 accept 队列里
+            // Wait for events rather than session count: connection may still be in accept queue
             ASSERT_TRUE(wait_for_event_count(observer, "started", 1));
             ASSERT_TRUE(wait_for_event_count(observer, "ended", 1));
             EXPECT_EQ(observer.count("started"), 1u);
@@ -588,8 +588,8 @@ TEST(TestServerObserver, NoDeviceEventsWhenNeverImported) {
 }
 
 TEST(TestServerObserver, FailedImportEmitsNoDeviceEvents) {
-    // 导入不存在的 busid 失败（NoDev）：不发 attached；会话断开时也没有过
-    // 导入，不发 released
+    // Import of nonexistent busid fails (NoDev): no attached; when session disconnects there was no prior
+    // import, so no released
     asio::io_context io;
     StringPool string_pool;
     RecordingObserver observer;
@@ -614,7 +614,7 @@ TEST(TestServerObserver, FailedImportEmitsNoDeviceEvents) {
 }
 
 TEST(TestServerObserver, NullObserverIsIgnored) {
-    // 空指针注册/注销无害，不影响已有观察者
+    // Null-pointer registration/unregistration harmless, existing observers unaffected
     asio::io_context io;
     StringPool string_pool;
     RecordingObserver observer;
@@ -640,7 +640,7 @@ TEST(TestServerObserver, NullObserverIsIgnored) {
 }
 
 TEST(TestServerObserver, ServerRestartKeepsObservers) {
-    // 观察者跨 start/stop 保持注册；stop 时若设备未被导入则不发设备事件
+    // Observers remain registered across start/stop; stopping without imported device emits no device event
     asio::io_context io;
     StringPool string_pool;
     RecordingObserver observer;
@@ -658,7 +658,7 @@ TEST(TestServerObserver, ServerRestartKeepsObservers) {
     server.stop();
     EXPECT_EQ(observer.count("released"), 1u);
 
-    // 重启后观察者仍在：第二轮事件继续送达
+    // Observers still present after restart: second-round events continue arriving
     ASSERT_FALSE(server.start(asio::ip::tcp::endpoint(asio::ip::address_v4::loopback(), 0)));
     asio::ip::tcp::socket client2(io);
     ASSERT_TRUE(connect_with_retry(client2, server.endpoint()));
@@ -671,14 +671,14 @@ TEST(TestServerObserver, ServerRestartKeepsObservers) {
     EXPECT_EQ(observer.count("released"), 2u);
     EXPECT_EQ(observer.count("ended"), 2u);
 
-    // 未导入任何设备就 stop：没有释放发生过，不发设备事件
+    // Stop without any imported device: no release occurred, no device events
     server.stop();
     EXPECT_EQ(observer.count("released"), 2u);
 }
 
 TEST(TestServerObserver, ConcurrentSessionsAllNotified) {
-    // 3 个客户端各自导入一台设备并发活动：事件按会话/设备各自配对，
-    // 会话 id 互不相同、每台设备各自 attached/released 一次
+    // 3 clients each import one device, operating concurrently: events paired by session/device,
+    // session ids distinct, each device attached/released once
     asio::io_context io;
     StringPool string_pool;
     RecordingObserver observer;
@@ -713,7 +713,7 @@ TEST(TestServerObserver, ConcurrentSessionsAllNotified) {
             session_ids.insert(e.session_id);
         }
     }
-    EXPECT_EQ(session_ids.size(), 3u); // 三个会话 id 互不相同
+    EXPECT_EQ(session_ids.size(), 3u); // Three session ids distinct
     for (const auto *busid: {"1-1", "1-2", "1-3"}) {
         EXPECT_EQ(count_events(events, "attached", busid), 1u) << busid;
         EXPECT_EQ(count_events(events, "released", busid), 1u) << busid;
@@ -723,8 +723,8 @@ TEST(TestServerObserver, ConcurrentSessionsAllNotified) {
 }
 
 TEST(TestServerObserver, ReRegisterAfterRemoveWithinLimit) {
-    // 满员时新注册被忽略；注销一个腾出槽位后新注册成功，且被注销者
-    // 不再收到事件（末位顶替不能顶丢其他观察者）
+    // New registration ignored when full; unregistering one frees slot for successful registration, and unregistered observer
+    // receives no further events (replacement at final slot must not lose another observer)
     constexpr std::size_t kMaxObservers = 8;
     asio::io_context io;
     StringPool string_pool;
@@ -738,9 +738,9 @@ TEST(TestServerObserver, ReRegisterAfterRemoveWithinLimit) {
         observers.push_back(std::make_unique<RecordingObserver>());
         server.add_observer(observers.back().get());
     }
-    server.add_observer(&rejected); // 满员，被忽略
+    server.add_observer(&rejected); // Full; ignored
     server.remove_observer(observers[3].get());
-    server.add_observer(&newcomer); // 顶替成功
+    server.add_observer(&newcomer); // Replacement succeeded
     ASSERT_FALSE(server.start(asio::ip::tcp::endpoint(asio::ip::address_v4::loopback(), 0)));
 
     asio::ip::tcp::socket client(io);
@@ -750,21 +750,21 @@ TEST(TestServerObserver, ReRegisterAfterRemoveWithinLimit) {
     ASSERT_TRUE(wait_for_event_count(*observers[0], "ended", 1));
 
     EXPECT_EQ(newcomer.count("started"), 1u);
-    EXPECT_EQ(observers[3]->count("started"), 0u); // 已注销
-    EXPECT_EQ(rejected.count("started"), 0u);      // 满员时被忽略
+    EXPECT_EQ(observers[3]->count("started"), 0u); // Unregistered
+    EXPECT_EQ(rejected.count("started"), 0u);      // Ignored while full
     for (std::size_t i = 0; i < kMaxObservers; ++i) {
         if (i == 3) {
             continue;
         }
-        EXPECT_EQ(observers[i]->count("started"), 1u) << "观察者 " << i;
+        EXPECT_EQ(observers[i]->count("started"), 1u) << "Observer " << i;
     }
 
     server.stop();
 }
 
 TEST(TestServerObserver, DisconnectAndStopRaceDoesNotDuplicateEvents) {
-    // 客户端断开后立刻 stop（会话收尾与 stop 并发）：started/attached/
-    // released/ended 每个都恰好一次（remove_session 幂等 + 释放只发一次）
+    // Stop immediately after client disconnection (session cleanup concurrent with stop): started/attached/
+    // released/ended each exactly once (idempotent remove_session + release notified only once)
     asio::io_context io;
     StringPool string_pool;
     RecordingObserver observer;
@@ -777,8 +777,8 @@ TEST(TestServerObserver, DisconnectAndStopRaceDoesNotDuplicateEvents) {
     asio::ip::tcp::socket client(io);
     ASSERT_TRUE(connect_with_retry(client, server.endpoint()));
     ASSERT_EQ(import_device(client, "1-1"), 0u);
-    client.close(); // 不等收尾
-    server.stop();  // 立刻 stop，与收尾路径并发
+    client.close(); // Do not wait for cleanup
+    server.stop();  // Stop immediately, concurrent with cleanup path
 
     EXPECT_EQ(observer.count("started"), 1u);
     EXPECT_EQ(observer.count("attached"), 1u);
@@ -787,8 +787,8 @@ TEST(TestServerObserver, DisconnectAndStopRaceDoesNotDuplicateEvents) {
 }
 
 TEST(TestServerObserver, CallbackCanAddObserver) {
-    // 回调里注册新观察者：本次遍历用的是快照，不受影响；新观察者从
-    // 之后的第一个事件开始收到通知
+    // Register new observer in callback: current iteration uses snapshot and is unaffected; new observer starts
+    // receiving notifications with the next event
     class AddingObserver : public ServerObserver {
     public:
         Server *server = nullptr;
@@ -820,7 +820,7 @@ TEST(TestServerObserver, CallbackCanAddObserver) {
     client.close();
     ASSERT_TRUE(wait_for_event_count(latecomer, "ended", 1));
 
-    EXPECT_EQ(latecomer.count("started"), 0u); // 注册发生在 started 之后
+    EXPECT_EQ(latecomer.count("started"), 0u); // Registration occurs after started
     EXPECT_EQ(latecomer.count("attached"), 1u);
     EXPECT_EQ(latecomer.count("released"), 1u);
     EXPECT_EQ(latecomer.count("ended"), 1u);
@@ -829,8 +829,8 @@ TEST(TestServerObserver, CallbackCanAddObserver) {
 }
 
 TEST(TestServerObserver, DeviceAddedNotifiedOnAddDevice) {
-    // 设备进入可用列表（用户 add_device）触发 on_device_added，入参为 busid；
-    // 通知是同步的（锁内快照→锁外同步调用），add_device 返回时事件已记录
+    // Device enters available list (user add_device), triggering on_device_added with busid argument;
+    // notification synchronous (snapshot under lock→synchronous call outside lock); event recorded when add_device returns
     StringPool string_pool;
     RecordingObserver observer;
     Server server;
@@ -843,19 +843,19 @@ TEST(TestServerObserver, DeviceAddedNotifiedOnAddDevice) {
     const auto events = observer.snapshot();
     EXPECT_EQ(count_events(events, "added", "2-1"), 1u);
     EXPECT_EQ(count_events(events, "added", "2-2"), 1u);
-    // 未 start、无客户端：不应有会话事件或占用事件
+    // Not started, no clients: no session or device-occupation events expected
     EXPECT_EQ(observer.count("started"), 0u);
     EXPECT_EQ(observer.count("attached"), 0u);
     EXPECT_EQ(observer.count("released"), 0u);
 }
 
 TEST(TestServerObserver, DetachAvailableDeviceNotifiesReleasedWithDeviceRemoved) {
-    // 设备离开可用列表（物理拔出/后端解绑走的就是 detach_available_device）
-    // 发 on_device_released(DeviceRemoved)，与"正在被使用的设备被拔"（由
-    // release_device 发）同一事件语义：观察者只需处理"设备没了"，不必区分
-    // 它当时在哪个列表。真实触发路径在 LibusbServer 的拔出/解绑处理里
-    // （handle_device_left / notify_device_removed / try_remove_dead_device /
-    // unbind_*），需要真机；这里验证 Server 接口本身的契约
+    // Device leaves available list (physical unplug/backend unbind uses detach_available_device),
+    // emitting on_device_released(DeviceRemoved), same event semantics as "in-use device unplugged" (emitted by
+    // release_device): observer only handles "device gone", without distinguishing
+    // which list held it. Real trigger path in LibusbServer unplug/unbind handling
+    // (handle_device_left / notify_device_removed / try_remove_dead_device /
+    // unbind_*), requiring real hardware; here verify Server interface contract itself
     StringPool string_pool;
     RecordingObserver observer;
     Server server;
@@ -865,10 +865,10 @@ TEST(TestServerObserver, DetachAvailableDeviceNotifiesReleasedWithDeviceRemoved)
     const auto device = make_keyboard(string_pool);
     EXPECT_EQ(server.add_device(device), AddDeviceStatus::Added);
 
-    // 摘除返回被摘除的设备（供后端做 close/unref 等清理），并发出通知
+    // Detach returns detached device (for backend close/unref cleanup, etc.), and emits notification
     const auto detached = server.detach_available_device("1-1");
     ASSERT_NE(detached, nullptr);
-    EXPECT_EQ(detached, device); // 同一个对象
+    EXPECT_EQ(detached, device); // Same object
 
     const auto events = observer.snapshot();
     ASSERT_EQ(events.size(), 2u); // added + released
@@ -884,13 +884,13 @@ TEST(TestServerObserver, DetachAvailableDeviceNotifiesReleasedWithDeviceRemoved)
         EXPECT_TRUE(server.get_available_devices().empty());
     }
 
-    // 摘除不存在的 busid：返回空、不发通知
+    // Detach nonexistent busid: return empty, no notification
     EXPECT_EQ(server.detach_available_device("9-9"), nullptr);
     EXPECT_EQ(observer.count("released"), 1u);
 }
 
 TEST(TestServerObserver, AddDeviceRejectsDuplicateBusid) {
-    // busid 唯一是 Server 内部依赖的不变量：重复添加被拒绝，且不发 added 通知
+    // Unique busid is an invariant relied on internally by Server: duplicate add rejected without added notification
     asio::io_context io;
     StringPool string_pool;
     RecordingObserver observer;
@@ -900,9 +900,9 @@ TEST(TestServerObserver, AddDeviceRejectsDuplicateBusid) {
 
     EXPECT_EQ(server.add_device(make_keyboard(string_pool, nullptr, "2-1")), AddDeviceStatus::Added);
     EXPECT_EQ(server.add_device(make_keyboard(string_pool, nullptr, "2-1")), AddDeviceStatus::AlreadyBound);
-    EXPECT_EQ(observer.count("added"), 1u) << "被拒绝的添加不得发通知";
+    EXPECT_EQ(observer.count("added"), 1u) << "Rejected add must not emit notification";
 
-    // 设备正被会话占用时，同 busid 添加返回 InUse
+    // When device occupied by session, adding same busid returns InUse
     ASSERT_FALSE(server.start(asio::ip::tcp::endpoint(asio::ip::address_v4::loopback(), 0)));
     asio::ip::tcp::socket client(io);
     ASSERT_TRUE(connect_with_retry(client, server.endpoint()));

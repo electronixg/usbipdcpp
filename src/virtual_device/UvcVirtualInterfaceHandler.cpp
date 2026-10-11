@@ -119,10 +119,10 @@ void UvcVideoControlHandler::build_class_descriptor() {
         return;
     desc_built_ = true;
 
-    // VC Header 的 baInterfaceNr 是 VS 接口号：装配时由 helper 的
-    // set_vs_handler 关联，从 VS handler 的 get_interface() 取（复合设备里
-    // UVC 组不从接口 0 起，硬编码 1 会指错接口）。未装配时退回 1（单设备
-    // 形态 VC=0 → VS=1 的旧行为）
+    // VC Header baInterfaceNr is the VS interface number: associated by the helper's
+    // set_vs_handler during assembly, obtained from the VS handler's get_interface() (UVC groups in composite devices
+    // do not start at interface 0; hardcoding 1 points to the wrong interface). Fall back to 1 when unassembled (old single-device
+    // behavior VC=0 -> VS=1)
     std::uint8_t vs_if_num = vs_handler_ ? static_cast<std::uint8_t>(vs_handler_->get_interface().interface_number) : 1;
 
     // VC Header(13) + CameraTerminal(18) + PU(13) + OT(9) = 53
@@ -131,7 +131,7 @@ void UvcVideoControlHandler::build_class_descriptor() {
     static constexpr std::uint8_t pu_len = 13;       // 10 + bControlSize(3) + bmVideoStandards(1)
     data_type d;
 
-    // VC Header（wTotalLength 占位，构建完成后回填实际总长）
+    // VC Header (placeholder wTotalLength; fill actual total length after construction)
     VcHeaderDesc{VC_HEADER_1ITF_LEN, CS_INTERFACE, VC_DESC_HEADER,
                  UVC_BCD_1_50, // bcdUVC 0x0150 (UVC 1.5)
                  0x00,
@@ -173,7 +173,7 @@ void UvcVideoControlHandler::build_class_descriptor() {
                          0x00} // iTerminal
             .append_to(d);
 
-    // 回填 VC Header 的 wTotalLength（offset 5-6）为描述符实际总长
+    // Fill VC Header wTotalLength (offset 5-6) with the actual descriptor total length
     d[5] = static_cast<std::uint8_t>(d.size() & 0xFF);
     d[6] = static_cast<std::uint8_t>((d.size() >> 8) & 0xFF);
 
@@ -200,7 +200,7 @@ void UvcVideoControlHandler::handle_non_standard_request_type_control_urb(
 
     auto *trx = GenericTransfer::from_handle(transfer.get());
 
-    // 处理类特定 GET_DESCRIPTOR（如 CS_INTERFACE=0x24）
+    // Handle class-specific GET_DESCRIPTOR (e.g. CS_INTERFACE=0x24)
     if (request == static_cast<std::uint8_t>(StandardRequest::GetDescriptor)) {
         auto desc_type = setup_packet.value >> 8;
         if (desc_type == CS_INTERFACE) {
@@ -217,7 +217,7 @@ void UvcVideoControlHandler::handle_non_standard_request_type_control_urb(
         return;
     }
 
-    // ===== VC 接口级控制（entity=0）=====
+    // ===== VC interface-level controls (entity=0) =====
     if (entity == ENTITY_VC_INTERFACE) {
         if (control_selector == VC_VIDEO_POWER_MODE_CONTROL) {
             switch (request) {
@@ -271,8 +271,8 @@ void UvcVideoControlHandler::handle_non_standard_request_type_control_urb(
         return;
     }
 
-    // entity != 0: TinyUSB 对描述符中存在的 entity 直接返回成功（ACK，无数据）
-    // IT=0x01, OT=0x03 无实际控制逻辑，但需要 ACK 防止 Windows STALL
+    // entity != 0: TinyUSB returns success directly for entities present in the descriptors (ACK, no data)
+    // IT=0x01, OT=0x03 have no actual control logic, but require ACK to prevent Windows STALL
     if (entity == ENTITY_INPUT_TERMINAL || entity == ENTITY_OUTPUT_TERMINAL) {
         trx->actual_length = 0;
         responder->submit_ret_submit(UsbIpResponse::UsbIpRetSubmit::create_ret_submit_with_status_and_no_iso(
@@ -280,7 +280,7 @@ void UvcVideoControlHandler::handle_non_standard_request_type_control_urb(
         return;
     }
 
-    // ===== Processing Unit（entity=2）=====
+    // ===== Processing Unit(entity=2)=====
     if (entity != ENTITY_PROCESSING_UNIT) {
         responder->submit_ret_submit(UsbIpResponse::UsbIpRetSubmit::create_ret_submit_epipe_without_data(seqnum, 0));
         return;
@@ -351,7 +351,7 @@ void UvcVideoControlHandler::handle_interrupt_transfer(std::uint32_t seqnum, con
                                                        std::uint32_t transfer_buffer_length, TransferHandle transfer,
                                                        std::error_code &ec) {
     if (ep.is_in()) {
-        // 通道内部处理：缓冲有状态通知立即应答，否则挂起请求等待 send_vc_status()
+        // Handled within the channel: reply immediately if a state notification is buffered; otherwise suspend waiting for send_vc_status()
         status_channel.on_in_request(ep.address, seqnum, transfer_buffer_length, std::move(transfer));
     }
     else {
@@ -360,27 +360,27 @@ void UvcVideoControlHandler::handle_interrupt_transfer(std::uint32_t seqnum, con
 }
 
 void UvcVideoControlHandler::send_vc_status(data_type status) {
-    // 推入通道：有挂起请求直接应答，否则入缓冲等待（状态事件频率低，不设上限）
+    // Push to the channel: reply directly to pending requests; otherwise buffer and wait (state events are infrequent, so no limit)
     status_channel.push(std::move(status));
 }
 
 void UvcVideoControlHandler::on_new_connection(TransferResponder &current_session, error_code &ec) {
-    // 父类先设 session 指针（通道应答请求要用），再绑定通道并重置断连状态
+    // The parent sets the session pointer first (needed for channel responses), then bind the channel and reset disconnection state
     VirtualInterfaceHandler::on_new_connection(current_session, ec);
     status_channel.on_new_connection(&current_session);
 }
 
 void UvcVideoControlHandler::on_disconnection(std::error_code &ec) {
-    // 先清通道（缓冲 + 挂起请求，TransferHandle 析构时自动释放），再调父类清 session
+    // Clear the channel first (buffer + pending requests; TransferHandle destruction releases automatically), then let the parent clear session
     status_channel.on_disconnection();
     VirtualInterfaceHandler::on_disconnection(ec);
 }
 
 void UvcVideoControlHandler::handle_unlink_seqnum(std::uint32_t unlink_seqnum, std::uint32_t cmd_seqnum) {
     bool cancelled = status_channel.cancel_pending(unlink_seqnum);
-    // 从队列中真的取消了待处理 URB → 回 -ECONNRESET（URB 被取消，且不再发
-    // RET_SUBMIT，请求已从队列移除）；找不到（URB 已完成/不存在）→ 回 0。
-    // 与内核 stub_tx.c 及本项目 LibusbDeviceHandler 的 unlink 范本一致
+    // If a pending URB was actually cancelled from the queue, return -ECONNRESET (URB cancelled, with no further
+    // RET_SUBMIT because the request was removed); if not found (URB completed/nonexistent), return 0.
+    // Matches the unlink pattern in kernel stub_tx.c and this project's LibusbDeviceHandler
     responder->submit_ret_unlink(UsbIpResponse::UsbIpRetUnlink::create_ret_unlink(
             cmd_seqnum, cancelled ? static_cast<std::uint32_t>(UrbStatusType::StatusECONNRESET) : 0));
 }
@@ -412,7 +412,7 @@ void UvcVideoStreamingHandler::build_class_descriptor() {
     auto fmt = source_->current_format();
 
     std::uint8_t ep_addr = 0x81;
-    // 从 streaming alt (alt 1) 获取端点地址
+    // Get the endpoint address from streaming alt (alt 1)
     if (handle_interface.endpoints.size() > 1 && !handle_interface.endpoints[1].empty())
         ep_addr = handle_interface.endpoints[1][0].address;
     else if (!handle_interface.endpoints.empty() && !handle_interface.endpoints[0].empty())
@@ -429,7 +429,7 @@ void UvcVideoStreamingHandler::build_class_descriptor() {
     if (cat == UvcFormatCategory::Uncompressed) {
         format_subtype = VS_DESC_FORMAT_UNCOMPRESSED;
         frame_subtype = VS_DESC_FRAME_UNCOMPRESSED;
-        // Format descriptor: 27 bytes（保持与修复前完全一致的布局）
+        // Format descriptor: 27 bytes (retain exactly the same layout as before the fix)
         format.resize(27, 0);
         format[0] = 27;
         format[1] = 0x24;
@@ -444,7 +444,7 @@ void UvcVideoStreamingHandler::build_class_descriptor() {
     } else if (cat == UvcFormatCategory::Mjpeg) {
         format_subtype = VS_DESC_FORMAT_MJPEG;
         frame_subtype = VS_DESC_FRAME_MJPEG;
-        // MJPEG Format descriptor: 11 bytes（UVC 1.5 MJPEG Payload Table 3-1）
+        // MJPEG Format descriptor: 11 bytes(UVC 1.5 MJPEG Payload Table 3-1)
         format.resize(11, 0);
         format[0] = 11;
         format[1] = 0x24;
@@ -456,7 +456,7 @@ void UvcVideoStreamingHandler::build_class_descriptor() {
     } else if (cat == UvcFormatCategory::FrameBased) {
         format_subtype = VS_DESC_FORMAT_FRAME_BASED;
         frame_subtype = VS_DESC_FRAME_FRAME_BASED;
-        // Frame-Based Format: 28 bytes（UVC 1.5 Frame-Based Payload Table 3-1）
+        // Frame-Based Format: 28 bytes(UVC 1.5 Frame-Based Payload Table 3-1)
         format.resize(28, 0);
         format[0] = 28;
         format[1] = 0x24;
@@ -472,7 +472,7 @@ void UvcVideoStreamingHandler::build_class_descriptor() {
     } else { // H264
         format_subtype = VS_DESC_FORMAT_H264;
         frame_subtype = VS_DESC_FRAME_H264;
-        // H.264 Format: 52 bytes（UVC 1.5 H.264 Payload Table 3-1）
+        // H.264 Format: 52 bytes(UVC 1.5 H.264 Payload Table 3-1)
         format.resize(52, 0);
         format[0] = 52;
         format[1] = 0x24;
@@ -486,7 +486,7 @@ void UvcVideoStreamingHandler::build_class_descriptor() {
         format[39] = 0x01;
     }
 
-    // Frame descriptor（Uncompressed/MJPEG/FrameBased: 26基础+12间隔=38; H264: 44基础+12间隔=56）
+    // Frame descriptor (Uncompressed/MJPEG/FrameBased: 26 base+12 intervals=38; H264: 44 base+12 intervals=56)
     auto fps_val = 10'000'000ULL / fmt.default_frame_interval;
     auto bit_rate = static_cast<std::uint32_t>(fmt.max_frame_size * 8 * fps_val);
     auto min_iv = fmt.min_frame_interval;
@@ -518,13 +518,13 @@ void UvcVideoStreamingHandler::build_class_descriptor() {
     frame[23] = static_cast<std::uint8_t>((fmt.default_frame_interval >> 16) & 0xFF);
     frame[24] = static_cast<std::uint8_t>((fmt.default_frame_interval >> 24) & 0xFF);
     frame[25] = 0x00; // bFrameIntervalType = 0 (continuous)
-    // usbvideo.sys!DumpAndValidateFrameUncompressed 对连续帧间隔有三项整除检查：
+    // usbvideo.sys!DumpAndValidateFrameUncompressed has three divisibility checks for continuous frame intervals:
     //   if (step != 0) {
     //       if (max <= min)                → STATUS_INVALID_PARAMETER
     //       if ((max - min) % step != 0)   → STATUS_INVALID_PARAMETER
     //   }
-    // 因此 max 必须是 min + N*step（N 为正整数），否则 Windows 直接 Code 10。
-    // min/max/step 均取自 VideoSource，step=min 保证 (max-min) 是 min 的整数倍。
+    // thus max must be min + N*step (positive integer N), otherwise Windows directly reports Code 10.
+    // min/max/step all come from VideoSource; step=min ensures (max-min) is an integral multiple of min.
     for (int i = 0; i < 4; ++i)
         frame[frame_base + i] = static_cast<std::uint8_t>((min_iv >> (i * 8)) & 0xFF);
     for (int i = 0; i < 4; ++i)
@@ -532,7 +532,7 @@ void UvcVideoStreamingHandler::build_class_descriptor() {
     for (int i = 0; i < 4; ++i)
         frame[frame_base + 8 + i] = static_cast<std::uint8_t>((step_iv >> (i * 8)) & 0xFF);
 
-    // Color Matching: Uncompressed 和 MJPEG 强制（各自 payload spec §3）
+    // Color Matching: mandatory for Uncompressed and MJPEG (their respective payload spec section 3)
     bool has_color = (cat == UvcFormatCategory::Uncompressed || cat == UvcFormatCategory::Mjpeg);
     data_type color;
     if (has_color) {
@@ -541,7 +541,7 @@ void UvcVideoStreamingHandler::build_class_descriptor() {
                 .append_to(color);
     }
 
-    // VS Input Header（wTotalLength 占位，拼接完成后回填实际总长）
+    // VS Input Header (placeholder wTotalLength; fill actual total length after concatenation)
     static constexpr std::uint8_t bControlSize = 1;
 
     data_type header;
@@ -564,7 +564,7 @@ void UvcVideoStreamingHandler::build_class_descriptor() {
     d.insert(d.end(), frame.begin(), frame.end());
     d.insert(d.end(), color.begin(), color.end());
 
-    // 回填 VS Input Header 的 wTotalLength（offset 4-5）为描述符实际总长
+    // Fill VS Input Header wTotalLength (offset 4-5) with the actual descriptor total length
     d[4] = static_cast<std::uint8_t>(d.size() & 0xFF);
     d[5] = static_cast<std::uint8_t>((d.size() >> 8) & 0xFF);
 
@@ -590,7 +590,7 @@ void UvcVideoStreamingHandler::handle_non_standard_request_type_control_urb(
     auto request = setup_packet.request;
     auto *trx = GenericTransfer::from_handle(transfer.get());
 
-    // 处理类特定 GET_DESCRIPTOR（如 CS_INTERFACE=0x24）
+    // Handle class-specific GET_DESCRIPTOR (e.g. CS_INTERFACE=0x24)
     if (request == static_cast<std::uint8_t>(StandardRequest::GetDescriptor)) {
         auto desc_type = setup_packet.value >> 8;
         if (desc_type == CS_INTERFACE) {
@@ -641,13 +641,13 @@ void UvcVideoStreamingHandler::handle_non_standard_request_type_control_urb(
         auto fmt = source_->current_format();
         auto max_frame_size = static_cast<std::uint32_t>(source_->max_frame_size());
         auto ctrl = probe_data_;
-        // UVC 1.5 §4.3.1.1 Table 4-75: 以下字段为设备能力，host 不可修改
-        ctrl.bmFramingInfo = 0x03; // D0: FID 必须, D1: EOF 可选
-        ctrl.bPreferredVersion = 1; // 首选 payload 格式版本（UVC 1.5 offset 31）
-        ctrl.bMinVersion = 1;       // 最小支持版本（offset 32）
-        ctrl.bMaxVersion = 1;       // 最大支持版本（offset 33）
+        // UVC 1.5 section 4.3.1.1 Table 4-75: the following fields are device capabilities; host cannot modify them
+        ctrl.bmFramingInfo = 0x03; // D0: FID required, D1: EOF optional
+        ctrl.bPreferredVersion = 1; // Preferred payload format version (UVC 1.5 offset 31)
+        ctrl.bMinVersion = 1;       // Minimum supported version (offset 32)
+        ctrl.bMaxVersion = 1;       // Maximum supported version (offset 33)
         ctrl.dwClockFrequency = 27000000; // 27MHz, offset 26
-        // 不压缩视频：压缩相关字段必须为 0，否则与 VS Input Header bmaControls=0 矛盾
+        // Uncompressed video: compression-related fields must be 0, or they contradict VS Input Header bmaControls=0
         ctrl.wKeyFrameRate = 0;
         ctrl.wPFrameRate = 0;
         ctrl.wCompQuality = 0;
@@ -656,27 +656,27 @@ void UvcVideoStreamingHandler::handle_non_standard_request_type_control_urb(
         auto interval = fmt.default_frame_interval;
         auto min_iv = fmt.min_frame_interval;
         auto max_iv = fmt.max_frame_interval;
-        // UVC 1.5 Table 4-76: GET_MIN 返回各协商字段的最小值
+        // UVC 1.5 Table 4-76: GET_MIN returns minimum values of all negotiation fields
         if (request == GET_MIN) {
-            // 非零避免 host 误判为"字段未设置"触发 fix-up（libuvc stream.c:273）
+            // Nonzero prevents the host treating a field as unset and triggering fix-up (libuvc stream.c:273)
             ctrl.dwMaxVideoFrameSize = 1;
-            // UVC 1.5 §4.3.1.1 offset 22: 单次 payload 传输最大字节数，设 1 为最小合法值
+            // UVC 1.5 section 4.3.1.1 offset 22: maximum bytes per payload transfer; 1 is the minimum valid value
             ctrl.dwMaxPayloadTransferSize = 1;
-            ctrl.dwFrameInterval = max_iv; // 最长帧间隔 = 最低数据速率
+            ctrl.dwFrameInterval = max_iv; // Longest frame interval = lowest data rate
         } else if (request == GET_MAX) {
             ctrl.dwMaxVideoFrameSize = max_frame_size;
             ctrl.dwMaxPayloadTransferSize = max_frame_size;
-            ctrl.dwFrameInterval = min_iv; // 最短帧间隔 = 最高帧率
+            ctrl.dwFrameInterval = min_iv; // Shortest frame interval = highest frame rate
         } else if (request == GET_DEF) {
             ctrl.bFormatIndex = 1;
             ctrl.bFrameIndex = 1;
             ctrl.dwFrameInterval = interval;
             ctrl.dwMaxVideoFrameSize = max_frame_size;
-            // UVC 1.5 §4.3.1.1 Table 4-75 offset 22: 设备设定，host 只读，必须支持。
-            // 取 ISO 端点 wMaxPacketSize（512），不对齐 max_frame_size
+            // UVC 1.5 section 4.3.1.1 Table 4-75 offset 22: device-defined, host read-only, mandatory support.
+            // Use ISO endpoint wMaxPacketSize (512), without aligning to max_frame_size
             ctrl.dwMaxPayloadTransferSize = 512;
         } else {
-            // GET_CUR: 用上次协商的值，未协商过时用默认值
+            // GET_CUR: use the last negotiated value, or default if never negotiated
             if (ctrl.dwMaxVideoFrameSize == 0)
                 ctrl.dwMaxVideoFrameSize = max_frame_size;
             if (ctrl.dwFrameInterval == 0)
@@ -708,13 +708,13 @@ void UvcVideoStreamingHandler::handle_non_standard_request_type_control_urb(
     else if (request == SET_CUR && !is_commit) {
         if (trx->data.size() >= 26) {
             probe_data_.deserialize(trx->data.data(), trx->data.size());
-            // UVC 1.5 §4.3.1.1 Table 4-75: 设备能力字段，host 不可修改
+            // UVC 1.5 section 4.3.1.1 Table 4-75: device capability fields; host cannot modify them
             probe_data_.bmFramingInfo = 0x03;          // offset 30: FID+EOF
             probe_data_.bPreferredVersion = 1;          // offset 31
             probe_data_.bMinVersion = 1;                // offset 32
             probe_data_.bMaxVersion = 1;                // offset 33
             probe_data_.dwClockFrequency = 27000000;    // offset 26: 27MHz
-            // UVC 1.5 Table 4-75 offset 34–47: 时域编码字段仅 H.264 有效，其余清零
+            // UVC 1.5 Table 4-75 offset 34-47: temporal encoding fields valid only for H.264; clear others
             if (uvc_format_category(source_->current_format().fourcc) != UvcFormatCategory::H264) {
                 probe_data_.bUsage = 0;
                 probe_data_.bBitDepthLuma = 0;
@@ -730,7 +730,7 @@ void UvcVideoStreamingHandler::handle_non_standard_request_type_control_urb(
     else if (request == SET_CUR && is_commit) {
         if (trx->data.size() >= 26) {
             probe_data_.deserialize(trx->data.data(), trx->data.size());
-            // UVC 1.5 §4.3.1.1 Table 4-75: 同 PROBE SET_CUR，写入设备状态
+            // UVC 1.5 section 4.3.1.1 Table 4-75: as with PROBE SET_CUR, write device state
             probe_data_.bmFramingInfo = 0x03;
             probe_data_.bPreferredVersion = 1;
             probe_data_.bMinVersion = 1;
@@ -751,7 +751,7 @@ void UvcVideoStreamingHandler::handle_non_standard_request_type_control_urb(
         frame_buffer_.resize(source_->max_frame_size());
         frame_offset_ = 0;
         current_fid_ = false;
-        // 重新开播：帧时钟重置，set_format 后帧间隔可能已变
+        // Restart streaming: reset frame clock; frame interval may have changed after set_format
         frame_started_at_ = {};
         frame_interval_ = std::chrono::microseconds(source_->frame_interval() / 10);
         responder->submit_ret_submit(UsbIpResponse::UsbIpRetSubmit::create_ret_submit_with_status_and_no_data(
@@ -776,21 +776,21 @@ void UvcVideoStreamingHandler::handle_isochronous_transfer(std::uint32_t seqnum,
     auto &data = trx->data;
     auto &iso_descs = trx->iso_descriptors;
 
-    // 内核 usb_submit_urb 会把 iso_frame_desc[n].status 初始化为 -EXDEV，
-    // 必须清零，否则内核 UVC 驱动会跳过所有包。
+    // Kernel usb_submit_urb initializes iso_frame_desc[n].status to -EXDEV;
+    // clear it to zero, or the kernel UVC driver skips every packet.
     for (auto &iso: iso_descs)
         iso.status = 0;
 
-    // 帧时钟：帧率由帧时钟决定，不随主机消费速度漂移。
-    // 帧传完但未到帧间隔 → 空包等下一帧（0 字节等时包合法，驱动跳过），
-    // 避免主机拉得快时快放。
-    // 注意：虚拟设备不模拟 USB 总线等时事务节奏（真实摄像头受 125µs×包
-    // 大小带宽限制，虚拟设备不受）——URB 一律立即响应，主机拉多快数据就
-    // 传多快，大帧也能在帧间隔内传完，画面完整且实时。音频不能这么做
-    // （采样率必须精确节流），但视频帧数据有界、帧时钟已管住帧率，立即
-    // 响应不会失控。
-    // 帧传不完帧间隔（主机消费慢）时：不切帧，完整传完当前帧再拉下一帧
-    // （半截帧会被主机驱动标记 corrupted 整帧丢弃，宁慢勿碎）
+    // Frame clock: frame rate is determined by the frame clock and does not drift with host consumption speed.
+    // Frame transmitted before frame interval expires -> empty packets until next frame (0-byte isochronous packets are valid and skipped by the driver),
+    // preventing accelerated playback when the host pulls quickly.
+    // Note: virtual devices do not simulate USB-bus isochronous transaction cadence (real cameras are bandwidth-limited by 125us x packet
+    // size; virtual devices are not). Respond to all URBs immediately; data is transferred as fast as the host pulls,
+    // so even large frames finish within the frame interval, keeping complete frames in real time. Audio cannot do this
+    // (sample rate needs precise throttling), but video frame data is bounded and the frame clock already controls frame rate, so immediate
+    // responses cannot run out of control.
+    // If a frame cannot finish within its interval (slow host consumption), do not switch frames; finish the current frame before pulling the next
+    // (the host driver marks partial frames corrupted and discards the entire frame; prefer slow to fragmented)
     const auto now = std::chrono::steady_clock::now();
     if (frame_interval_.count() > 0 && frame_offset_ == 0 && now < frame_started_at_ + frame_interval_) {
         responder->submit_ret_submit(UsbIpResponse::UsbIpRetSubmit::create_ret_submit(
@@ -823,8 +823,8 @@ void UvcVideoStreamingHandler::handle_isochronous_transfer(std::uint32_t seqnum,
         auto chunk = std::min(static_cast<std::size_t>(iso.length - UVC_PAYLOAD_HEADER_SIZE), frame_remaining);
 
         std::uint8_t header_info = current_fid_ ? UVC_PAYLOAD_HEADER_FID : 0;
-        // EOF 位（D7）按 UVC 1.5 Table 2-5 规范位发：Windows usbvideo.sys 据此切帧。
-        // Linux uvcvideo 用自定义位（EOF=0x40）解释不到，但缓冲满强制切帧兜底，行为不变
+        // Send EOF bit (D7) as specified by UVC 1.5 Table 2-5: Windows usbvideo.sys uses it to delimit frames.
+        // Linux uvcvideo interprets a custom bit (EOF=0x40) and cannot recognize it, but forcibly delimits frames when buffers fill as fallback; behavior is unchanged
         if (frame_offset_ + chunk >= frame_buffer_.size())
             header_info |= UVC_PAYLOAD_HEADER_EOF; // EOF
 
@@ -842,9 +842,9 @@ void UvcVideoStreamingHandler::handle_isochronous_transfer(std::uint32_t seqnum,
     if (frame_offset_ >= frame_buffer_.size())
         frame_offset_ = 0;
 
-    // 立即响应（不走 TransferScheduler 的 125µs×包 等时节流）：虚拟设备
-    // 没有真实总线，主机拉多快数据就传多快——大帧在帧间隔内传得完才能
-    // 画面流畅。帧时钟已限制帧率上限，不会失控
+    // Respond immediately (bypass TransferScheduler's 125us x packet isochronous throttling): virtual devices
+    // have no real bus, so data transfers as fast as the host pulls; large frames must finish within the frame interval
+    // for smooth video. The frame clock already caps frame rate, preventing runaway behavior
     responder->submit_ret_submit(UsbIpResponse::UsbIpRetSubmit::create_ret_submit(
             seqnum, static_cast<std::uint32_t>(UrbStatusType::StatusOK), total_sent, 0,
             static_cast<std::uint32_t>(iso_descs.size()), std::move(transfer)));
@@ -856,7 +856,7 @@ void UvcVideoStreamingHandler::on_new_connection(TransferResponder &current_sess
     streaming_ = false;
     frame_offset_ = 0;
     current_fid_ = false;
-    frame_started_at_ = {}; // 帧时钟重置：重连开播后首帧立即开始
+    frame_started_at_ = {}; // Reset frame clock: the first frame starts immediately when streaming resumes after reconnection
 }
 
 void UvcVideoStreamingHandler::on_disconnection(error_code &ec) {
@@ -900,8 +900,8 @@ data_type UvcVideoStreamingHandler::request_get_descriptor(std::uint8_t type, st
 
 std::error_code UvcDeviceHelper::setup(std::shared_ptr<UsbDevice> device, std::uint8_t vc_interface_number,
                                        StringPool &string_pool, std::unique_ptr<VideoSource> source) {
-    // 按 interface_number 定位 VC/VS 两个相邻接口（不依赖数组下标：复合设备
-    // 里 UVC 接口可能不在 interfaces 开头，与其他功能交错）
+    // Locate the adjacent VC/VS interfaces by interface_number (independent of array indices: UVC interfaces in composite devices
+    // may not start at the beginning of interfaces and may be interleaved with other functions)
     auto found = device->find_interfaces_by_number<2>(vc_interface_number);
     if (!found[0] || !found[1]) {
         return make_error_code(ErrorType::INVALID_ARG);
@@ -915,20 +915,20 @@ std::error_code UvcDeviceHelper::setup(std::shared_ptr<UsbDevice> device, std::u
     vc->set_vs_handler(vs.get());
     vs->set_vc_handler(vc.get());
 
-    // VC/VS 用相同 iInterface：USBCCGP 会从子 PDO 配置描述符中移除 IAD，
-    // usbvideo.sys 依靠相同 iInterface 将 VC 和 VS 识别为同一功能
+    // VC/VS use the same iInterface: USBCCGP removes IAD from the child PDO configuration descriptor,
+    // and usbvideo.sys relies on matching iInterface to recognize VC and VS as one function
     vs->sync_string_interface_from(*vc);
 
-    // IAD：UVC 功能由 VC 接口声明（iFunction 必须等于 VC 的 iInterface，
-    // UVC 1.5 Table 3-1；bFirstInterface 由配置描述符生成时按接口号回填）
+    // IAD: declared by the VC interface for the UVC function (iFunction must equal VC iInterface,
+    // UVC 1.5 Table 3-1; bFirstInterface is filled by interface number when generating the configuration descriptor)
     vc_interface->interface_association_descriptor = IadDesc::make(
             2, CC_VIDEO, SC_VIDEO_INTERFACE_COLLECTION, 0, vc->get_string_interface_value());
 
     auto dh = device->handler ? std::dynamic_pointer_cast<VirtualDeviceHandler>(device->handler)
                               : device->with_handler<SimpleVirtualDeviceHandler>(string_pool);
-    // UVC 等时 URB 立即响应（虚拟设备不模拟总线等时事务节奏，帧时钟已管住
-    // 帧率），不启用设备级传输调度器（默认关；启用会被 125µs×包节流卡死
-    // 带宽，大帧画面慢放）。UNLINK 走通道自己的 cancel_pending
+    // UVC isochronous URBs respond immediately (virtual devices do not simulate bus isochronous transaction cadence; the frame clock already controls
+    // frame rate), without enabling the device-level transfer scheduler (off by default; enabling it throttles bandwidth by 125us x packets,
+    // making large-frame video play slowly). UNLINK uses the channel's own cancel_pending
     dh->setup_interface_handlers();
     return {};
 }

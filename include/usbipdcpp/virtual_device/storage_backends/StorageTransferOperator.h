@@ -9,10 +9,10 @@ namespace usbipdcpp {
 class MscBulkOnlyHandler;
 
 /**
- * @brief MSC 零拷贝传输操作器
+ * @brief MSC zero-copy transfer operator
  *
- * IN：send_transfer_data 从 external_buf（mmap）直接发送
- * OUT：recv_transfer_data 直读入 CBW/staging 并解析
+ * IN: send_transfer_data sends directly from external_buf (mmap)
+ * OUT: recv_transfer_data reads directly into CBW/staging and parses
  */
 class StorageTransferOperator : public TransferOperator {
 public:
@@ -36,7 +36,7 @@ public:
 
 private:
     MscBulkOnlyHandler *handler_;
-    /// BOT 最多 2-3 个传输在途，8 个槽足够
+    /// BOT has at most 2-3 transfers in flight; 8 slots suffice
     ObjectPool<StorageIoTransfer, 8> pool_;
 };
 

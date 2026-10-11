@@ -13,7 +13,7 @@ using namespace usbipdcpp;
 using namespace usbipdcpp::test;
 
 namespace {
-// 测试用 HID handler：返回固定的报告描述符（5 字节示例）
+// Test HID handler: returns a fixed report descriptor (5-byte example)
 class TestHidHandler : public HidVirtualInterfaceHandler {
 public:
     explicit TestHidHandler(UsbInterface &intf, StringPool &pool) : HidVirtualInterfaceHandler(intf, pool) {
@@ -27,7 +27,7 @@ public:
         return 5;
     }
 
-    // 记录 SET_REPORT 收到的输出报告（键盘 LED 等场景）
+    // Record output reports received by SET_REPORT (keyboard LED scenarios, etc.)
     void request_set_report(std::uint8_t type, std::uint8_t report_id, std::uint16_t length,
                             const data_type &data, std::uint32_t *p_status) override {
         last_output_report = data;
@@ -36,38 +36,38 @@ public:
 
     data_type last_output_report;
 
-    // 测试用公开包装，转发到 protected 的 has_pending_input_reports()
+    // Public test wrapper forwarding to protected has_pending_input_reports()
     bool has_pending_reports_for_test() const {
         return has_pending_input_reports();
     }
 
-    // 测试用：模拟已建立连接（通道激活，disconnected 复位）。真实场景设备
-    // 连接后才产生报告；未连接时通道断连检查会拒绝入队（push 返回 false）
+    // For testing: simulate an established connection (channel active, disconnected reset). In real scenarios the device
+    // produces reports only after connection; while unconnected, the channel's disconnection check rejects enqueueing (push returns false)
     void connect_for_test() {
         input_channel.on_new_connection();
     }
 };
 
-// 构造一个最小可用的 UsbInterface 与 StringPool
+// Construct a minimal usable UsbInterface and StringPool
 struct HidTestEnv {
     StringPool pool;
-    // 传输分配器：必须声明在 stub 之前（成员逆序析构，op 后死）——
-    // submits 里的 RetSubmit 持 TransferHandle，析构时要用 op 释放，
-    // op 活得比 stub 久才不会有 use-after-scope
+    // Transfer allocator: must be declared before stub (members destroyed in reverse order; op dies later)—
+    // RetSubmit entries in submits hold TransferHandle and use op to release it on destruction;
+    // op must outlive stub to avoid use-after-scope
     GenericTransferOperator op;
     CaptureResponder stub;
     UsbInterface intf{.interface_class = 3, .interface_subclass = 0, .interface_protocol = 0};
     TestHidHandler handler{intf, pool};
     usbipdcpp::error_code ec;
 
-    // 连上 stub：通道应答/数据面测试走这里（描述符类测试不受影响）
+    // Connect stub: channel-response/data-plane tests use this path (descriptor tests unaffected)
     HidTestEnv() : handler(intf, pool) {
         handler.on_new_connection(stub, ec);
     }
 };
 } // namespace
 
-// ========== HID 描述符 ==========
+// ========== HID descriptors ==========
 
 TEST(VirtualDeviceHandlers, HidGetReportDescriptor) {
     HidTestEnv env;
@@ -94,17 +94,17 @@ TEST(VirtualDeviceHandlers, HidClassSpecificDescriptor) {
 
     auto desc = env.handler.get_class_specific_descriptor();
     // bLength=9, bDescriptorType=0x21(HID), bcdHID=1.11, bCountryCode=0,
-    // bNumDescriptors=1, bDescriptorType[0]=0x22(Report), wDescriptorLength=5（小端）
+    // bNumDescriptors=1, bDescriptorType[0]=0x22(Report), wDescriptorLength=5 (little-endian)
     const data_type expect = {0x09, 0x21, 0x11, 0x01, 0x00, 0x01, 0x22, 0x05, 0x00};
     EXPECT_EQ(desc, expect);
 }
 
-// ========== HID 类请求默认实现（形式响应对齐内核 f_hid.c，不 stall） ==========
+// ========== Default HID class-request implementation (formal responses match kernel f_hid.c; no stall) ==========
 
 TEST(VirtualDeviceHandlers, HidIdleFormalResponse) {
     HidTestEnv env;
 
-    // GET_IDLE 返回初始 idle 值 0；SET_IDLE 无条件接受
+    // GET_IDLE returns initial idle value 0; SET_IDLE accepts unconditionally
     std::uint32_t status = 0;
     auto ret = env.handler.request_get_idle(0, 0, 1, &status);
     EXPECT_EQ(status, static_cast<std::uint32_t>(UrbStatusType::StatusOK));
@@ -118,7 +118,7 @@ TEST(VirtualDeviceHandlers, HidIdleFormalResponse) {
 TEST(VirtualDeviceHandlers, HidReportFormalResponse) {
     HidTestEnv env;
 
-    // GET_REPORT 返回全 0 空报告（长度按主机 wLength）；SET_REPORT 接受并丢弃
+    // GET_REPORT returns an all-zero empty report (length from host wLength); SET_REPORT accepts and discards
     std::uint32_t status = 0;
     auto ret = env.handler.request_get_report(1, 0, 8, &status);
     EXPECT_EQ(status, static_cast<std::uint32_t>(UrbStatusType::StatusOK));
@@ -132,19 +132,19 @@ TEST(VirtualDeviceHandlers, HidReportFormalResponse) {
 TEST(VirtualDeviceHandlers, HidProtocolFormalResponse) {
     HidTestEnv env;
 
-    // GET_PROTOCOL 返回初始 protocol 值 0
+    // GET_PROTOCOL returns initial protocol value 0
     std::uint32_t status = 0;
     auto ret = env.handler.request_get_protocol(&status);
     EXPECT_EQ(status, static_cast<std::uint32_t>(UrbStatusType::StatusOK));
     EXPECT_EQ(ret, 0u);
 
-    // 测试环境接口 subclass=0（非 Boot），SET_PROTOCOL 应 stall（对齐内核）
+    // Test interface subclass=0 (not Boot); SET_PROTOCOL should stall (matching the kernel)
     status = 0;
     env.handler.request_set_protocol(1, &status);
     EXPECT_EQ(status, static_cast<std::uint32_t>(UrbStatusType::StatusEPIPE));
 }
 
-// ========== HID 标准请求默认实现 ==========
+// ========== Default HID standard-request implementation ==========
 
 TEST(VirtualDeviceHandlers, HidStandardRequests) {
     HidTestEnv env;
@@ -162,34 +162,34 @@ TEST(VirtualDeviceHandlers, HidStandardRequests) {
     EXPECT_EQ(status, static_cast<std::uint32_t>(UrbStatusType::StatusEPIPE));
 }
 
-// ========== HID 输入报告队列 ==========
+// ========== HID input-report queue ==========
 
 TEST(VirtualDeviceHandlers, HidSendInputReportQueuesWhenNoRequest) {
     HidTestEnv env;
-    env.handler.connect_for_test(); // 模拟已连接（未连接时 push 被断连检查拒绝）
+    env.handler.connect_for_test(); // Simulate connection (while unconnected, the disconnection check rejects push)
 
     EXPECT_FALSE(env.handler.has_pending_reports_for_test());
 
-    // 没有排队的端点请求时，报告进入 pending 队列
+    // Without queued endpoint requests, reports enter the pending queue
     const std::array<std::uint8_t, 3> report = {1, 2, 3};
     env.handler.send_input_report(asio::buffer(report));
     EXPECT_TRUE(env.handler.has_pending_reports_for_test());
 
-    // 再次发送继续排队
+    // Further sends continue queueing
     env.handler.send_input_report(asio::buffer(report));
     EXPECT_TRUE(env.handler.has_pending_reports_for_test());
 
-    // 断连时清空队列
+    // Clear queue on disconnection
     std::error_code ec;
     env.handler.on_disconnection(ec);
     EXPECT_FALSE(env.handler.has_pending_reports_for_test());
 }
 
-// ========== HID 数据面（中断 IN 挂起-应答、SET_REPORT 控制路径） ==========
+// ========== HID data plane (interrupt IN pending-response, SET_REPORT control path) ==========
 
 TEST(VirtualDeviceHandlers, HidInterruptInServedBySendInputReport) {
-    // 中断 IN 请求先挂起（无报告），send_input_report 推入时直接应答：
-    // 报告数据原样返回、status 0（HidTestEnv 已连上 stub responder）
+    // Interrupt IN request first stays pending (no report); respond directly when send_input_report pushes one:
+    // return report data unchanged, status 0 (HidTestEnv connected to stub responder)
     HidTestEnv env;
 
     const std::array<std::uint8_t, 4> report = {0x11, 0x22, 0x33, 0x44};
@@ -197,7 +197,7 @@ TEST(VirtualDeviceHandlers, HidInterruptInServedBySendInputReport) {
             1, UsbEndpoint{.address = 0x81, .attributes = 0x03, .max_packet_size = 8, .interval = 10},
             0, report.size(), make_cmd_submit(env.op, 1, 0x01, UsbIpDirection::In, report.size()).transfer, env.ec);
     ASSERT_FALSE(env.ec);
-    EXPECT_TRUE(env.stub.submits.empty()); // 无报告：请求挂起未应答
+    EXPECT_TRUE(env.stub.submits.empty()); // No report: request pending without a response
 
     env.handler.send_input_report(asio::buffer(report));
     ASSERT_EQ(env.stub.submits.size(), 1u);
@@ -208,14 +208,14 @@ TEST(VirtualDeviceHandlers, HidInterruptInServedBySendInputReport) {
 }
 
 TEST(VirtualDeviceHandlers, HidSetReportDeliveredToOverride) {
-    // SET_REPORT（Class|Interface|OUT 控制请求）数据经 request_set_report
-    // 交给子类（键盘 LED 场景），并回 OK
+    // SET_REPORT (Class|Interface|OUT control request) passes data through request_set_report
+    // to the subclass (keyboard LED scenario), returning OK
     HidTestEnv env;
 
     const SetupPacket setup{
             .request_type = 0x21, // Class | Interface | OUT
             .request = 0x09,      // SET_REPORT
-            .value = 0x0200,      // 报告类型 2（Output），报告 ID 0
+            .value = 0x0200,      // Report type 2 (Output), report ID 0
             .index = 0,
             .length = 3,
     };
@@ -232,10 +232,10 @@ TEST(VirtualDeviceHandlers, HidSetReportDeliveredToOverride) {
 }
 
 TEST(VirtualDeviceHandlers, HidSendInputReportDisconnectedRejected) {
-    // 未建立连接时 send_input_report 被通道断连检查拒绝（数据不会白攒）
+    // Without an established connection, the channel's disconnection check rejects send_input_report (avoiding useless accumulation)
     StringPool pool;
     UsbInterface intf{.interface_class = 3, .interface_subclass = 0, .interface_protocol = 0};
-    TestHidHandler handler(intf, pool); // 未调 on_new_connection
+    TestHidHandler handler(intf, pool); // on_new_connection not called
 
     const std::array<std::uint8_t, 2> report = {1, 2};
     handler.send_input_report(asio::buffer(report));
@@ -243,8 +243,8 @@ TEST(VirtualDeviceHandlers, HidSendInputReportDisconnectedRejected) {
 }
 
 TEST(VirtualDeviceHandlers, HidInputReportQueueDropsOldestOverLimit) {
-    // 报告缓冲超上限（1024）丢最旧：发 1025 个后第 1 个被丢，
-    // 主机 IN 请求取到的是第 2 个报告
+    // Report buffer exceeding limit (1024) drops the oldest: after sending 1025, report 1 is dropped,
+    // and the host IN request retrieves report 2
     HidTestEnv env;
 
     for (int i = 0; i < 1025; i++) {
@@ -259,5 +259,5 @@ TEST(VirtualDeviceHandlers, HidInputReportQueueDropsOldestOverLimit) {
     ASSERT_FALSE(env.ec);
 
     ASSERT_EQ(env.stub.submits.size(), 1u);
-    EXPECT_EQ(ret_submit_data(env.stub.submits[0]), (data_type{1, 0})); // 第 2 个报告
+    EXPECT_EQ(ret_submit_data(env.stub.submits[0]), (data_type{1, 0})); // Report 2
 }

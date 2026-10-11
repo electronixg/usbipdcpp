@@ -13,11 +13,11 @@
 using namespace usbipdcpp;
 
 namespace {
-// 回调中取设备 busid 用于日志：libusb 契约保证回调执行期间 trx->dev_handle
-// 必然有效（提交时 handle 持引用计数，直到 libusb_close 才释放，而 close
-// 在 on_disconnection 等 pending_count_ 归零、全部回调完成之后），
-// libusb_get_device 也恒返回 handle->dev 非空。判空仅为防御 libusb 版本
-// 行为差异（如某些后端在 NO_DEVICE 时提前清理 handle 内部状态）
+// Get the device busid in the callback for logging: the libusb contract guarantees trx->dev_handle is
+// valid throughout callback execution (the handle holds a reference count on submission, released only by libusb_close, while close
+// occurs in on_disconnection after pending_count_ reaches zero and all callbacks finish),
+// and libusb_get_device always returns a non-null handle->dev. The null check only guards against differences in libusb version
+// behavior (e.g. some backends cleaning up internal handle state early on NO_DEVICE)
 std::string get_trx_device_busid(libusb_transfer *trx) {
     if (auto *dev = libusb_get_device(trx->dev_handle)) {
         return get_device_busid(dev);
@@ -26,16 +26,16 @@ std::string get_trx_device_busid(libusb_transfer *trx) {
 }
 } // namespace
 
-// 普通模式构造函数
+// Normal-mode constructor
 usbipdcpp::LibusbDeviceHandler::LibusbDeviceHandler(UsbDevice &handle_device, libusb_device *native_device) :
     AbstDeviceHandler(handle_device, std::make_unique<LibusbTransferOperator>()), native_device_(native_device) {
-    // 设备尚未打开，将在 on_new_connection 时打开
+    // The device is not open yet; it will be opened in on_new_connection
 }
 
-// Android 模式构造函数
+// Android-mode constructor
 usbipdcpp::LibusbDeviceHandler::LibusbDeviceHandler(UsbDevice &handle_device, intptr_t fd) :
     AbstDeviceHandler(handle_device, std::make_unique<LibusbTransferOperator>()), wrapped_fd_(fd) {
-    // fd 将在 on_new_connection 时通过 libusb_wrap_sys_device 包装
+    // fd will be wrapped through libusb_wrap_sys_device in on_new_connection
 }
 
 usbipdcpp::LibusbDeviceHandler::~LibusbDeviceHandler() {
@@ -49,44 +49,44 @@ void usbipdcpp::LibusbDeviceHandler::on_new_connection(TransferResponder &curren
     AbstDeviceHandler::on_new_connection(current_session, ec);
 
     if (native_device_) {
-        // 普通模式：需要打开设备
+        // Normal mode: open the device
         if (!open_and_claim_device()) {
-            SPDLOG_ERROR("打开设备失败");
-            // 基类的 on_new_connection 已注册本 Session，失败后必须撤销注册：
-            // 残留的 session 指针指向即将析构的 Session。设备随后回 available，
-            // 下次导入时 try_moving_device_to_using 先把设备移入 using，在
-            // on_new_connection 重新注册之前的窗口内若设备拔出，handle_device_left
-            // 走 using 分支调 trigger_session_stop，会通过残留指针访问已析构的
-            // Session（use-after-free）。remove_responder 使指针为 null 安全跳过
+            SPDLOG_ERROR("Failed to open device");
+            // The base class on_new_connection already registered this Session; unregister it after failure:
+            // a remaining session pointer points to a Session about to be destroyed. The device then returns to available;
+            // on the next import, try_moving_device_to_using first moves it to using. If the device is removed in the window
+            // before on_new_connection registers it again, handle_device_left takes
+            // the using branch and calls trigger_session_stop, accessing the destroyed
+            // Session through the remaining pointer (use-after-free). remove_responder makes the pointer null, safely skipping it
             remove_responder();
             ec = make_error_code(ErrorType::NO_DEVICE);
             return;
         }
     }
     else if (wrapped_fd_ >= 0) {
-        // Android 模式：wrap fd 并声明接口
+        // Android mode: wrap fd and claim interfaces
         if (!wrap_fd_and_claim_interfaces()) {
-            SPDLOG_ERROR("wrap fd 失败");
+            SPDLOG_ERROR("Failed to wrap fd");
             remove_responder();
             ec = make_error_code(ErrorType::NO_DEVICE);
             return;
         }
     }
 
-    // 标记客户端连接
+    // Mark the client as connected
     client_disconnection = false;
 }
 
 void usbipdcpp::LibusbDeviceHandler::on_disconnection(error_code &ec) {
     client_disconnection = true;
-    // 不检查 device_removed，因为 libusb 会在设备拔出时正确触发回调（LIBUSB_TRANSFER_NO_DEVICE）
+    // Do not check device_removed because libusb correctly triggers the callback on device removal (LIBUSB_TRANSFER_NO_DEVICE)
 
-    // 取消所有传输
+    // Cancel all transfers
     {
-        // 持共享锁调用 libusb_cancel_transfer 不会死锁：libusb 的传输回调
-        // 只在 handle_events 线程执行，cancel 只异步提交取消请求、不调用
-        // 任何回调（usbfs 后端为 URB_CANCEL ioctl）。回调线程最多短暂阻塞
-        // 等待 unique_lock，cancel 返回释放共享锁后即继续
+        // Calling libusb_cancel_transfer while holding a shared lock cannot deadlock: libusb transfer callbacks
+        // execute only on the handle_events thread; cancel merely submits a cancellation request asynchronously without invoking
+        // any callback (URB_CANCEL ioctl on the usbfs backend). The callback thread may briefly block
+        // waiting for unique_lock, then continue after cancel returns and releases the shared lock
         std::shared_lock lock(transfers_mutex_);
         for (auto &[seqnum, cb]: transfers_) {
             auto err = libusb_cancel_transfer(static_cast<libusb_transfer *>(cb->transfer.get()));
@@ -96,25 +96,25 @@ void usbipdcpp::LibusbDeviceHandler::on_disconnection(error_code &ec) {
         }
     }
 
-    // 等待所有传输完成
+    // Wait for all transfers to complete
     {
-        // libusb 契约保证已提交的传输最终必触发回调（取消的传输同样以
-        // CANCELLED 完成，见 libusb_cancel_transfer 文档），等待必然结束。
-        // 超时仅作为 libusb 内部错误的诊断手段（与 Server::stop 的
-        // reap_cv 超时模式一致）；不能超时后放弃等待直接继续——回调仍可能
-        // 在事件线程执行并访问本 handler，handler 提前析构是 use-after-free
+        // The libusb contract guarantees submitted transfers eventually trigger callbacks (cancelled transfers also complete with
+        // CANCELLED; see the libusb_cancel_transfer documentation), so the wait must end.
+        // Timeouts only diagnose internal libusb errors (matching Server::stop's
+        // reap_cv timeout pattern); do not abandon the wait and proceed after a timeout, since callbacks may still
+        // execute on the event thread and access this handler, making early handler destruction a use-after-free
         std::unique_lock lock(transfer_complete_mutex_);
         if (!transfer_complete_cv_.wait_for(lock, std::chrono::seconds(10),
                                             [this]() { return pending_count_.load(std::memory_order_acquire) == 0; })) {
-            SPDLOG_ERROR("on_disconnection 等待传输完成超时（剩余 {} 个），继续等待", pending_count_.load());
+            SPDLOG_ERROR("on_disconnection timed out waiting for transfers ({} remaining); continuing to wait", pending_count_.load());
             transfer_complete_cv_.wait(lock, [this]() { return pending_count_.load(std::memory_order_acquire) == 0; });
         }
     }
 
-    // 为下次连接做准备，重置对象池状态
+    // Reset object pool state in preparation for the next connection
     callback_args_pool_.reset();
 
-    // 断开连接时释放接口并关闭设备
+    // Release interfaces and close the device on disconnection
     if (interfaces_claimed_) {
         release_and_close_device();
     }
@@ -135,30 +135,30 @@ void usbipdcpp::LibusbDeviceHandler::receive_urb(UsbIpCommand::UsbIpCmdSubmit cm
     auto transfer_buffer_length = cmd.transfer_buffer_length;
     const auto &setup_packet = cmd.setup;
 
-    // 根据端点类型分发
+    // Dispatch by endpoint type
     if (ep.attributes == static_cast<std::uint8_t>(EndpointAttributes::Control)) [[unlikely]] {
-        // 控制传输
+        // Control transfer
         auto tweak_ret = tweak_special_requests(setup_packet);
         if (tweak_ret < 0) [[likely]] {
-            // 不需要 tweak，提交 transfer
-            SPDLOG_DEBUG("控制传输 {}，ep addr: {:02x}", ep.direction() == UsbEndpoint::Direction::Out ? "Out" : "In",
+            // No tweak needed; submit transfer
+            SPDLOG_DEBUG("Control transfer {}, ep addr: {:02x}", ep.direction() == UsbEndpoint::Direction::Out ? "Out" : "In",
                          ep.address);
 
-            // 校验 wLength 不超过 transfer_buffer_length：libusb_fill_control_transfer
-            // 会按 wLength 设置传输长度（8 + wLength），若 wLength 大于按
-            // transfer_buffer_length 分配的缓冲区，libusb 提交后读写会越界
-            // （堆溢出）。恶意客户端可构造 wLength=0xFFFF 触发，必须拒绝。
-            // 不要求严格相等：内核 usbcore（usb_submit_urb）虽然对
-            // wLength != transfer_buffer_length 返回 -EBADR，但那是客户端
-            // 主机侧约束（Linux/Android vhci 的 URB 必然相等）；Windows
-            // vhci（usbip-win2）无此约束，可能发送 wLength <
-            // transfer_buffer_length 的包。此时数据阶段按
-            // transfer_buffer_length 读取（协议固定字段），多余的字节
-            // 读掉即丢弃、后续协议流不错位，无内存风险
+            // Validate that wLength does not exceed transfer_buffer_length: libusb_fill_control_transfer
+            // sets the transfer length from wLength (8 + wLength). If wLength exceeds the buffer allocated according to
+            // transfer_buffer_length, reads/writes after libusb submission go out of bounds
+            // (heap overflow). A malicious client can trigger this with wLength=0xFFFF; reject it.
+            // Strict equality is not required: although kernel usbcore (usb_submit_urb) returns
+            // -EBADR for wLength != transfer_buffer_length, that is a client
+            // host-side constraint (Linux/Android vhci URBs necessarily have equal values). Windows
+            // vhci (usbip-win2) has no such constraint and may send packets with wLength <
+            // transfer_buffer_length. In that case, the data stage is read according to
+            // transfer_buffer_length (the protocol's fixed field); excess bytes are
+            // read and discarded, leaving the subsequent protocol stream aligned with no memory risk
             if (setup_packet.length > transfer_buffer_length) [[unlikely]] {
-                SPDLOG_ERROR("控制传输 wLength({}) 大于 transfer_buffer_length({})，拒绝传输",
+                SPDLOG_ERROR("Control transfer wLength({}) exceeds transfer_buffer_length({}); rejecting transfer",
                              setup_packet.length, transfer_buffer_length);
-                // cmd 析构时 transfer 自动释放（TransferHandle RAII）
+                // transfer is automatically released when cmd is destroyed (TransferHandle RAII)
                 responder->submit_ret_submit(
                         UsbIpResponse::UsbIpRetSubmit::create_ret_submit_epipe_without_data(seqnum, 0));
                 return;
@@ -166,7 +166,7 @@ void usbipdcpp::LibusbDeviceHandler::receive_urb(UsbIpCommand::UsbIpCmdSubmit cm
 
             auto *trx = static_cast<libusb_transfer *>(cmd.transfer.get());
 
-            // 填充 setup 包到 buffer 开头
+            // Fill the setup packet at the start of buffer
             libusb_fill_control_setup(trx->buffer, setup_packet.request_type, setup_packet.request, setup_packet.value,
                                       setup_packet.index, setup_packet.length);
 
@@ -177,7 +177,7 @@ void usbipdcpp::LibusbDeviceHandler::receive_urb(UsbIpCommand::UsbIpCmdSubmit cm
             callback_args->handler = this;
             callback_args->seqnum = seqnum;
             callback_args->is_out = setup_packet.is_out();
-            callback_args->transfer = std::move(cmd.transfer); // 转移所有权
+            callback_args->transfer = std::move(cmd.transfer); // Transfer ownership
 
             libusb_fill_control_transfer(trx, native_handle, trx->buffer, LibusbDeviceHandler::transfer_callback,
                                          callback_args, timeout_milliseconds);
@@ -187,12 +187,12 @@ void usbipdcpp::LibusbDeviceHandler::receive_urb(UsbIpCommand::UsbIpCmdSubmit cm
             bool duplicate_seqnum = false;
             {
                 std::lock_guard lock(transfers_mutex_);
-                // 拒绝重复 seqnum：transfers_ 以 seqnum 为 key，两个在途
-                // 传输共用同一 key 时，回调/unlink/submit 失败路径的
-                // erase 会错删先提交传输的记录，响应与取消语义全乱
-                // （RET_SUBMIT 与 RET_UNLINK 可能乱序）。协议要求 seqnum
-                // 单调递增（内核 vhci 原子递增），重复属客户端违规。
-                // 本次传输不提交给设备，按 EPIPE 回复
+                // Reject duplicate seqnum: transfers_ uses seqnum as its key. When two in-flight
+                // transfers share the same key, erase in the callback/unlink/submit failure paths
+                // incorrectly deletes the earlier transfer's record, disrupting response and cancellation semantics
+                // (RET_SUBMIT and RET_UNLINK may be reordered). The protocol requires seqnum
+                // to increase monotonically (the kernel vhci increments atomically); duplicates violate the client protocol.
+                // Do not submit this transfer to the device; reply with EPIPE
                 if (transfers_.contains(seqnum)) [[unlikely]] {
                     duplicate_seqnum = true;
                 }
@@ -215,26 +215,26 @@ void usbipdcpp::LibusbDeviceHandler::receive_urb(UsbIpCommand::UsbIpCmdSubmit cm
             auto err = libusb_submit_transfer(trx);
 
             if (err < 0) [[unlikely]] {
-                SPDLOG_ERROR("控制传输给设备失败：{}", libusb_strerror(err));
+                SPDLOG_ERROR("Control transfer to device failed: {}", libusb_strerror(err));
                 {
                     std::lock_guard lock(transfers_mutex_);
                     if (transfers_.erase(seqnum)) {
-                        // 只递减不通知：receive_urb 与 on_disconnection 同在
-                        // receiver 线程，本路径的递减必然先于等待的谓词检查
-                        // 执行（谓词直接满足，等待者不会入睡），无需 notify
-                        // 也不会丢失唤醒。同时不能在此唤醒——notify 后等待者
-                        // （若未来跨线程调用 on_disconnection）会清理对象池并
-                        // 可能析构 handler，而本函数之后还要访问
+                        // Decrement without notifying: receive_urb and on_disconnection both run on the
+                        // receiver thread, so this decrement necessarily executes before the wait predicate is checked
+                        // (the predicate is immediately satisfied and the waiter does not sleep), requiring no notify
+                        // and losing no wakeup. Also, do not wake here: after notify, a waiter
+                        // (if on_disconnection is called across threads in the future) could clean up the object pool and
+                        // possibly destroy handler, which this function still accesses afterward
                         // callback_args/session
                         pending_count_.fetch_sub(1, std::memory_order_release);
                     }
-                    // 无需检查 unlinking：receive_urb 与 handle_unlink_seqnum
-                    // 同在 receiver 线程串行执行，submit 失败时 handle_unlink
-                    // 不可能已置位（线程模型见 handle_unlink_seqnum 注释）。
-                    // 对齐内核 stub_recv_cmd_submit：提交失败直接回
-                    // RET_SUBMIT(EPIPE)；若主机仍发来 CMD_UNLINK，entry 已
-                    // erase 会走 handle_unlink_seqnum 的 else 分支回
-                    // RET_UNLINK(0)，vhci 对已完成的 URB 丢弃该响应
+                    // No need to check unlinking: receive_urb and handle_unlink_seqnum
+                    // execute serially on the receiver thread, so handle_unlink cannot already have set the flag
+                    // when submit fails (see the handle_unlink_seqnum comment for the thread model).
+                    // Match the kernel stub_recv_cmd_submit: on submission failure, return
+                    // RET_SUBMIT(EPIPE) directly; if the host still sends CMD_UNLINK, the entry has already been
+                    // erased, so handle_unlink_seqnum takes its else branch and returns
+                    // RET_UNLINK(0), which vhci discards for an already completed URB
                 }
                 callback_args->transfer.reset();
                 if (!callback_args_pool_.free(callback_args)) {
@@ -249,10 +249,10 @@ void usbipdcpp::LibusbDeviceHandler::receive_urb(UsbIpCommand::UsbIpCmdSubmit cm
             }
         }
         else {
-            // tweak_ret == 0：tweak 内部已经用同步 API 把请求发过设备了，这是它办完的
-            // 结果，不能再提交一次（内核在 tweak 成功时同样跳过 usb_submit_urb，注释
-            // 原话是 Skip submitting this URB to not duplicate the request）。
-            // libusb 失败返回负数、不需要 tweak 返回 -1，都走上面的提交分支
+            // tweak_ret == 0: tweak already sent the request to the device through synchronous APIs; this is its completed
+            // result, so do not submit it again (the kernel also skips usb_submit_urb when tweak succeeds; its comment
+            // says Skip submitting this URB to not duplicate the request).
+            // libusb failures return negative values, and no tweak needed returns -1; both take the submission branch above
             responder->submit_ret_submit(
                     UsbIpResponse::UsbIpRetSubmit::create_ret_submit_ok_without_data(seqnum, transfer_buffer_length));
         }
@@ -269,7 +269,7 @@ void usbipdcpp::LibusbDeviceHandler::receive_urb(UsbIpCommand::UsbIpCmdSubmit cm
         callback_args->handler = this;
         callback_args->seqnum = seqnum;
         callback_args->is_out = is_out;
-        callback_args->transfer = std::move(cmd.transfer); // 转移所有权
+        callback_args->transfer = std::move(cmd.transfer); // Transfer ownership
 
         if (ep.attributes == static_cast<std::uint8_t>(EndpointAttributes::Bulk)) [[likely]] {
             LATENCY_TRACK(*responder->latency_tracker(), seqnum, "LibusbDeviceHandler::receive_urb bulk");
@@ -278,7 +278,7 @@ void usbipdcpp::LibusbDeviceHandler::receive_urb(UsbIpCommand::UsbIpCmdSubmit cm
                                       LibusbDeviceHandler::transfer_callback, callback_args, timeout_milliseconds);
         }
         else if (ep.attributes == static_cast<std::uint8_t>(EndpointAttributes::Interrupt)) {
-            SPDLOG_DEBUG("中断传输 {}，ep addr: {:02x}", ep.direction() == UsbEndpoint::Direction::Out ? "Out" : "In",
+            SPDLOG_DEBUG("Interrupt transfer {}, ep addr: {:02x}", ep.direction() == UsbEndpoint::Direction::Out ? "Out" : "In",
                          ep.address);
 
             libusb_fill_interrupt_transfer(trx, native_handle, ep.address, trx->buffer, transfer_buffer_length,
@@ -288,7 +288,7 @@ void usbipdcpp::LibusbDeviceHandler::receive_urb(UsbIpCommand::UsbIpCmdSubmit cm
             int num_iso_packets = (cmd.number_of_packets != 0 && cmd.number_of_packets != 0xFFFFFFFF)
                                           ? static_cast<int>(cmd.number_of_packets)
                                           : 0;
-            SPDLOG_DEBUG("同步传输 {}，ep addr: {:02x}", ep.direction() == UsbEndpoint::Direction::Out ? "Out" : "In",
+            SPDLOG_DEBUG("Isochronous transfer {}, ep addr: {:02x}", ep.direction() == UsbEndpoint::Direction::Out ? "Out" : "In",
                          ep.address);
 
             libusb_fill_iso_transfer(trx, native_handle, ep.address, trx->buffer, transfer_buffer_length,
@@ -296,7 +296,7 @@ void usbipdcpp::LibusbDeviceHandler::receive_urb(UsbIpCommand::UsbIpCmdSubmit cm
                                      timeout_milliseconds);
         }
         else [[unlikely]] {
-            SPDLOG_DEBUG("端口{:02x}的未知传输类型：{}", ep.address, ep.attributes);
+            SPDLOG_DEBUG("Unknown transfer type for endpoint {:02x}: {}", ep.address, ep.attributes);
             callback_args->transfer.reset();
             if (!callback_args_pool_.free(callback_args)) {
                 delete callback_args;
@@ -311,9 +311,9 @@ void usbipdcpp::LibusbDeviceHandler::receive_urb(UsbIpCommand::UsbIpCmdSubmit cm
         bool duplicate_seqnum = false;
         {
             std::lock_guard lock(transfers_mutex_);
-            // 拒绝重复 seqnum（同控制传输分支的注释：transfers_ 以
-            // seqnum 为 key，重复会让两个在途传输共用一个 entry，
-            // erase/取消语义错乱）。按 EPIPE 回复，不提交给设备
+            // Reject duplicate seqnum (as noted in the control-transfer branch: transfers_ uses
+            // seqnum as its key; duplicates make two in-flight transfers share one entry,
+            // disrupting erase/cancellation semantics). Reply with EPIPE without submitting to the device
             if (transfers_.contains(seqnum)) [[unlikely]] {
                 duplicate_seqnum = true;
             }
@@ -334,16 +334,16 @@ void usbipdcpp::LibusbDeviceHandler::receive_urb(UsbIpCommand::UsbIpCmdSubmit cm
 
         auto err = libusb_submit_transfer(trx);
         if (err < 0) [[unlikely]] {
-            SPDLOG_ERROR("传输失败，{}", libusb_strerror(err));
+            SPDLOG_ERROR("Transfer failed, {}", libusb_strerror(err));
             {
                 std::lock_guard lock(transfers_mutex_);
                 if (transfers_.erase(seqnum)) {
-                    // 只递减不通知（同控制路径：与 on_disconnection 同线程，
-                    // 递减先于等待的谓词检查，谓词直接满足，无需 notify）
+                    // Decrement without notifying (as in the control path: same thread as on_disconnection,
+                    // so decrement precedes checking the wait predicate, which is immediately satisfied; no notify needed)
                     pending_count_.fetch_sub(1, std::memory_order_release);
                 }
-                // 无需检查 unlinking：与 handle_unlink_seqnum 同线程串行，
-                // 理由见控制传输分支的注释，对齐内核 stub_recv_cmd_submit
+                // No need to check unlinking: serial execution on the same thread as handle_unlink_seqnum;
+                // see the control-transfer branch comment for the reason; matches kernel stub_recv_cmd_submit
             }
             callback_args->transfer.reset();
             if (!callback_args_pool_.free(callback_args)) {
@@ -357,62 +357,62 @@ void usbipdcpp::LibusbDeviceHandler::receive_urb(UsbIpCommand::UsbIpCmdSubmit cm
         }
     }
     else [[unlikely]] {
-        SPDLOG_ERROR("非控制传输却不存在目标接口");
+        SPDLOG_ERROR("Target interface does not exist for a non-control transfer");
         responder->submit_ret_submit(UsbIpResponse::UsbIpRetSubmit::create_ret_submit_epipe_without_data(seqnum, 0));
     }
 }
 
 void usbipdcpp::LibusbDeviceHandler::handle_unlink_seqnum(std::uint32_t unlink_seqnum, std::uint32_t cmd_seqnum) {
     if (device_removed) [[unlikely]]
-        // 设备已物理拔出，连接即将断开，vhci 端会强制结束所有 URB。
-        // 有意不回复 RET_UNLINK：缺失对即将断开的连接无实际影响
+        // The device was physically removed; the connection will disconnect shortly, and vhci will forcibly complete all URBs.
+        // Intentionally do not reply with RET_UNLINK: its absence has no practical impact on a connection about to close
         return;
 
     {
-        // 在共享锁下写 cb->unlinking / cb->unlink_cmd_seqnum 是安全的（非数据竞争）：
-        // 1) 本函数只由 Session::receiver 单线程调用（同一 Session 只有一个收包
-        //    循环，receiver 退出后的 on_disconnection 也在这个线程，不会并发）
-        // 2) 唯一读这两个字段的地方——transfer_callback（libusb 事件线程）和
-        //    receive_urb 的 submit 失败路径——都持排他锁，与这里的写者互斥，
-        //    不存在"共享锁下读 unlinking"的路径
-        // 3) 能与本函数并发持共享锁的 on_disconnection 只读 cb->transfer（get()
-        //    只读）并调用 libusb_cancel_transfer（libusb 承诺线程安全），不触碰
-        //    unlinking 字段；C++ 内存模型只对同一内存位置上的冲突访问定义数据
-        //    竞争，对同一对象不同成员的并发访问不构成竞争
+        // Writing cb->unlinking / cb->unlink_cmd_seqnum under a shared lock is safe (not a data race):
+        // 1) This function is called only by the single Session::receiver thread (each Session has one packet-receive
+        //    loop; on_disconnection after receiver exits also runs on that thread, without concurrency)
+        // 2) The only readers of these two fields, transfer_callback (the libusb event thread) and
+        //    receive_urb's submit failure path, both hold exclusive locks and are mutually exclusive with this writer;
+        //    there is no path that reads unlinking under a shared lock
+        // 3) on_disconnection, which can hold a shared lock concurrently with this function, only reads cb->transfer (get()
+        //    is read-only) and calls libusb_cancel_transfer (guaranteed thread-safe by libusb), without touching
+        //    unlinking. The C++ memory model defines data races only for conflicting accesses to the same memory
+        //    location; concurrent access to different members of the same object is not a race
         std::shared_lock lock(transfers_mutex_);
         auto it = transfers_.find(unlink_seqnum);
         if (it != transfers_.end()) {
             auto *cb = it->second;
-            // transfer 仍在 tracker 中，在锁内标记 unlinking 并 cancel。
-            // 回调执行时会看到 unlinking==true，走 RET_UNLINK 分支，并负责唤醒 sender。
+            // transfer remains in the tracker; mark unlinking and cancel under the lock.
+            // The callback sees unlinking==true, takes the RET_UNLINK branch, and is responsible for waking sender.
             cb->unlinking = true;
             cb->unlink_cmd_seqnum = cmd_seqnum;
 
-            // 不在此处释放共享锁：libusb_cancel_transfer 仅设置标志位不调用回调，
-            // 在锁内调用可防止 transfer_callback 拿到排他锁后释放 cb，导致下面 cb 悬空。
+            // Do not release the shared lock here: libusb_cancel_transfer only sets flags without invoking callbacks;
+            // calling under the lock prevents transfer_callback from acquiring the exclusive lock and releasing cb, leaving cb below dangling.
             int err = libusb_cancel_transfer(static_cast<libusb_transfer *>(cb->transfer.get()));
             if (err == LIBUSB_ERROR_NOT_FOUND) [[unlikely]] {
-                // transfer 在 libusb 层已完成但回调尚未执行。unlinking 已置位，
-                // 回调会走 unlink 分支入队 RET_UNLINK（带实际状态码）并唤醒 sender。
+                // transfer has completed at the libusb level but its callback has not executed yet. unlinking is set;
+                // the callback takes the unlink branch, queues RET_UNLINK (with the actual status code), and wakes sender.
             }
             else if (err) [[unlikely]] {
-                // libusb 契约：已提交的传输最终必触发回调（cancel 成功或
-                // NOT_FOUND=已完成待派发，回调都以取消/完成状态触发），
-                // 回调因 unlinking 已置位会入队 RET_UNLINK，此处无需立即
-                // 回复。与参考项目 usbipd-libusb 的 stub_recv_cmd_unlink
-                // 一致（只打日志）；若在错误分支立即入队 RET_UNLINK 而
-                // 回调后来也触发，会发两个 RET_UNLINK（协议违规）
+                // libusb contract: submitted transfers eventually trigger callbacks (whether cancel succeeds or
+                // NOT_FOUND means already completed awaiting dispatch, callbacks run with cancelled/completed status).
+                // Since unlinking is set, the callback queues RET_UNLINK; no immediate
+                // reply is needed here. This matches the reference project usbipd-libusb's stub_recv_cmd_unlink
+                // (which only logs). Queuing RET_UNLINK immediately in the error branch followed by
+                // a later callback would send two RET_UNLINK responses (a protocol violation)
                 SPDLOG_ERROR("libusb_cancel_transfer failed: {}", libusb_strerror(err));
             }
         }
         else {
             SPDLOG_DEBUG("handle_unlink: transfer NOT found, enqueue RET_UNLINK({})", cmd_seqnum);
-            // transfer 已被 transfer_callback 从 map 移除，说明回调已决定发送 RET_SUBMIT
-            // 还是 RET_UNLINK 并已入队。此时主机即将收到（或已经收到）该传输的完成通知，
-            // 这个 CMD_UNLINK 已经无关紧要——传输已经完成了，unlink 天然晚了。
-            // 用 submit_ret_unlink（入队+唤醒）立即发出：回调的唤醒可能已经发生过
-            // （sender 消费完队列重新睡眠后本响应才入队），若依赖"下一次唤醒顺带
-            // 发出"，空闲连接上的 RET_UNLINK 会滞留到连接关闭，客户端可能超时等待
+            // transfer was removed from the map by transfer_callback, meaning the callback has already decided between RET_SUBMIT
+            // and RET_UNLINK and queued it. The host is about to receive (or has already received) this transfer's completion notification;
+            // this CMD_UNLINK no longer matters: the transfer has completed, so unlink is inherently too late.
+            // Send immediately with submit_ret_unlink (enqueue+wakeup): the callback's wakeup may already have occurred
+            // (sender consumed the queue and slept again before this response was enqueued). Relying on the next wakeup to
+            // send it would leave RET_UNLINK on an idle connection until closure, potentially making the client time out waiting
             responder->submit_ret_unlink(UsbIpResponse::UsbIpRetUnlink::create_ret_unlink(cmd_seqnum, 0));
             lock.unlock();
         }
@@ -430,16 +430,16 @@ int usbipdcpp::LibusbDeviceHandler::tweak_clear_halt_cmd(const SetupPacket &setu
     else {
         SPDLOG_DEBUG("libusb_clear_halt() done: endp {}", target_endp);
     }
-    // 返回 libusb 错误码（0=成功，负=错误）。
-    // caller 中 tweak_ret < 0 视为"未处理，提交 transfer 让设备自行处理"，
-    // tweak_ret == 0 视为"已处理，无需提交 transfer"。
-    // 因此 tweak 失败时会 fall through 到正常 transfer 提交，作为降级策略。
+    // Return a libusb error code (0=success, negative=error).
+    // The caller treats tweak_ret < 0 as not handled: submit transfer for the device to handle itself,
+    // and tweak_ret == 0 as handled: no transfer submission needed.
+    // Thus tweak failure falls through to normal transfer submission as a fallback strategy.
     //
-    // 失败时必须如实返回错误码，不得把任何错误码降级成 0：
-    // 内核 usb_clear_halt（core/message.c）对任何错误都直接返回，其注释写明
-    // "don't un-halt or force to DATA0 except on success"——只有成功时才重置
-    // data toggle。失败时设备侧 toggle 并未归零，报成功等于让客户端以为端点
-    // 已复位、按 DATA0 继续收发，实际两端 toggle 错位，后续传输会莫名失败。
+    // On failure, return the actual error code; never downgrade any error code to 0:
+    // kernel usb_clear_halt (core/message.c) returns directly on any error; its comment states
+    // "don't un-halt or force to DATA0 except on success": reset
+    // the data toggle only on success. On failure the device-side toggle was not reset; reporting success makes the client think the endpoint
+    // was reset and continue sending/receiving with DATA0, while the two toggles actually differ, causing unexplained later transfer failures.
     return err;
 }
 
@@ -458,33 +458,33 @@ int usbipdcpp::LibusbDeviceHandler::tweak_set_interface_cmd(const SetupPacket &s
         SPDLOG_DEBUG("{}: usb_set_interface done: inf {} alt {}", get_device_busid(libusb_get_device(native_handle)),
                      interface, alternate);
 
-        // 切换 current_altsetting（端点数据已在 bind 时预填）。
-        // SET_INTERFACE 的 wIndex 是 bInterfaceNumber（USB 规范），不能当数组
-        // 下标用：跳号设备（接口号不连续，如 0 和 2）下标与接口号不一致，
-        // 按索引会切错接口。按 interface_number 匹配（bind 时从配置描述符
-        // bInterfaceNumber 填充，见 LibusbServer.cpp）
+        // Switch current_altsetting (endpoint data was prefilled during bind).
+        // SET_INTERFACE's wIndex is bInterfaceNumber (USB specification), not an array
+        // index: on devices with nonconsecutive interface numbers (e.g. 0 and 2), indices differ from interface numbers,
+        // so using the index switches the wrong interface. Match interface_number (filled from the configuration descriptor's
+        // bInterfaceNumber during bind; see LibusbServer.cpp)
         for (auto &dev_intf: handle_device.interfaces) {
             if (dev_intf.interface_number != interface) {
                 continue;
             }
             if (alternate < dev_intf.endpoints.size()) {
                 dev_intf.current_altsetting = static_cast<std::uint8_t>(alternate);
-                SPDLOG_DEBUG("已切换接口 {} 到 alt {}，端点数量: {}", interface, alternate,
+                SPDLOG_DEBUG("Switched interface {} to alt {}, endpoint count: {}", interface, alternate,
                              dev_intf.current_endpoints().size());
             }
             break;
         }
     }
-    // 返回 libusb 错误码（0=成功，负=错误）。
-    // caller 中 tweak_ret < 0 视为"未处理，提交 transfer 让设备自行处理"，
-    // tweak_ret == 0 视为"已处理，无需提交 transfer"。
-    // 因此 tweak 失败时会 fall through 到正常 transfer 提交，作为降级策略。
+    // Return a libusb error code (0=success, negative=error).
+    // The caller treats tweak_ret < 0 as not handled: submit transfer for the device to handle itself,
+    // and tweak_ret == 0 as handled: no transfer submission needed.
+    // Thus tweak failure falls through to normal transfer submission as a fallback strategy.
     return err;
 }
 
 
-// setup_packet 未参与处理：这里有意跳过 SET_CONFIGURATION（见函数内注释），
-// 参数保留是为了与其他 tweak 函数签名一致
+// setup_packet is not processed: SET_CONFIGURATION is intentionally skipped here (see the function's comments);
+// the parameter is retained for consistency with other tweak function signatures
 int usbipdcpp::LibusbDeviceHandler::tweak_set_configuration_cmd([[maybe_unused]] const SetupPacket &setup_packet) {
     SPDLOG_DEBUG("tweak_set_configuration_cmd");
 
@@ -503,28 +503,28 @@ int usbipdcpp::LibusbDeviceHandler::tweak_set_configuration_cmd([[maybe_unused]]
     // }
     // return err;
 
-    // 不可以set_configuration，会device_busy
-    //  usbipd-libusb 返回 -1，表示不处理这个命令，继续正常提交 transfer
-    //  设备会收到 set_configuration 命令
+    // Do not call set_configuration; it would cause device_busy
+    //  usbipd-libusb returns -1, meaning this command is not handled; continue normal transfer submission
+    //  The device receives the set_configuration command
     return -1;
 }
 
-// setup_packet 未参与处理：reset 只记日志、不实际执行（见函数内注释），
-// 参数保留是为了与其他 tweak 函数签名一致
+// setup_packet is not processed: reset only logs without actually executing (see the function's comments);
+// the parameter is retained for consistency with other tweak function signatures
 int usbipdcpp::LibusbDeviceHandler::tweak_reset_device_cmd([[maybe_unused]] const SetupPacket &setup_packet) {
     SPDLOG_INFO("{}: usb_queue_reset_device", get_device_busid(libusb_get_device(native_handle)));
 
-    // 参考 usbipd-libusb：不执行 libusb_reset_device
-    // reset 可能导致设备重新枚举，连接会断开
+    // Following usbipd-libusb: do not call libusb_reset_device
+    // reset may cause device reenumeration, disconnecting the connection
     // libusb_reset_device(native_handle);
     return 0;
 }
 
 int usbipdcpp::LibusbDeviceHandler::tweak_special_requests(const SetupPacket &setup_packet) {
-    // 返回值：
-    // 负数: 未处理（不需要 tweak 或 tweak 执行失败），caller 正常提交 transfer
-    //  0: tweak 已成功处理，无需提交 transfer
-    // 特殊请求较少见，大多数情况返回 -1（不需要 tweak）
+    // Return value:
+    // Negative: not handled (no tweak needed or tweak failed); caller submits transfer normally
+    //  0: tweak handled successfully; no transfer submission needed
+    // Special requests are uncommon; most cases return -1 (no tweak needed)
     if (setup_packet.is_clear_halt_cmd()) [[unlikely]] {
         return tweak_clear_halt_cmd(setup_packet);
     }
@@ -537,14 +537,14 @@ int usbipdcpp::LibusbDeviceHandler::tweak_special_requests(const SetupPacket &se
     else if (setup_packet.is_reset_device_cmd()) [[unlikely]] {
         return tweak_reset_device_cmd(setup_packet);
     }
-    SPDLOG_DEBUG("不需要调整包");
-    return -1; // 不需要 tweak
+    SPDLOG_DEBUG("No packet adjustment needed");
+    return -1; // No tweak needed
 }
 
 uint8_t usbipdcpp::LibusbDeviceHandler::get_libusb_transfer_flags(uint32_t in) {
-    // 只转换 libusb 有对应物的标志：URB_ISO_ASAP 是 libusb ISO 传输的固有
-    // 语义（Linux usbfs 强制 ASAP，libusb 无对应 flag 可设），其余 URB 标志
-    // （NO_TRANSFER_DMA_MAP 等）与 libusb 传输无关，不需要转换
+    // Convert only flags with libusb counterparts: URB_ISO_ASAP is inherent in libusb ISO transfer
+    // semantics (Linux usbfs forces ASAP; libusb has no corresponding flag to set). Other URB flags
+    // (NO_TRANSFER_DMA_MAP, etc.) are unrelated to libusb transfers and need no conversion
     uint8_t flags = 0;
 
     if (in & static_cast<std::uint32_t>(TransferFlag::URB_SHORT_NOT_OK))
@@ -556,9 +556,9 @@ uint8_t usbipdcpp::LibusbDeviceHandler::get_libusb_transfer_flags(uint32_t in) {
 }
 
 void usbipdcpp::LibusbDeviceHandler::masking_bogus_flags(bool is_out, struct libusb_transfer *trx) {
-    // 结构与 is_out 判定（控制传输按方向位或 wLength==0 视为 OUT，即无数据
-    // 阶段）均与参考项目 usbipd-libusb 的 masking_bogus_flags 一致
-    // （driver-libusb/stub_rx.c，两者同为 usbip 服务器实现）
+    // Both the structure and is_out determination (control transfers count as OUT according to the direction bit or wLength==0, meaning no data
+    // stage) match the reference project usbipd-libusb's masking_bogus_flags
+    // (driver-libusb/stub_rx.c; both are usbip server implementations)
     std::uint32_t allowed = 0;
     /* enforce simple/standard policy */
     switch (trx->type) {
@@ -574,27 +574,27 @@ void usbipdcpp::LibusbDeviceHandler::masking_bogus_flags(bool is_out, struct lib
                 allowed |= LIBUSB_TRANSFER_SHORT_NOT_OK;
             break;
         case LIBUSB_TRANSFER_TYPE_ISOCHRONOUS:
-            // ISO 包短包（包实际长度小于分配槽位）是正常语义，不能设
-            // SHORT_NOT_OK（否则依赖短包状态的 ISO 设备可能被误报
-            // ERROR）。case 必须放在 default 之后：若放在 CONTROL 之后，
-            // BULK/CONTROL 的 fallthrough 会在这里 break，永远到不了
-            // default，Bulk IN / Control IN 的 SHORT_NOT_OK 会被清除
-            // （曾引入此回归）。注：usbipd-libusb 的 masking_bogus_flags
-            // 没有此 case、ISO 会掉进 default 被设上 SHORT_NOT_OK，但
-            // Linux usbfs 的 URB_SHORT_NOT_OK 对 ISO 传输无实际效果
-            // （ISO 完成状态由 iso_frame_desc 表达，不走 short 检查），
-            // 此处显式排除以符合注释 "all non-iso endpoints" 的意图
+            // Short ISO packets (actual packet length less than the allocated slot) are normal; do not set
+            // SHORT_NOT_OK (otherwise ISO devices relying on short-packet status may incorrectly report
+            // ERROR). This case must follow default: placed after CONTROL,
+            // BULK/CONTROL fallthrough would break here, never reaching
+            // default, and clearing SHORT_NOT_OK for Bulk IN / Control IN
+            // (this regression occurred previously). Note: usbipd-libusb's masking_bogus_flags
+            // has no such case, so ISO falls into default and gets SHORT_NOT_OK, but
+            // Linux usbfs's URB_SHORT_NOT_OK has no practical effect on ISO transfers
+            // (ISO completion status is expressed by iso_frame_desc and does not use the short check);
+            // explicitly exclude it here to follow the intention of the comment "all non-iso endpoints"
             break;
     }
     trx->flags &= allowed;
 }
 
 int usbipdcpp::LibusbDeviceHandler::trxstat2error(enum libusb_transfer_status trxstat) {
-    // 具体数值抄的linux的
-    // TIMED_OUT 也映射 EPIPE 而非 ETIMEDOUT：与参考项目 usbipd-libusb 的
-    // trxstat2error 一致（stub_common.c 中 ERROR/STALL/TIMED_OUT/OVERFLOW
-    // 统一返回 -EPIPE）。且本后端 timeout_milliseconds 为 0（无限等待），
-    // libusb 实际不会返回 TIMED_OUT，该分支不可达
+    // The specific values are copied from Linux
+    // TIMED_OUT also maps to EPIPE rather than ETIMEDOUT, matching the reference project usbipd-libusb's
+    // trxstat2error (ERROR/STALL/TIMED_OUT/OVERFLOW in stub_common.c
+    // all return -EPIPE). This backend's timeout_milliseconds is 0 (wait indefinitely),
+    // so libusb does not actually return TIMED_OUT; this branch is unreachable
     switch (trxstat) {
         case LIBUSB_TRANSFER_COMPLETED:
             return static_cast<int>(UrbStatusType::StatusOK);
@@ -641,33 +641,33 @@ void LIBUSB_CALL usbipdcpp::LibusbDeviceHandler::transfer_callback(libusb_transf
     //             static_cast<int>(trx->type), trx->num_iso_packets, trx->actual_length, callback_arg.is_out);
 
     LATENCY_TRACK(*callback_arg.handler->responder->latency_tracker(), callback_arg.seqnum,
-                  "LibusbDeviceHandler::transfer_callback调用");
+                  "LibusbDeviceHandler::transfer_callback called");
 
-    // 如果断连了，直接清理并返回（不发送响应）
-    // 这是在传输完成后检查，断连是特殊情况
+    // If disconnected, clean up directly and return (without sending a response)
+    // This check happens after transfer completion; disconnection is a special case
     if (callback_arg.handler->client_disconnection) [[unlikely]] {
         auto *handler = callback_arg.handler;
         handler->transfers_mutex_.lock();
         handler->transfers_.erase(callback_arg.seqnum);
         handler->transfers_mutex_.unlock();
-        callback_arg.transfer.reset(); // 释放 libusb_transfer，避免延后到下次 alloc
+        callback_arg.transfer.reset(); // Release libusb_transfer rather than delaying until the next alloc
         if (!handler->callback_args_pool_.free(&callback_arg)) {
             delete &callback_arg;
         }
-        // 锁内递减并通知（依据见 decrement_pending_and_notify 注释）
+        // Decrement and notify under the lock (see the decrement_pending_and_notify comment for the basis)
         handler->decrement_pending_and_notify();
         return;
     }
 
-    // status 检查
+    // Check status
     switch (trx->status) {
         case LIBUSB_TRANSFER_COMPLETED:
             /* OK */
             break;
         case LIBUSB_TRANSFER_ERROR:
-            // SHORT_NOT_OK 未设置：调用者接受短包，SHORT_NOT_OK 报告 ERROR 是正常的；
-            //   实际数据已收到，视为完成以正确转发 actual_length。
-            // SHORT_NOT_OK 已设置：调用者明确要求完整长度，这是真正的传输错误。
+            // SHORT_NOT_OK not set: the caller accepts short packets, so SHORT_NOT_OK reporting ERROR is normal;
+            //   actual data has been received; treat as completed to forward actual_length correctly.
+            // SHORT_NOT_OK set: the caller explicitly requires the full length; this is a real transfer error.
             if (!(trx->flags & LIBUSB_TRANSFER_SHORT_NOT_OK)) {
                 trx->status = LIBUSB_TRANSFER_COMPLETED;
             }
@@ -694,12 +694,12 @@ void LIBUSB_CALL usbipdcpp::LibusbDeviceHandler::transfer_callback(libusb_transf
                         static_cast<int>(trx->status));
             break;
     }
-    SPDLOG_DEBUG("libusb传输了{}个字节", trx->actual_length);
+    SPDLOG_DEBUG("libusb transferred {} bytes", trx->actual_length);
 
-    // 计算 ISO 传输的实际长度
+    // Calculate the actual length of the ISO transfer
     std::uint32_t actual_length = trx->actual_length;
     if (trx->type == LIBUSB_TRANSFER_TYPE_ISOCHRONOUS && !callback_arg.is_out) {
-        // ISO IN 传输：需要计算所有 iso packet 的实际长度之和
+        // ISO IN transfer: calculate the sum of all iso packets' actual lengths
         size_t iso_actual_length = 0;
         for (int i = 0; i < trx->num_iso_packets; i++) {
             iso_actual_length += trx->iso_packet_desc[i].actual_length;
@@ -707,8 +707,8 @@ void LIBUSB_CALL usbipdcpp::LibusbDeviceHandler::transfer_callback(libusb_transf
         actual_length = static_cast<std::uint32_t>(iso_actual_length);
     }
 
-    // 统计 ISO 传输中失败的包数（协议 RET_SUBMIT 的 error_count 字段；
-    // 内核 stub 由 USB 核心统计后填充，此处统计非 COMPLETED 的包等价）
+    // Count failed packets in ISO transfers (the protocol RET_SUBMIT error_count field;
+    // the kernel stub fills the count computed by USB core, equivalent to counting non-COMPLETED packets here)
     std::uint32_t error_count = 0;
     if (trx->type == LIBUSB_TRANSFER_TYPE_ISOCHRONOUS) [[unlikely]] {
         for (int i = 0; i < trx->num_iso_packets; i++) {
@@ -718,71 +718,71 @@ void LIBUSB_CALL usbipdcpp::LibusbDeviceHandler::transfer_callback(libusb_transf
         }
     }
 
-    // 在锁内检查 unlinking、入队响应、移除追踪——三个操作原子完成。
-    // handle_unlink_seqnum 若在此之前执行，会看到 map 中有此 entry 并设置 unlinking；
-    // 若在此之后，则看不到，自行入队 RET_UNLINK(0)。
+    // Check unlinking, enqueue the response, and remove tracking under the lock: all three operations occur atomically.
+    // If handle_unlink_seqnum runs before this, it sees this entry in the map and sets unlinking;
+    // if afterward, it does not see it and queues RET_UNLINK(0) itself.
     bool unlinking = false;
     std::uint32_t unlink_cmd_seqnum = 0;
 
     {
         auto *handler = callback_arg.handler;
         std::unique_lock lock(handler->transfers_mutex_);
-        // 约定：erase、检查 unlinking、入队响应必须在同一 unique_lock 内完成。
-        // handle_unlink_seqnum 的 else 分支依赖「find 不到 ⇒ RET_SUBMIT 已入队」，
-        // 若把入队挪出锁外，RET_SUBMIT 与 RET_UNLINK 的发送顺序将无法保证
+        // Contract: erase, checking unlinking, and queuing the response must happen under the same unique_lock.
+        // handle_unlink_seqnum's else branch relies on not found => RET_SUBMIT already queued;
+        // moving enqueue outside the lock makes RET_SUBMIT/RET_UNLINK send order impossible to guarantee
         unlinking = callback_arg.unlinking;
         unlink_cmd_seqnum = callback_arg.unlink_cmd_seqnum;
         handler->transfers_.erase(callback_arg.seqnum);
 
         if (unlinking) [[unlikely]] {
-            // URB 被 unlink 取消，入队 RET_UNLINK（带实际传输状态码）
+            // URB cancelled by unlink; queue RET_UNLINK (with the actual transfer status code)
             callback_arg.handler->responder->enqueue_ret_unlink(
                     UsbIpResponse::UsbIpRetUnlink::create_ret_unlink(unlink_cmd_seqnum, trxstat2error(trx->status)));
-            // unlink 情况：释放 transfer
+            // unlink case: release transfer
             callback_arg.transfer.reset();
         }
         else {
-            // 发送 ret_submit
-            // OUT 传输不需要发送数据回客户端，只发送 header（无数据阶段）
-            // IN 传输需要发送 header + 数据
-            // ISO 传输（不分方向）协议要求返回 iso 描述符数组：内核 stub 对
-            // ISO 传输总是发送 number_of_packets 个描述符（stub_tx.c 的
-            // iso_packet_descriptor 分支不判断方向），vhci 侧按 header 的
-            // number_of_packets 读取（usbip_recv_iso，np==0 时跳过不报错）。
-            // 若不带描述符返回，客户端 URB 的 number_of_packets 被覆盖为 0、
-            // 每包状态/实际长度缺失，依赖 per-packet 结果的驱动（audio 等）
-            // 会行为异常。注意描述符 actual_length 之和必须等于 header 的
-            // actual_length，否则 vhci 校验失败会断开连接——libusb 对 ISO
-            // OUT 的 trx->actual_length 就是各包 actual_length 之和，天然满足
+            // Send ret_submit
+            // OUT transfers need not return data to the client; send only the header (no data stage)
+            // IN transfers must send header + data
+            // For ISO transfers (both directions), the protocol requires returning the iso descriptor array: the kernel stub always
+            // sends number_of_packets descriptors for ISO transfers (stub_tx.c's
+            // iso_packet_descriptor branch does not check direction), and vhci reads according to the header's
+            // number_of_packets (usbip_recv_iso skips np==0 without error).
+            // Without returned descriptors, the client URB's number_of_packets is overwritten with 0,
+            // and per-packet status/actual lengths are missing, causing abnormal behavior in drivers (audio, etc.)
+            // that rely on per-packet results. Note that the sum of descriptor actual_length values must equal the header's
+            // actual_length, or vhci validation fails and disconnects: libusb's trx->actual_length for ISO
+            // OUT is the sum of per-packet actual_length values, inherently satisfying this
             UsbIpResponse::UsbIpRetSubmit ret;
             if (callback_arg.is_out) {
                 if (trx->type == LIBUSB_TRANSFER_TYPE_ISOCHRONOUS) [[unlikely]] {
-                    // ISO OUT：转移所有权给响应，由 send_transfer_data 发送
-                    // 描述符（OUT 方向不发送数据，见其注释）。
-                    // start_frame 恒 0（同 IN 分支的注释：libusb 无帧号概念，
-                    // 与 usbipd-libusb 一致）
+                    // ISO OUT: transfer ownership to the response; send_transfer_data sends
+                    // the descriptors (OUT sends no data; see its comment).
+                    // start_frame is always 0 (as noted in the IN branch: libusb has no frame-number concept,
+                    // matching usbipd-libusb)
                     ret = UsbIpResponse::UsbIpRetSubmit::create_ret_submit(
                             callback_arg.seqnum, trxstat2error(trx->status), actual_length,
                             0, trx->num_iso_packets, std::move(callback_arg.transfer));
                 }
                 else {
-                    // 非 ISO OUT 传输：无数据阶段
+                    // Non-ISO OUT transfer: no data stage
                     ret = UsbIpResponse::UsbIpRetSubmit::create_ret_submit_with_status_and_no_data(
                             callback_arg.seqnum, trxstat2error(trx->status), actual_length);
-                    // OUT 传输：释放 transfer
+                    // OUT transfer: release transfer
                     callback_arg.transfer.reset();
                 }
             }
             else {
-                // IN 传输：有数据，转移所有权。
-                // start_frame 恒 0：libusb 传输没有帧号概念（usbfs 的
-                // ISO 即 ASAP 调度），与参考项目 usbipd-libusb 一致
-                // （stub_common.c 的 ret_submit 打包同样填 0）
+                // IN transfer: data present; transfer ownership.
+                // start_frame is always 0: libusb transfers have no frame-number concept (usbfs
+                // ISO uses ASAP scheduling), matching the reference project usbipd-libusb
+                // (stub_common.c's ret_submit packing also fills 0)
                 ret = UsbIpResponse::UsbIpRetSubmit::create_ret_submit(callback_arg.seqnum, trxstat2error(trx->status),
                                                                        actual_length,
                                                                        0, // start_frame
                                                                        trx->num_iso_packets,
-                                                                       std::move(callback_arg.transfer) // 转移所有权
+                                                                       std::move(callback_arg.transfer) // Transfer ownership
                 );
             }
             ret.error_count = error_count;
@@ -790,73 +790,73 @@ void LIBUSB_CALL usbipdcpp::LibusbDeviceHandler::transfer_callback(libusb_transf
         }
     }
 
-    SPDLOG_DEBUG("libusb传输actual_length为{}个字节", actual_length);
+    SPDLOG_DEBUG("libusb transfer actual_length is {} bytes", actual_length);
 
     LATENCY_TRACK(*callback_arg.handler->responder->latency_tracker(), callback_arg.seqnum,
                   "LibusbDeviceHandler::transfer_callback submit_ret_submit");
 
-    // 入队完成，唤醒 sender 线程统一发送
+    // Enqueue complete; wake the sender thread for unified sending
     callback_arg.handler->responder->wakeup_sender();
 
-    // 释放 libusb_transfer 后归还 callback_arg（值字段由 Reset 在 alloc 时清零）
+    // Return callback_arg after releasing libusb_transfer (value fields are cleared by Reset during alloc)
     auto *handler = callback_arg.handler;
     callback_arg.transfer.reset();
     if (!handler->callback_args_pool_.free(&callback_arg)) {
         delete &callback_arg;
     }
-    // 递减与通知统一走 decrement_pending_and_notify（锁内递减+通知，解决
-    // 丢失唤醒与 use-after-free 两个并发问题，依据见其注释）：
-    // 回调在 libusb 事件线程，on_disconnection 在 receiver 线程，两者并发
+    // Decrement and notify uniformly through decrement_pending_and_notify (decrement+notify under the lock, solving
+    // both lost wakeup and use-after-free concurrency problems; see its comment for the basis):
+    // callbacks run on the libusb event thread, and on_disconnection on receiver; they run concurrently
     handler->decrement_pending_and_notify();
 }
 
 bool usbipdcpp::LibusbDeviceHandler::open_and_claim_device() {
-    // 此函数仅用于普通模式
+    // This function is only for normal mode
     if (!native_device_) {
-        SPDLOG_ERROR("native_device_ 为空，无法打开设备");
+        SPDLOG_ERROR("native_device_ is null; cannot open device");
         return false;
     }
 
     int err = libusb_open(native_device_, &native_handle);
     if (err) {
-        SPDLOG_ERROR("无法打开设备: {}", libusb_strerror(err));
+        SPDLOG_ERROR("Cannot open device: {}", libusb_strerror(err));
         return false;
     }
 
-    // 获取配置描述符
+    // Get the configuration descriptor
     struct libusb_config_descriptor *active_config_desc = nullptr;
     err = libusb_get_active_config_descriptor(native_device_, &active_config_desc);
     if (err) {
-        SPDLOG_ERROR("无法获取配置描述符: {}", libusb_strerror(err));
+        SPDLOG_ERROR("Cannot get configuration descriptor: {}", libusb_strerror(err));
         libusb_close(native_handle);
         native_handle = nullptr;
         return false;
     }
 
     int num_interfaces = active_config_desc->bNumInterfaces;
-    SPDLOG_DEBUG("设备有 {} 个接口", num_interfaces);
+    SPDLOG_DEBUG("Device has {} interfaces", num_interfaces);
 
-    // 解绑内核驱动并声明所有接口
+    // Detach kernel drivers and claim all interfaces
     for (int intf_i = 0; intf_i < num_interfaces; intf_i++) {
-        // libusb 的接口操作参数是 bInterfaceNumber 而非数组下标：跳号设备
-        // （接口号不连续，如 0 和 2）下标与接口号不一致。用绑定接口记录的
-        // 接口号（bind 时从配置描述符 bInterfaceNumber 填充）；防御式回退
-        // 到下标（正常情况下两者一一对应）
+        // libusb interface-operation parameters are bInterfaceNumber, not array indices: devices with nonconsecutive numbers
+        // (nonconsecutive interface numbers, e.g. 0 and 2) have indices different from interface numbers. Use the
+        // interface number recorded in the bound interface (filled from the configuration descriptor's bInterfaceNumber during bind); defensively fall back
+        // to the index (normally they correspond one-to-one)
         const int interface_number = intf_i < static_cast<int>(handle_device.interfaces.size())
                                              ? handle_device.interfaces[intf_i].interface_number
                                              : intf_i;
         err = libusb_detach_kernel_driver(native_handle, interface_number);
         if (err && err != LIBUSB_ERROR_NOT_FOUND) {
-            SPDLOG_WARN("无法卸载接口 {} 的内核驱动: {}", interface_number, libusb_strerror(err));
+            SPDLOG_WARN("Cannot detach kernel driver for interface {}: {}", interface_number, libusb_strerror(err));
         }
 
         err = libusb_claim_interface(native_handle, interface_number);
         if (err) {
-            SPDLOG_ERROR("无法声明接口 {}: {}", interface_number, libusb_strerror(err));
-            // 接口 i 在前面已执行 detach，必须先把它的内核驱动挂回去，
-            // 否则该接口的内核驱动永久失联（attach 失败无害，忽略返回值）
+            SPDLOG_ERROR("Cannot claim interface {}: {}", interface_number, libusb_strerror(err));
+            // Interface i was detached earlier; reattach its kernel driver first,
+            // otherwise that interface's kernel driver remains disconnected permanently (attach failure is harmless; ignore the return value)
             libusb_attach_kernel_driver(native_handle, interface_number);
-            // 回滚已声明的接口
+            // Roll back already claimed interfaces
             for (int j = 0; j < intf_i; j++) {
                 const int rollback_number = j < static_cast<int>(handle_device.interfaces.size())
                                                    ? handle_device.interfaces[j].interface_number
@@ -871,7 +871,7 @@ bool usbipdcpp::LibusbDeviceHandler::open_and_claim_device() {
         }
     }
 
-    // 确保所有接口在 alt 0，与 current_altsetting 一致
+    // Ensure all interfaces use alt 0, consistent with current_altsetting
     for (int intf_i = 0; intf_i < num_interfaces; intf_i++) {
         const int interface_number = intf_i < static_cast<int>(handle_device.interfaces.size())
                                              ? handle_device.interfaces[intf_i].interface_number
@@ -883,62 +883,62 @@ bool usbipdcpp::LibusbDeviceHandler::open_and_claim_device() {
 
     libusb_free_config_descriptor(active_config_desc);
     interfaces_claimed_ = true;
-    SPDLOG_INFO("成功打开设备并声明 {} 个接口", num_interfaces);
+    SPDLOG_INFO("Successfully opened device and claimed {} interfaces", num_interfaces);
     return true;
 }
 
 bool usbipdcpp::LibusbDeviceHandler::wrap_fd_and_claim_interfaces() {
-    // 此函数仅用于 Android 模式
+    // This function is only for Android mode
     if (wrapped_fd_ < 0) {
-        SPDLOG_ERROR("wrapped_fd_ 无效");
+        SPDLOG_ERROR("wrapped_fd_ is invalid");
         return false;
     }
 
     int err = libusb_wrap_sys_device(nullptr, wrapped_fd_, &native_handle);
     if (err) {
-        SPDLOG_ERROR("libusb_wrap_sys_device 失败: {}", libusb_strerror(err));
+        SPDLOG_ERROR("libusb_wrap_sys_device failed: {}", libusb_strerror(err));
         return false;
     }
-    // wrap 的 fd 不会被 libusb_close 关闭（官方文档：The system device handle
-    // will not be closed by libusb_close()），fd 由外部调用方管理，因此此处
-    // close native_handle 后可反复用同一 fd 重新 wrap；无需 dup
+    // The wrapped fd is not closed by libusb_close (official documentation: The system device handle
+    // will not be closed by libusb_close()). The external caller manages fd, so after
+    // closing native_handle here, the same fd can be wrapped repeatedly; no dup is needed
 
-    // 注意：wrap 得到的 device 在 libusb_close 后会被销毁
-    // 因此每次连接都需要重新 wrap
+    // Note: the device obtained by wrap is destroyed after libusb_close
+    // Therefore each connection requires wrapping again
     libusb_device *wrapped_device = libusb_get_device(native_handle);
 
-    // 获取配置描述符
+    // Get the configuration descriptor
     struct libusb_config_descriptor *active_config_desc = nullptr;
     err = libusb_get_active_config_descriptor(wrapped_device, &active_config_desc);
     if (err) {
-        SPDLOG_ERROR("无法获取配置描述符: {}", libusb_strerror(err));
+        SPDLOG_ERROR("Cannot get configuration descriptor: {}", libusb_strerror(err));
         libusb_close(native_handle);
         native_handle = nullptr;
         return false;
     }
 
     int num_interfaces = active_config_desc->bNumInterfaces;
-    SPDLOG_DEBUG("设备有 {} 个接口", num_interfaces);
+    SPDLOG_DEBUG("Device has {} interfaces", num_interfaces);
 
-    // 尝试 detach kernel driver 后再声明接口
+    // Try detaching the kernel driver before claiming interfaces
     for (int intf_i = 0; intf_i < num_interfaces; intf_i++) {
-        // 同 open_and_claim_device：libusb 接口操作参数是 bInterfaceNumber
-        // 而非数组下标（跳号设备的接口号与下标不一致）
+        // As in open_and_claim_device: libusb interface-operation parameters are bInterfaceNumber,
+        // not array indices (interface numbers differ from indices on devices with nonconsecutive numbers)
         const int interface_number = intf_i < static_cast<int>(handle_device.interfaces.size())
                                              ? handle_device.interfaces[intf_i].interface_number
                                              : intf_i;
         int detach_err = libusb_detach_kernel_driver(native_handle, interface_number);
         if (detach_err && detach_err != LIBUSB_ERROR_NOT_FOUND) {
-            SPDLOG_WARN("Android 模式下 detach kernel driver 接口 {} 失败: {}", interface_number,
+            SPDLOG_WARN("Failed to detach kernel driver for interface {} in Android mode: {}", interface_number,
                         libusb_strerror(detach_err));
         }
         err = libusb_claim_interface(native_handle, interface_number);
         if (err) {
-            SPDLOG_ERROR("无法声明接口 {}: {}", interface_number, libusb_strerror(err));
-            // 接口 i 在前面已尝试 detach，补一次 attach 把内核驱动挂回去。
-            // Android 后端通常两者都返回 NOT_SUPPORTED，失败无害，忽略返回值
+            SPDLOG_ERROR("Cannot claim interface {}: {}", interface_number, libusb_strerror(err));
+            // Interface i already had a detach attempt; perform an attach to restore its kernel driver.
+            // On Android both usually return NOT_SUPPORTED; failure is harmless, so ignore the return value
             libusb_attach_kernel_driver(native_handle, interface_number);
-            // 回滚已声明的接口
+            // Roll back already claimed interfaces
             for (int j = 0; j < intf_i; j++) {
                 const int rollback_number = j < static_cast<int>(handle_device.interfaces.size())
                                                    ? handle_device.interfaces[j].interface_number
@@ -952,7 +952,7 @@ bool usbipdcpp::LibusbDeviceHandler::wrap_fd_and_claim_interfaces() {
         }
     }
 
-    // 确保所有接口在 alt 0，与 current_altsetting 一致
+    // Ensure all interfaces use alt 0, consistent with current_altsetting
     for (int intf_i = 0; intf_i < num_interfaces; intf_i++) {
         const int interface_number = intf_i < static_cast<int>(handle_device.interfaces.size())
                                              ? handle_device.interfaces[intf_i].interface_number
@@ -964,7 +964,7 @@ bool usbipdcpp::LibusbDeviceHandler::wrap_fd_and_claim_interfaces() {
 
     libusb_free_config_descriptor(active_config_desc);
     interfaces_claimed_ = true;
-    SPDLOG_INFO("成功 wrap fd 并声明 {} 个接口", num_interfaces);
+    SPDLOG_INFO("Successfully wrapped fd and claimed {} interfaces", num_interfaces);
     return true;
 }
 
@@ -973,38 +973,38 @@ void usbipdcpp::LibusbDeviceHandler::release_and_close_device() {
         return;
     }
 
-    // 使用绑定时已缓存的接口数量，不要反查 libusb 配置描述符。
-    // 设备物理拔出后 libusb_get_active_config_descriptor 会失败返回 0，
-    // 导致释放循环被跳过，内核驱动永远无法重新挂载。
+    // Use the interface count cached during binding; do not retrieve the libusb configuration descriptor again.
+    // After physical device removal, libusb_get_active_config_descriptor fails and returns 0,
+    // causing the release loop to be skipped and preventing kernel drivers from ever being reattached.
     const int num_interfaces = static_cast<int>(handle_device.interfaces.size());
 
-    // 释放所有接口
+    // Release all interfaces
     for (int intf_i = 0; intf_i < num_interfaces; intf_i++) {
-        // 同 open_and_claim_device：libusb 接口操作参数是 bInterfaceNumber
-        // 而非数组下标（跳号设备的接口号与下标不一致）
+        // As in open_and_claim_device: libusb interface-operation parameters are bInterfaceNumber,
+        // not array indices (interface numbers differ from indices on devices with nonconsecutive numbers)
         const int interface_number = intf_i < static_cast<int>(handle_device.interfaces.size())
                                              ? handle_device.interfaces[intf_i].interface_number
                                              : intf_i;
         int err = libusb_release_interface(native_handle, interface_number);
-        // LIBUSB_ERROR_NO_DEVICE：设备已物理拔出，内核在 handle 关闭时自动重挂载驱动，静默忽略。
+        // LIBUSB_ERROR_NO_DEVICE: the device was physically removed; the kernel automatically reattaches drivers when handle closes; silently ignore.
         if (err && err != LIBUSB_ERROR_NO_DEVICE) {
-            SPDLOG_ERROR("释放接口 {} 时出错: {}", interface_number, libusb_strerror(err));
+            SPDLOG_ERROR("Error releasing interface {}: {}", interface_number, libusb_strerror(err));
         }
 
-        // 重新绑定内核驱动
+        // Reattach the kernel driver
         err = libusb_attach_kernel_driver(native_handle, interface_number);
         if (err && err != LIBUSB_ERROR_NOT_FOUND && err != LIBUSB_ERROR_NOT_SUPPORTED
                 && err != LIBUSB_ERROR_NO_DEVICE) {
-            SPDLOG_WARN("重新绑定内核驱动失败 (接口 {}): {}", interface_number, libusb_strerror(err));
+            SPDLOG_WARN("Failed to reattach kernel driver (interface {}): {}", interface_number, libusb_strerror(err));
         }
     }
 
     interfaces_claimed_ = false;
 
-    // 关闭 handle
-    // 普通模式和 Android 模式都需要调用 libusb_close
+    // Close handle
+    // Both normal and Android modes need libusb_close
     libusb_close(native_handle);
     native_handle = nullptr;
 
-    SPDLOG_INFO("已释放设备接口");
+    SPDLOG_INFO("Device interfaces released");
 }

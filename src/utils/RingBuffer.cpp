@@ -6,18 +6,18 @@ namespace usbipdcpp {
 
 RingBuffer::RingBuffer(std::size_t capacity) :
     capacity_(capacity) {
-    // 延迟分配：不在构造时分配内存，由 resize 或 write 触发
+    // Lazy allocation: do not allocate memory during construction; resize or write triggers allocation
 }
 
 std::size_t RingBuffer::write(const std::uint8_t *data, std::size_t size) {
     if (capacity_ == 0) {
-        return 0;  // 容量为0时不写入
+        return 0;  // Do not write when capacity is 0
     }
 
     std::size_t available = capacity_ - count_;
     std::size_t to_write = std::min(size, available);
 
-    // 延迟分配：首次写入时才分配内存
+    // Lazy allocation: allocate memory only on the first write
     if (buffer_.size() < capacity_) {
         buffer_.resize(capacity_);
     }
@@ -83,7 +83,7 @@ void RingBuffer::clear() {
 
 void RingBuffer::resize(std::size_t new_capacity) {
     if (new_capacity == 0) {
-        // 清空并释放内存
+        // Clear and release memory
         buffer_.clear();
         buffer_.shrink_to_fit();
         capacity_ = 0;
@@ -93,11 +93,11 @@ void RingBuffer::resize(std::size_t new_capacity) {
         return;
     }
 
-    // 读取现有数据
+    // Read existing data
     std::vector<std::uint8_t> old_data(count_);
     read(old_data.data(), count_);
 
-    // 释放旧内存，重新分配到精确大小
+    // Release old memory and reallocate to the exact size
     buffer_.clear();
     buffer_.shrink_to_fit();
     buffer_.resize(new_capacity);
@@ -106,7 +106,7 @@ void RingBuffer::resize(std::size_t new_capacity) {
     tail_ = 0;
     count_ = 0;
 
-    // 写回数据（不超过新容量）
+    // Write data back (without exceeding the new capacity)
     if (!old_data.empty()) {
         write(old_data.data(), std::min(old_data.size(), new_capacity));
     }

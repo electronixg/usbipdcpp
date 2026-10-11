@@ -20,7 +20,7 @@ int main(int argc, char **argv) {
 
     StringPool string_pool;
 
-    // vendor 类接口：bulk IN + bulk OUT（通用管道，无类特定协议）
+    // vendor class interface: bulk IN + bulk OUT (generic pipe, no class-specific protocol)
     std::vector<UsbInterface> interfaces = {
             UsbInterface{
                     .interface_class = 0xFF, // vendor specific
@@ -43,13 +43,13 @@ int main(int argc, char **argv) {
             },
     };
 
-    // 管道设备没有接口 handler（PipeDeviceHandler 自动管道化所有端点），接口手动定义
+    // The pipeline device does not have an interface handler (PipeDeviceHandler automatically pipelines all endpoints), and the interface is manually defined.
     auto device = UsbDevice::make(busid, 0x1234, 0x5690, interfaces, 1, 1, 0, "/usbipdcpp/mock_pipe");
     auto pipe = device->with_handler<PipeDeviceHandler>(string_pool);
 
-    // 标准请求行为配置（可选，默认行为：接受存在的 alt、其余回错误）：
-    // 演示拒绝接口级 SET_FEATURE——本设备（vendor 管道）不支持任何接口级
-    // feature，回错误比假装成功清晰。必须在连接前设置
+    // standard request behavior configuration (optional, default behavior: accept existing alt, return errors for the rest):
+    // Demonstration rejects interface level SET_FEATURE - This device (vendor pipeline) does not support any interface level
+    // feature, replying to an error is clearer than pretending to be successful. Must be set before connecting
     PipeStandardRequestHandler req_handler;
     req_handler.set_feature = [](PipeDeviceHandler &pipe, std::uint16_t feature_selector,
                                  std::uint32_t *p_status) {
@@ -64,7 +64,7 @@ int main(int argc, char **argv) {
 
     asio::ip::tcp::endpoint endpoint{asio::ip::tcp::v4(), port};
     if (auto ec = server.start(endpoint); ec) {
-        SPDLOG_ERROR("服务器启动失败：{}", ec.message());
+        SPDLOG_ERROR("Server startup failed: {}", ec.message());
         return 1;
     }
 
@@ -72,30 +72,30 @@ int main(int argc, char **argv) {
     SPDLOG_INFO("Connect with: usbip attach -r <host> -b {}", busid);
     SPDLOG_INFO("Running... (Ctrl+C / SIGTERM / Enter to stop)");
 
-    // 业务线程使用短超时轮询：退出顺序必须是"业务线程先退出、再 server.stop()"，
-    // 否则 handler 随会话析构时业务线程还阻塞在 read/write 上（use-after-free）。
-    // 正常通信时 read/write 立即返回，超时轮询不影响使用
+    // The business thread uses short timeout polling: the exit sequence must be "the business thread exits first, then server.stop()",
+    // Otherwise, when the handler is destroyed with the session, the business thread is still blocked on read/write (use-after-free).
+    // read/write returns immediately during normal communication, and timeout polling does not affect use
     std::atomic<bool> running{true};
 
-    // 回显线程：收到的 OUT 数据原样发回（阻塞 read）
+    // echo thread: The received OUT data is sent back as it is (blocking read)
     std::thread echo_thread([&]() {
         PipeXfer xfer;
         while (running) {
             if (pipe->read(xfer, 200)) {
-                SPDLOG_INFO("收到 {} 字节（ep {:02x}），回显", xfer.data.size(), xfer.ep);
+                SPDLOG_INFO("Received {} bytes (ep {:02x}); echoing", xfer.data.size(), xfer.ep);
                 pipe->write(PipeXfer{.ep = 0x81, .data = std::move(xfer.data)}, 200);
             }
         }
     });
 
-    // 周期发送线程：每 2 秒发送一条计数消息（演示阻塞 write）。
-    // 打日志供 e2e 脚本断言传输活动（主机无 vendor 驱动，数据面靠 python 验证，
-    // 这里只确认发送线程活着）
+    // periodic sending thread: sending a count message every 2 seconds (demonstrating blocking write).
+    // logs for e2e script to assert transfer activity (the host has no vendor driver, and the data side is verified by python.
+    // Here only confirms that the sending thread is alive)
     std::thread sender_thread([&]() {
         std::uint32_t count = 0;
         while (running) {
             auto msg = "message " + std::to_string(count++) + "\r\n";
-            SPDLOG_INFO("周期发送 {} 字节：{}", msg.size(), msg);
+            SPDLOG_INFO("Periodic send: {} bytes: {}", msg.size(), msg);
             pipe->write(PipeXfer{.ep = 0x81, .data = data_type(msg.begin(), msg.end())}, 200);
             std::this_thread::sleep_for(std::chrono::seconds(2));
         }

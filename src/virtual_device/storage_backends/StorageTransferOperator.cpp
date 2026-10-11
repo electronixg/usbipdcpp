@@ -16,7 +16,7 @@ void *StorageTransferOperator::alloc_transfer_handle(std::size_t buffer_length, 
     auto *trx = pool_.alloc();
     if (!trx)
         trx = new StorageIoTransfer{};
-    // 方向记录契约：transfer_is_in 依赖（协议层按方向决定回发长度）
+    // Direction-recording contract: transfer_is_in depends on it (protocol layer determines return length from direction)
     trx->is_in = (header.direction == UsbIpDirection::In);
     SPDLOG_DEBUG("STO::alloc handle={:p} dir={} len={}", static_cast<const void *>(trx),
                  header.direction == UsbIpDirection::In ? "IN" : "OUT", buffer_length);
@@ -44,7 +44,7 @@ bool StorageTransferOperator::transfer_is_in(void *handle) {
 }
 
 UsbIpIsoPacketDescriptor StorageTransferOperator::get_iso_descriptor(void *, int) {
-    // MSC 没有等时传输
+    // MSC has no isochronous transfers
     return {};
 }
 
@@ -60,7 +60,7 @@ void StorageTransferOperator::send_transfer_data(void *handle, asio::ip::tcp::so
                  static_cast<const void *>(handle), length, trx->direct_io, trx->file_lba, trx->file_offset,
                  static_cast<const void *>(trx->external_buf));
 
-    // 仅 mmap READ 走零拷贝 sendfile/TransmitFile，CSW 等 fallback 数据不碰文件
+    // Only mmap READ uses zero-copy sendfile/TransmitFile; CSW and other fallback data do not access the file
     if (trx->direct_io && backend &&
         backend->send_direct(trx->file_lba, trx->file_offset, length, static_cast<intptr_t>(sock.native_handle()),
                              ec)) {
@@ -69,7 +69,7 @@ void StorageTransferOperator::send_transfer_data(void *handle, asio::ip::tcp::so
     }
     ec.clear();
 
-    // 回退：从 external_buf / fallback_data 发送
+    // Fallback: send from external_buf / fallback_data
     void *buf = trx->external_buf ? trx->external_buf : trx->fallback_data.data();
     SPDLOG_DEBUG("STO::send fallback buf={:p}", static_cast<const void *>(buf));
     asio::write(sock, asio::buffer(static_cast<const char *>(buf), length), ec);
@@ -84,7 +84,7 @@ void StorageTransferOperator::recv_transfer_data(void *handle, asio::ip::tcp::so
                  static_cast<const void *>(handle), length, trx->direct_io, trx->file_lba, trx->file_offset,
                  static_cast<const void *>(trx->external_buf));
 
-    // 仅 mmap WRITE 走零拷贝 splice，CBW/staging 数据不碰文件
+    // Only mmap WRITE uses zero-copy splice; CBW/staging data do not access the file
     if (trx->direct_io && trx->external_buf && backend &&
         backend->recv_direct(trx->file_lba, trx->file_offset, length, static_cast<intptr_t>(sock.native_handle()),
                              ec)) {
@@ -94,7 +94,7 @@ void StorageTransferOperator::recv_transfer_data(void *handle, asio::ip::tcp::so
     }
     ec.clear();
 
-    // 回退：直读到 external_buf 或 fallback_data
+    // Fallback: read directly into external_buf or fallback_data
     void *buf = trx->external_buf;
     if (buf) {
         SPDLOG_DEBUG("STO::recv fallback ext_buf={:p}", static_cast<const void *>(buf));

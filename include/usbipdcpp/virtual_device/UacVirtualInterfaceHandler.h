@@ -16,31 +16,31 @@ namespace usbipdcpp {
 class UacAudioStreamingSourceHandler;
 class UacAudioStreamingSinkHandler;
 
-/// UAC 设备配置 — 控制 AudioControl 接口描述符与 Feature Unit 行为
+/// UAC device configuration - Control AudioControl interface descriptor and Feature Unit behavior
 struct UacDeviceConfig {
-    /// 输入终端类型。默认麦克风（ITT_MICROPHONE）；
-    /// 扬声器方向传 TT_USB_STREAMING（数据从 USB 流入），此时输出终端用 output_terminal_type
+    /// Input terminal type. Defaults to microphone (ITT_MICROPHONE);
+    /// TT_USB_STREAMING in the speaker direction (data flows in from USB), at this time the output terminal uses output_terminal_type
     std::uint16_t input_terminal_type = ITT_MICROPHONE;
-    /// 输出终端类型（仅扬声器方向使用，默认 Speaker）
+    /// Output terminal type (only used in the speaker direction, default Speaker)
     std::uint16_t output_terminal_type = ITT_SPEAKER;
-    /// 声道数（1 或 2）。0 表示从 AudioSource 推断
+    /// number of channels (1 or 2). 0 means inferred from AudioSource
     std::uint8_t channels = 0;
-    /// Feature Unit 是否提供静音控制
+    /// Feature Unit Whether to provide mute control
     bool feature_unit_mute = true;
-    /// Feature Unit 是否提供音量控制
+    /// Feature Unit Whether to provide volume control
     bool feature_unit_volume = true;
-    /// 音量范围下限（1/256 dB 单位，默认 -42dB）
+    /// Volume range lower limit (1/256 dB unit, default -42dB)
     std::int16_t volume_min_db256 = -0x2A00;
-    /// 音量范围上限（1/256 dB 单位，默认 0dB）
+    /// Volume range upper limit (1/256 dB unit, default 0dB)
     std::int16_t volume_max_db256 = 0;
 };
 
-/// AudioControl 接口处理器 — 类描述符 + Feature Unit（mute/volume）控制
+/// AudioControl interface handler - class descriptor + Feature Unit (mute/volume) control
 class USBIPDCPP_API UacAudioControlHandler : public VirtualInterfaceHandler {
 public:
     UacAudioControlHandler(UsbInterface &handle_interface, StringPool &string_pool);
 
-    /// 应用设备配置（必须在 UacDeviceHelper::setup_microphone 调用 setup_interface_handlers 之前完成）
+    /// Apply device configuration (must finish before UacDeviceHelper::setup_microphone calls setup_interface_handlers)
     void set_config(const UacDeviceConfig &config);
 
     [[nodiscard]] data_type get_class_specific_descriptor() override;
@@ -59,25 +59,25 @@ public:
     void handle_unlink_seqnum(std::uint32_t unlink_seqnum, std::uint32_t cmd_seqnum) override;
     void on_setup_interface_handlers() override;
 
-    /// 当前静音状态（供 AS handler 查询）
+    /// Current mute status (for AS handler query)
     [[nodiscard]] bool is_muted() const {
         return mute;
     }
 
-    /// 当前音量线性增益，Q16 定点（0dB = 65536，-∞ = 0），供 AS handler 缩放样本
+    /// Current volume linear gain, Q16 fixed point (0dB = 65536, -∞ = 0), for AS handler scaling samples
     [[nodiscard]] std::uint32_t volume_scale_q16() const {
         return gain_q16;
     }
 
     /**
-     * @brief 与 AS handler 建立关联（UacDeviceHelper 装配时调用，麦克风/扬声器方向二选一）
+     * @brief Establish association with AS handler (UacDeviceHelper is called during assembly, choose one of the microphone/speaker directions)
      *
-     * AC 描述符 Header 的 baInterfaceNr 引用 AS 接口号，装配时从 AS
-     * handler 的 get_interface() 取——接口间联系由装配显式建立，不在
-     * 描述符构建时猜接口号（对齐 UVC 的 vc/vs 互持指针模式；复合设备里
-     * AC 不从接口 0 起，硬编码 1 会让驱动找不到 AS 接口）
-     * @param handler AS 接口的 handler（UacAudioStreamingSourceHandler 或
-     *                UacAudioStreamingSinkHandler）
+     * AC descriptor Header's baInterfaceNr refers to the AS interface number, obtained during assembly from the AS
+     * handler's get_interface(): associations between interfaces are explicitly established during assembly, without
+     * guessing interface numbers while building descriptors (consistent with UVC's vc/vs mutual-pointer pattern; in composite devices
+     * AC does not start from interface 0, hard coding 1 will cause the driver to not find the AS interface)
+     * @param handler AS interface handler (UacAudioStreamingSourceHandler or
+     *                UacAudioStreamingSinkHandler)
      */
     void set_as_handler(UacAudioStreamingSourceHandler *handler);
     void set_as_handler(UacAudioStreamingSinkHandler *handler);
@@ -85,26 +85,26 @@ public:
 private:
     void build_class_descriptor();
 
-    /// 经 AC 中断端点推送 UAC1 状态字（对齐内核 f_uac1.c 的 audio_notify：
-    /// 无挂起 URB 时缓存，主机后续提交的中断 IN URB 立即拿到，状态不丢）
+    /// Push UAC1 status word via AC interrupt endpoint (aligned audio_notify of kernel f_uac1.c:
+    /// Cache when there is no pending URB, the interrupt IN URB submitted subsequently by the host is obtained immediately, and the status is not lost)
     void send_ac_status(data_type status);
 
     data_type class_desc;
     bool desc_built = false;
     UacDeviceConfig config{};
     bool mute = false;
-    std::int16_t volume_db = 0; // 单位 1/256 dB，0 表示 0dB
-    std::uint32_t gain_q16 = 65536; // 10^(volume_db/256/20) 的 Q16 表示
-    // AC Header 的 baInterfaceNr（AS 接口号），set_as_handler 装配时写入。
-    // 默认 1 保持单设备形态（AC=0 → AS=1）的旧行为
+    std::int16_t volume_db = 0; // unit 1/256 dB, 0 represents 0dB
+    std::uint32_t gain_q16 = 65536; // Q16 representation of 10^(volume_db/256/20)
+    // AC Header’s baInterfaceNr (AS interface number) is written during set_as_handler assembly.
+    // Default 1 maintains the old behavior of single device form (AC=0 → AS=1)
     std::uint8_t as_interface_number = 1;
 
-    // AC 中断端点：状态变化时无挂起 URB 的暂存（UAC1 状态字 2 字节）。
-    // push 非阻塞：有挂起请求直接应答，否则入缓冲（对齐内核 f_uac1 audio_notify）
+    // AC interrupt endpoint: temporary storage when state changes with no pending URB (2-byte UAC1 status word).
+    // push non-blocking: respond directly if there is a pending request, otherwise enter the buffer (aligned kernel f_uac1 audio_notify)
     MessageInChannel status_channel;
 };
 
-/// AudioStreaming 接口处理器 — 类描述符 + 采样率协商 + ISO PCM 推流
+/// AudioStreaming interface handler — class descriptor + sample rate negotiation + ISO PCM push stream
 class USBIPDCPP_API UacAudioStreamingSourceHandler : public VirtualInterfaceHandler {
 public:
     UacAudioStreamingSourceHandler(UsbInterface &handle_interface, StringPool &string_pool,
@@ -118,8 +118,8 @@ public:
                                                       std::uint32_t transfer_buffer_length,
                                                       const SetupPacket &setup_packet, TransferHandle transfer,
                                                       std::error_code &ec) override;
-    // Linux snd-usb-audio 对 UAC1 的采样率控制发给端点（recipient=Endpoint，wIndex=端点地址），
-    // 而非接口（UAC 1.0 规范允许的实现差异），需在端点级入口处理
+    // Linux snd-usb-audio sends the sampling rate control of UAC1 to the endpoint (recipient=Endpoint, wIndex=endpoint address),
+    // rather than interface (implementation difference allowed by UAC 1.0 specification), needs to be processed at the endpoint level entry
     void handle_non_standard_request_type_control_urb_to_endpoint(std::uint32_t seqnum, const UsbEndpoint &ep,
                                                                   std::uint32_t transfer_flags,
                                                                   std::uint32_t transfer_buffer_length,
@@ -133,8 +133,8 @@ public:
     void request_set_interface(std::uint16_t alternate_setting, std::uint32_t *p_status) override;
     void on_setup_interface_handlers() override;
 
-    // AS 的类描述符（General + Format Type）必须出现在每个 alt，
-    // 否则主机驱动在 alt 1 找不到格式描述符无法解析
+    // The class descriptor (General + Format Type) of  AS must appear in each alt,
+    // Otherwise, the host driver is in alt 1. The format descriptor cannot be found and cannot be parsed.
     [[nodiscard]] bool put_class_specific_descriptor_in_all_alts() const override {
         return true;
     }
@@ -148,25 +148,25 @@ public:
     }
 
 private:
-    /// 收集当前声道数/位深下 source 支持的所有采样率（升序去重）
+    /// Collect all sample rates supported by the source under the current number of channels/bit depth (deduplication in ascending order)
     [[nodiscard]] std::vector<std::uint32_t> supported_sample_rates(const AudioFormatInfo &fmt) const;
     void build_class_descriptor();
 
-    /// 处理采样率控制请求（GET_CUR/GET_MIN/GET_MAX/SET_CUR）。
-    /// 接口级与端点级入口共用（Linux snd-usb-audio 从端点级发起）。
-    /// 返回 true 表示已自行提交响应，调用方直接返回；false 表示未识别
+    /// Handle sampling rate control request (GET_CUR/GET_MIN/GET_MAX/SET_CUR).
+    /// The interface level and endpoint level entries are shared (Linux snd-usb-audio is initiated from the endpoint level).
+    /// Returning true means that the response has been submitted by itself, and the caller returns directly; false means that it is not recognized.
     bool handle_sampling_freq_control(std::uint32_t seqnum, std::uint8_t request, GenericTransfer *trx,
                                       TransferHandle &transfer, std::uint32_t transfer_buffer_length);
 
-    /// 向 dst 填充 n 字节 PCM：从 source 拉数据，不足时填静音；应用 mute/volume
+    /// Fill dst with n bytes of PCM: pull data from source, pad with silence if insufficient; apply mute/volume
     void fill_pcm(std::uint8_t *dst, std::size_t n);
 
-    /// 按当前采样率更新每 microframe 包字节数的调度参数（对齐内核 gadget u_audio.c）
+    /// Update per-microframe packet-byte scheduling parameters from the current sample rate (consistent with kernel gadget u_audio.c)
     void update_packet_bytes();
 
-    /// TransferScheduler 处理器（通知语义）：调度线程在服务时刻（数据时长
-    /// 后）调用，填 PCM 数据、自行 session.submit_ret_submit 发送响应，
-    /// 并 on_urb_done 上报完成（同端点串行依赖上报）
+    /// TransferScheduler processor (notification semantics): called by the scheduling thread at service time (after the data duration
+    /// elapses), fill PCM data, send the response independently through session.submit_ret_submit,
+    /// and report completion through on_urb_done (same-endpoint serialization depends on the report)
     void process_iso_in(TransferResponder &session, const UsbEndpoint &ep, std::uint32_t seqnum, int num_iso_packets,
                         TransferHandle transfer);
 
@@ -176,25 +176,25 @@ private:
     data_type class_desc;
     bool streaming = false;
 
-    // ISO IN 包调度参数，对齐内核 gadget u_audio.c（u_audio_start_playback）：
-    // 每包字节数 = 基准包长 + 残差累加溢出时补一帧，包长恒为帧大小的整数倍
-    // （样本交错结构不被切断），平均速率精确匹配采样率，非 8kHz 整数倍采样率
-    // （如 44100）也正确。采样率变化时由 update_packet_bytes 重算
-    std::size_t packet_framesize = 0;   // 一帧 PCM 字节数 = 声道数×样本字节
-    std::size_t packet_interval = 0;    // 每秒包数：高速 bInterval=1 → 每 microframe 一包
-    std::size_t packet_base = 0;        // 基准包长 = 帧大小×(采样率/interval)
-    std::size_t packet_residue_step = 0; // 每包累加的残差 = 帧大小×(采样率%interval)
-    std::size_t packet_residue_acc = 0;  // 残差累加器（跨包/跨 URB 连续）
+    // ISO IN packet scheduling parameters, consistent with kernel gadget u_audio.c (u_audio_start_playback):
+    // Bytes per packet = base packet length + one frame when accumulated remainder overflows; packet length is always an integer multiple of frame size
+    // (without splitting interleaved samples), with average rate exactly matching the sample rate; sample rates not divisible by 8kHz
+    // (such as 44100) also work correctly. Recalculated by update_packet_bytes when sample rate changes
+    std::size_t packet_framesize = 0;   // Bytes per PCM frame = channel count × bytes per sample
+    std::size_t packet_interval = 0;    // Packets per second: high-speed bInterval=1 → one packet per microframe
+    std::size_t packet_base = 0;        // Base packet length = frame size × (sample rate/interval)
+    std::size_t packet_residue_step = 0; // Remainder accumulated per packet = frame size × (sample rate%interval)
+    std::size_t packet_residue_acc = 0;  // Remainder accumulator (continuous across packets/URBs)
 
-    // 当前音频块引用 + 已消费偏移（跨 URB 连续流）
+    // Current audio chunk reference + consumed offset (continuous stream across URBs)
     const std::uint8_t *chunk_data = nullptr;
     std::size_t chunk_size = 0;
     std::size_t chunk_offset = 0;
 };
 
-/// AudioStreaming 接口处理器（扬声器方向）— 类描述符 + 采样率协商 + ISO OUT 收流
-/// 与 UacAudioStreamingSourceHandler（麦克风 IN 推流）对称：数据面反转为消费主机发来的
-/// PCM（写入 AudioSink），控制面（采样率协商、类描述符）逻辑相同
+/// AudioStreaming interface handler (speaker direction): class descriptors + sample-rate negotiation + ISO OUT receive stream
+/// Symmetric with UacAudioStreamingSourceHandler (microphone IN push stream): reverse the data plane to consume host-sent
+/// PCM (write to AudioSink); the control plane (sample-rate negotiation, class descriptors) has identical logic
 class USBIPDCPP_API UacAudioStreamingSinkHandler : public VirtualInterfaceHandler {
 public:
     UacAudioStreamingSinkHandler(UsbInterface &handle_interface, StringPool &string_pool,
@@ -208,8 +208,8 @@ public:
                                                       std::uint32_t transfer_buffer_length,
                                                       const SetupPacket &setup_packet, TransferHandle transfer,
                                                       std::error_code &ec) override;
-    // Linux snd-usb-audio 对 UAC1 的采样率控制发给端点（recipient=Endpoint，wIndex=端点地址），
-    // 而非接口（UAC 1.0 规范允许的实现差异），需在端点级入口处理
+    // Linux snd-usb-audio sends the sampling rate control of UAC1 to the endpoint (recipient=Endpoint, wIndex=endpoint address),
+    // rather than interface (implementation difference allowed by UAC 1.0 specification), needs to be processed at the endpoint level entry
     void handle_non_standard_request_type_control_urb_to_endpoint(std::uint32_t seqnum, const UsbEndpoint &ep,
                                                                   std::uint32_t transfer_flags,
                                                                   std::uint32_t transfer_buffer_length,
@@ -223,8 +223,8 @@ public:
     void request_set_interface(std::uint16_t alternate_setting, std::uint32_t *p_status) override;
     void on_setup_interface_handlers() override;
 
-    // AS 的类描述符（General + Format Type）必须出现在每个 alt，
-    // 否则主机驱动在 alt 1 找不到格式描述符无法解析
+    // The class descriptor (General + Format Type) of  AS must appear in each alt,
+    // Otherwise, the host driver is in alt 1. The format descriptor cannot be found and cannot be parsed.
     [[nodiscard]] bool put_class_specific_descriptor_in_all_alts() const override {
         return true;
     }
@@ -240,16 +240,16 @@ public:
 private:
     void build_class_descriptor();
 
-    /// 处理采样率控制请求（GET_CUR/GET_MIN/GET_MAX/SET_CUR）。
-    /// 接口级与端点级入口共用（Linux snd-usb-audio 从端点级发起）。
-    /// 返回 true 表示已自行提交响应，调用方直接返回；false 表示未识别
+    /// Handle sampling rate control request (GET_CUR/GET_MIN/GET_MAX/SET_CUR).
+    /// The interface level and endpoint level entries are shared (Linux snd-usb-audio is initiated from the endpoint level).
+    /// Returning true means that the response has been submitted by itself, and the caller returns directly; false means that it is not recognized.
     bool handle_sampling_freq_control(std::uint32_t seqnum, std::uint8_t request, GenericTransfer *trx,
                                       TransferHandle &transfer, std::uint32_t transfer_buffer_length);
 
-    /// TransferScheduler 处理器（通知语义）：调度线程在服务时刻（数据时长
-    /// 后）调用，消费 PCM（音量应用 + 写 sink + 收流闭环统计）、自行
-    /// session.submit_ret_submit 发送响应，并 on_urb_done 上报完成
-    ///（同端点串行依赖上报）
+    /// TransferScheduler processor (notification semantics): called by the scheduling thread at service time (after the data duration
+    /// afterwards), consuming PCM (apply volume + write to sink + receive-stream feedback statistics), independently using
+    /// session.submit_ret_submit to send the response and on_urb_done to report completion
+    /// (same-endpoint serialization depends on the report)
     void process_iso_out(TransferResponder &session, const UsbEndpoint &ep, std::uint32_t seqnum, int num_iso_packets,
                          TransferHandle transfer);
 
@@ -259,50 +259,50 @@ private:
     data_type class_desc;
     bool streaming = false;
 
-    // 收流速率闭环：主机每 URB 提交存在固定开销（usbip-win 收 RET → 重提交 →
-    // TCP 往返，实测 ~60µs），按数据时长延迟响应会让接收速率恒低于消费速率，
-    // 缓冲水位缓降导致周期性欠载（播放沙沙）。用墙钟窗口实测接收速率做反馈，
-    // 修正响应延迟（负 = 提前响应），把接收速率锁到消费速率。单位 µs。
-    // 原子：网络线程（handle 提交时算 data_duration）读、调度线程
-    //（process_iso_out 闭环统计）写
+    // Receive-rate feedback loop: each host URB submission has fixed overhead (usbip-win receives RET → resubmits →
+    // TCP round trip, measured ~60µs); delaying responses by the data duration makes the receive rate consistently lower than the consumption rate,
+    // so the buffer level gradually falls, causing periodic underruns (playback noise). Use receive rate measured over wall-clock windows as feedback,
+    // adjusting response delay (negative = early response) to lock the receive rate to the consumption rate. Units: µs.
+    // Atomic: read by the network thread (calculating data_duration when handle submits), written by the scheduling thread
+    //(process_iso_out feedback statistics)
     std::atomic<std::int64_t> pacing_delta_us{0};
-    // 闭环测速：每 100 个 URB（约 1 秒）用 received 累计增量/墙钟时间算接收速率
+    // Feedback rate measurement: every 100 URBs (about 1 second), calculate receive rate as the increase in cumulative received / wall-clock time
     std::uint32_t urb_stat_count = 0;
     std::uint64_t urb_stat_bytes = 0;
-    std::int64_t urb_stat_last_bytes = 0;   // 上一窗口的累计接收字节
-    std::int64_t urb_stat_last_time_us = 0; // 上一窗口的墙钟时刻（steady_clock µs）
+    std::int64_t urb_stat_last_bytes = 0;   // Cumulative received bytes at the previous window
+    std::int64_t urb_stat_last_time_us = 0; // Wall-clock time of the previous window (steady_clock µs)
 };
 
-/// UAC 设备辅助类 — 在 device 上装配 UAC 功能（AC + AS 接口 handler、互相关联）
+/// UAC device helper: assemble UAC functionality on device (AC + AS interface handlers, associated with each other)
 class USBIPDCPP_API UacDeviceHelper {
 public:
     /**
-     * @brief 在 device 上装配 UAC 麦克风功能（AC + AS 两个相邻接口）
-     * @param device 目标设备（接口必须已在 device->interfaces 中，地址稳定）
-     * @param ac_interface_number UAC 功能首个接口（AC）的 interface_number；
-     *        AS 按 interface_number = ac_interface_number + 1 在 device->interfaces
-     *        中查找（功能接口编号连续，与数组下标无关）。设备里其他接口的
-     *        handler 不受影响
-     * @param string_pool 字符串池
-     * @param source 音频源
-     * @param config UAC 设备配置（声道数等）
-     * @return 出错时的错误码（如 AC/AS 接口缺失），成功返回默认构造（无错误）
+     * @brief Assemble UAC microphone functionality on device (two adjacent AC + AS interfaces)
+     * @param device Target device (interfaces must already be in device->interfaces, with stable addresses)
+     * @param ac_interface_number interface_number of the first interface (AC) of the UAC function;
+     *        find AS by interface_number = ac_interface_number + 1 in device->interfaces
+     *        (function interface numbers are consecutive, independent of array indices). Handlers of other interfaces on the device
+     *        are unaffected
+     * @param string_pool String pool
+     * @param source Audio source
+     * @param config UAC device configuration (channel count, etc.)
+     * @return Error code on failure (such as missing AC/AS interfaces), default-constructed on success (no error)
      */
     static std::error_code setup_microphone(std::shared_ptr<UsbDevice> device, std::uint8_t ac_interface_number,
                                             StringPool &string_pool, std::unique_ptr<AudioSource> source,
                                             const UacDeviceConfig &config = {});
 
     /**
-     * @brief 在 device 上装配 UAC 扬声器功能（AC + AS 两个相邻接口，ISO OUT 收流）
-     * @param device 目标设备（接口必须已在 device->interfaces 中，地址稳定）
-     * @param ac_interface_number UAC 功能首个接口（AC）的 interface_number；
-     *        AS 按 interface_number = ac_interface_number + 1 查找。设备里
-     *        其他接口的 handler 不受影响
-     * @param string_pool 字符串池
-     * @param sink 音频接收器
-     * @param config UAC 设备配置（声道数等）；AC 的 input_terminal_type 强制
-     *        TT_USB_STREAMING（扬声器拓扑）
-     * @return 出错时的错误码（如 AC/AS 接口缺失），成功返回默认构造（无错误）
+     * @brief Assemble UAC speaker functionality on device (two adjacent AC + AS interfaces, ISO OUT receive stream)
+     * @param device Target device (interfaces must already be in device->interfaces, with stable addresses)
+     * @param ac_interface_number interface_number of the first interface (AC) of the UAC function;
+     *        find AS by interface_number = ac_interface_number + 1. Handlers of other interfaces
+     *        on the device are unaffected
+     * @param string_pool String pool
+     * @param sink Audio sink
+     * @param config UAC device configuration (channel count, etc.); AC input_terminal_type is forced to
+     *        TT_USB_STREAMING (speaker topology)
+     * @return Error code on failure (such as missing AC/AS interfaces), default-constructed on success (no error)
      */
     static std::error_code setup_speaker(std::shared_ptr<UsbDevice> device, std::uint8_t ac_interface_number,
                                          StringPool &string_pool, std::unique_ptr<AudioSink> sink,

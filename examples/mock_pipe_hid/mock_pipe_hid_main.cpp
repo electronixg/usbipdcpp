@@ -10,9 +10,9 @@
 
 using namespace usbipdcpp;
 
-// ===== HID 键盘（Boot 协议，无 Report ID）=====
-// 标准 63 字节 Boot 键盘报告描述符：8 字节 IN 报告（modifier + 保留 + 6 键）
-// + 1 字节 OUT 报告（LED）
+// ===== HID keyboard (Boot protocol, no Report ID) =====
+// standard 63 byte Boot keyboard report descriptor: 8 byte IN report (modifier + reserved + 6 key)
+// + 1 Byte OUT Report (LED)
 static const data_type kKeyboardReportDescriptor = {
         0x05, 0x01, // Usage Page (Generic Desktop)
         0x09, 0x06, // Usage (Keyboard)
@@ -24,16 +24,16 @@ static const data_type kKeyboardReportDescriptor = {
         0x25, 0x01, //   Logical Maximum (1)
         0x75, 0x01, //   Report Size (1)
         0x95, 0x08, //   Report Count (8)
-        0x81, 0x02, //   Input (Data, Variable, Absolute) —— 8 个修饰键位
+        0x81, 0x02, //   Input (Data, Variable, Absolute) —— 8 modifier-key bits
         0x95, 0x01, //   Report Count (1)
         0x75, 0x08, //   Report Size (8)
-        0x81, 0x01, //   Input (Constant) —— 保留字节
+        0x81, 0x01, //   Input (Constant) —— reserved bytes
         0x95, 0x05, //   Report Count (5)
         0x75, 0x01, //   Report Size (1)
         0x05, 0x08, //   Usage Page (LEDs)
         0x19, 0x01, //   Usage Minimum (1)
         0x29, 0x05, //   Usage Maximum (5)
-        0x91, 0x02, //   Output (Data, Variable, Absolute) —— 5 个 LED
+        0x91, 0x02, //   Output (Data, Variable, Absolute) —— 5 LEDs
         0x95, 0x01, //   Report Count (1)
         0x75, 0x03, //   Report Size (3)
         0x91, 0x01, //   Output (Constant)
@@ -44,7 +44,7 @@ static const data_type kKeyboardReportDescriptor = {
         0x05, 0x07, //   Usage Page (Key Codes)
         0x19, 0x00, //   Usage Minimum (0)
         0x29, 0x65, //   Usage Maximum (101)
-        0x81, 0x00, //   Input (Data, Array) —— 6 个按键槽
+        0x81, 0x00, //   Input (Data, Array) —— 6 key slots
         0xC0,       // End Collection
 };
 
@@ -58,7 +58,7 @@ int main(int argc, char **argv) {
 
     StringPool string_pool;
 
-    // HID Boot 键盘接口：中断 IN 端点（8 字节报告）
+    // HID Boot keyboard interface: Interrupt IN endpoint (8 byte report)
     std::vector<UsbInterface> interfaces = {
             UsbInterface{
                     .interface_class = 0x03, // HID
@@ -75,11 +75,11 @@ int main(int argc, char **argv) {
             },
     };
 
-    // 管道设备没有接口 handler（PipeDeviceHandler 自动管道化所有端点），接口手动定义
+    // The pipeline device does not have an interface handler (PipeDeviceHandler automatically pipelines all endpoints), and the interface is manually defined.
     auto device = UsbDevice::make(busid, 0x1234, 0x5691, interfaces, 1, 1, 0, "/usbipdcpp/mock_pipe_hid");
 
     auto pipe = device->with_handler<PipeDeviceHandler>(string_pool);
-    // HID 描述符（0x21）：追加在配置描述符的接口描述符之后，驱动加载必需
+    // HID descriptor (0x21): appended after the interface descriptor of the configured descriptor, necessary for driver loading
     pipe->set_class_specific_descriptor({
             0x09, // bLength
             0x21, // bDescriptorType: HID
@@ -91,7 +91,7 @@ int main(int argc, char **argv) {
             static_cast<std::uint8_t>(kKeyboardReportDescriptor.size()),
             static_cast<std::uint8_t>(kKeyboardReportDescriptor.size() >> 8), // wDescriptorLength[0]
     });
-    // GET_DESCRIPTOR(0x22) 返回报告描述符
+    // GET_DESCRIPTOR(0x22) Return report descriptor
     pipe->set_custom_descriptor(0x22, kKeyboardReportDescriptor);
     pipe->setup_interface_handlers();
 
@@ -100,7 +100,7 @@ int main(int argc, char **argv) {
 
     asio::ip::tcp::endpoint endpoint{asio::ip::tcp::v4(), port};
     if (auto ec = server.start(endpoint); ec) {
-        SPDLOG_ERROR("服务器启动失败：{}", ec.message());
+        SPDLOG_ERROR("Server startup failed: {}", ec.message());
         return 1;
     }
 
@@ -108,12 +108,12 @@ int main(int argc, char **argv) {
     SPDLOG_INFO("Connect with: usbip attach -r <host> -b {}", busid);
     SPDLOG_INFO("Running... (Ctrl+C / SIGTERM / Enter to stop)");
 
-    // 业务线程使用短超时轮询：退出顺序必须是"业务线程先退出、再 server.stop()"，
-    // 否则 handler 随会话析构时业务线程还阻塞在 read/write 上（use-after-free）
+    // The business thread uses short timeout polling: the exit sequence must be "the business thread exits first, then server.stop()",
+    // Otherwise, when the handler is destroyed with the session, the business thread is still blocked on read/write (use-after-free)
     std::atomic<bool> running{true};
 
-    // read 线程：处理宿主发来的 OUT 数据与非标准控制请求（HID 的
-    // GET_REPORT/SET_REPORT 等 class 请求也会经 read() 返回）
+    // read thread: Processes OUT data and non-standard control requests (HID
+    // GET_REPORT/SET_REPORT and other class requests will also be returned through read())
     std::thread read_thread([&]() {
         PipeXfer xfer;
         while (running) {
@@ -121,30 +121,30 @@ int main(int argc, char **argv) {
                 continue;
             }
             if (xfer.setup_req.has_value()) {
-                // 控制请求（ep==0）：class/vendor 请求。IN 方向需要应答
-                SPDLOG_INFO("收到控制请求 req={:02x} type={:02x} length={}",
+                // control request (ep==0): class/vendor request. IN direction requires response
+                SPDLOG_INFO("received control request req={:02x} type={:02x} length={}",
                             xfer.setup_req->request, xfer.setup_req->request_type, xfer.setup_req->length);
                 if (!xfer.setup_req->is_out() && xfer.setup_req->length > 0) {
-                    // 应答当前键盘报告（示例简化：GET_REPORT 返回空报告）
+                    // responds to the current keyboard report (simplified example: GET_REPORT returns an empty report)
                     pipe->write(PipeXfer{.ep = 0, .data = data_type(xfer.setup_req->length, 0)}, 200);
                 }
             }
             else if (!xfer.data.empty()) {
-                // OUT 数据：HID 键盘没有 OUT 数据端点，收到即打印
-                SPDLOG_INFO("收到 {} 字节（ep {:02x}），LED/OUT 报告：{:02x}",
+                // OUT data: HID keyboard does not have OUT data endpoint, it will be printed as soon as it is received.
+                SPDLOG_INFO("Received {} bytes (ep {:02x}); LED/OUT report: {:02x}",
                             xfer.data.size(), xfer.ep, xfer.data[0]);
             }
         }
     });
 
-    // 发送线程：每 2 秒按下并释放一次 A 键（演示阻塞 write）
+    // Send thread: Press and release the A key every 2 seconds (demonstrates blocking write)
     std::thread sender_thread([&]() {
         while (running) {
-            // 按下 A（USB HID 键码 0x04）
+            // Press A (USB HID key code 0x04)
             const data_type pressed = {0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00};
             pipe->write(PipeXfer{.ep = 0x81, .data = pressed}, 200);
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            // 释放全部按键
+            // Release all buttons
             const data_type released = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
             pipe->write(PipeXfer{.ep = 0x81, .data = released}, 200);
             std::this_thread::sleep_for(std::chrono::seconds(2));

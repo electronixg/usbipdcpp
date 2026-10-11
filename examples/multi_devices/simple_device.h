@@ -9,8 +9,8 @@
 #include "usbipdcpp/protocol.h"
 
 /**
- * @brief 简单的虚拟HID设备接口处理器
- * 用于创建基本的虚拟输入设备
+ * @brief Simple virtual HID device interface processor
+ * is used to create basic virtual input devices
  */
 class SimpleHidInterfaceHandler : public usbipdcpp::HidVirtualInterfaceHandler {
 public:
@@ -20,12 +20,12 @@ public:
     usbipdcpp::data_type get_report_descriptor() override;
 
 private:
-    // 简单的HID报告描述符 - 一个按钮
+    // Simple HID report descriptor - one button
     static const usbipdcpp::data_type report_descriptor_;
 };
 
 /**
- * @brief 创建简单虚拟设备的设备处理器
+ * @brief Device handler for creating simple virtual devices
  */
 class SimpleDeviceHandler : public usbipdcpp::SimpleVirtualDeviceHandler {
 public:

@@ -14,7 +14,7 @@ using namespace usbipdcpp;
 #include <unistd.h>
 
 void run_daemon_mode(LibusbServer &libusb_server) {
-    SPDLOG_INFO("Daemon 模式：自动绑定所有设备...");
+    SPDLOG_INFO("Daemon mode: automatically bind all devices...");
     libusb_server.bind_existing_devices();
 
     sigset_t mask;
@@ -24,13 +24,13 @@ void run_daemon_mode(LibusbServer &libusb_server) {
     sigprocmask(SIG_BLOCK, &mask, nullptr);
 
     if (!isatty(STDIN_FILENO)) {
-        SPDLOG_INFO("Daemon 运行中（无 TTY），等待信号...");
+        SPDLOG_INFO("Daemon is running (no TTY), waiting for signal...");
         int sig;
         sigwait(&mask, &sig);
-        SPDLOG_INFO("收到信号 {}，正在退出...", sig);
+        SPDLOG_INFO("received signal {}, exiting...", sig);
     }
     else {
-        SPDLOG_INFO("Daemon 运行中，按 Ctrl+C 退出...");
+        SPDLOG_INFO("Daemon is running, press Ctrl+C to exit...");
         pause();
     }
 
@@ -77,7 +77,7 @@ void run_interactive_loop(LibusbServer &libusb_server) {
                 if (device) {
                     libusb_server.unbind_host_device(device);
                 }
-                // 主机上找不到，这个设备，如果还处于绑定状态但找不到则需要清除这个设备
+                // This device cannot be found on the host. If it is still in the bound state but cannot be found, you need to clear the device.
                 else if (libusb_server.get_server().has_bound_device(target_busid)) {
                     spdlog::warn("Can't find target busid {} in server, but it has been bound."
                                  "Has it been removed?",
@@ -119,7 +119,7 @@ q : Close the server.)" << std::endl;
 int main(int argc, char **argv) {
     auto opts = make_example_options("libusb_server", "USB/IP libusb server");
 #ifndef _WIN32
-    opts.add_options()("d,daemon", "以 daemon 模式运行：自动绑定所有设备并等待信号退出");
+    opts.add_options()("d,daemon", "runs in daemon mode: automatically binds all devices and waits for signals to exit");
 #endif
     auto result = parse_example_args(opts, argc, argv);
     auto port = result["port"].as<std::uint16_t>();
@@ -132,7 +132,7 @@ int main(int argc, char **argv) {
 
     spdlog::set_level(spdlog::level::trace);
 
-    // 启用 libusb 调试日志
+    // Enable libusb debug log
     // libusb_set_option(nullptr, LIBUSB_OPTION_LOG_LEVEL, LIBUSB_LOG_LEVEL_DEBUG);
     int err = libusb_init(nullptr);
     if (err) {
@@ -149,20 +149,20 @@ int main(int argc, char **argv) {
 
     asio::ip::tcp::endpoint endpoint(asio::ip::tcp::v4(), port);
     if (auto ec = libusb_server.start(endpoint); ec) {
-        SPDLOG_ERROR("服务器启动失败：{}", ec.message());
+        SPDLOG_ERROR("Server startup failed: {}", ec.message());
         return 1;
     }
 
-    // SPDLOG_DEBUG("直接绑定3-5-1");
+    // SPDLOG_DEBUG("Directly bind 3-5-1");
     // server.bind_host_device(server.find_by_busid("3-5-1"));
     // auto target_busid = "1-1";
-    // SPDLOG_DEBUG("直接绑定1-1");
+    // SPDLOG_DEBUG("Directly bind 1-1");
     // auto found = LibusbServer::find_by_busid("1-1");
     // if (found) {
     //     server.bind_host_device(found);
     // }
     // else {
-    //     SPDLOG_ERROR("不存在设备{}", target_busid);
+    //     SPDLOG_ERROR("Device {} does not exist", target_busid);
     // }
     if (daemon_mode) {
 #ifndef _WIN32

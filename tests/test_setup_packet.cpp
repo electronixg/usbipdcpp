@@ -135,7 +135,7 @@ TEST(TestSetupPacket, IsOut) {
     EXPECT_FALSE(in_packet.is_out());
 }
 
-// ============== 极端情况测试 ==============
+// ============== Edge-case tests ==============
 
 TEST(TestSetupPacket, AllZeros) {
     std::array<std::uint8_t, 8> data = {0, 0, 0, 0, 0, 0, 0, 0};
@@ -175,7 +175,7 @@ TEST(TestSetupPacket, MaxValues) {
 }
 
 TEST(TestSetupPacket, RoundTripAllDirections) {
-    // 测试所有方向组合
+    // Test all direction combinations
     for (int dir = 0; dir <= 0x80; dir += 0x80) {
         SetupPacket original{
                 .request_type = static_cast<std::uint8_t>(dir | 0x01), // Device/Interface

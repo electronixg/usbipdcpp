@@ -1,5 +1,5 @@
-// 音频源测试：FourierSource 谐波叠加、频率分量、相位、采样率切换
-//（AudioFileSource 已随实现搬入 examples/mock_audio，其测试在 examples/mock_audio/test_audio_file_source.cpp）
+// Audio source tests: FourierSource harmonic summation, frequency components, phase, sample-rate switching
+//(AudioFileSource moved with its implementation to examples/mock_audio; its tests are in examples/mock_audio/test_audio_file_source.cpp)
 
 #include <gtest/gtest.h>
 
@@ -19,7 +19,7 @@ using namespace usbipdcpp;
 
 namespace {
 
-/// Goertzel 算法检测单频分量的功率（相对值，用于存在性判断）
+/// Goertzel algorithm for detecting the power of a single-frequency component (relative value, used to determine presence)
 double goertzel_power(const std::int16_t *samples, std::size_t n, double freq, std::uint32_t rate) {
     double w = 2.0 * std::numbers::pi * freq / rate;
     double coeff = 2.0 * std::cos(w);
@@ -35,7 +35,7 @@ double goertzel_power(const std::int16_t *samples, std::size_t n, double freq, s
 } // namespace
 
 TEST(FourierSource, SingleHarmonicMatchesSine) {
-    // 单谐波 440Hz 满幅（相位 0）与 SineWaveSource 输出近似一致（±1 LSB）
+    // A single 440Hz harmonic at full scale (phase 0) approximately matches SineWaveSource output (±1 LSB)
     FourierSource fourier({{440, 1.0}}, {8000}, 1);
     SineWaveSource sine(440, {8000}, 1, 1.0);
 
@@ -55,7 +55,7 @@ TEST(FourierSource, SingleHarmonicMatchesSine) {
 }
 
 TEST(FourierSource, HarmonicsDetected) {
-    // 440:50 + 880:25 → 两个频率分量功率应显著大于附近不存在频率
+    // 440:50 + 880:25 → the power of both frequency components should be significantly higher than nearby absent frequencies
     FourierSource src({{440, 0.5}, {880, 0.25}}, {8000}, 1);
     AudioChunk chunk;
     ASSERT_TRUE(src.get_chunk(chunk));
@@ -64,14 +64,14 @@ TEST(FourierSource, HarmonicsDetected) {
 
     auto p440 = goertzel_power(p, n, 440, 8000);
     auto p880 = goertzel_power(p, n, 880, 8000);
-    auto p500 = goertzel_power(p, n, 500, 8000); // 不存在的分量作参照
+    auto p500 = goertzel_power(p, n, 500, 8000); // Absent component as a reference
     EXPECT_GT(p440, p500 * 100);
     EXPECT_GT(p880, p500 * 100);
 }
 
 TEST(FourierSource, PhaseShift) {
-    // 440Hz 相位 π/2：y(t) = sin(2πft + π/2) = cos(2πft)
-    // 样本 0 处 cos(0)=1 → 满幅正峰值；样本 8 处 cos(2π·0.44)≈-0.93 → 接近负满幅
+    // 440Hz with phase π/2: y(t) = sin(2πft + π/2) = cos(2πft)
+    // At sample 0, cos(0)=1 → full-scale positive peak; at sample 8, cos(2π·0.44)≈-0.93 → near negative full scale
     FourierSource src({{440, 1.0, 1.5707963267948966}}, {8000}, 1);
     AudioChunk chunk;
     ASSERT_TRUE(src.get_chunk(chunk));
@@ -79,7 +79,7 @@ TEST(FourierSource, PhaseShift) {
 
     EXPECT_GT(p[0], 32000);
     EXPECT_LT(p[8], -30000);
-    // 对照：相位 0 时样本 0 处 sin(0)=0
+    // Reference: at phase 0, sin(0)=0 at sample 0
     FourierSource no_phase({{440, 1.0, 0.0}}, {8000}, 1);
     AudioChunk chunk2;
     ASSERT_TRUE(no_phase.get_chunk(chunk2));
@@ -94,11 +94,11 @@ TEST(FourierSource, ResampleToDifferentRate) {
 
     AudioChunk chunk;
     ASSERT_TRUE(src.get_chunk(chunk));
-    EXPECT_EQ(chunk.size, 16000 * 2); // 1 秒 16kHz 单声道 16 位
+    EXPECT_EQ(chunk.size, 16000 * 2); // 1 second, 16kHz, mono, 16-bit
 }
 
 TEST(FourierSource, InvalidHarmonicsFiltered) {
-    // NaN/Inf 幅度与相位会被剔除（否则 sin(NaN) 转整数是未定义行为），剩余合法项正常发声
+    // NaN/Inf amplitudes and phases are removed (otherwise converting sin(NaN) to an integer is undefined behavior); remaining valid entries produce sound normally
     double nan = std::numeric_limits<double>::quiet_NaN();
     double inf = std::numeric_limits<double>::infinity();
     FourierSource src({{440, 0.5}, {0, 1.0}, {880, nan}, {1000, 0.5, inf}, {1100, -inf}}, {8000}, 1);
@@ -106,19 +106,19 @@ TEST(FourierSource, InvalidHarmonicsFiltered) {
     ASSERT_TRUE(src.get_chunk(chunk));
     auto *p = reinterpret_cast<const std::int16_t *>(chunk.data);
 
-    // 全部样本必须是有限整数（非法项未污染输出）
+    // All samples must be finite integers (invalid entries have not contaminated the output)
     for (std::size_t i = 0; i < chunk.size / 2; ++i) {
         EXPECT_GE(p[i], -32767);
         EXPECT_LE(p[i], 32767);
     }
-    // 440Hz 分量仍在（幅度 50%）
+    // The 440Hz component is still present (50% amplitude)
     auto p440 = goertzel_power(p, chunk.size / 2, 440, 8000);
     EXPECT_GT(p440, 1.0);
 }
 
 TEST(FourierSource, NormalizeOverLimitByDefault) {
-    // 两谐波叠加峰值 > 1.0（sin θ + sin 2θ 峰值约 1.76）：默认 normalize 模式
-    // 整体除以峰值——不削波（无连续满幅平顶），峰值被拉到满幅
+    // The summed peak of two harmonics > 1.0 (sin θ + sin 2θ peaks at about 1.76): default normalize mode
+    // divides the entire signal by the peak—no clipping (no consecutive full-scale flat tops), with the peak brought to full scale
     FourierSource src({{440, 1.0}, {880, 1.0}}, {8000}, 1);
     AudioChunk chunk;
     ASSERT_TRUE(src.get_chunk(chunk));
@@ -131,12 +131,12 @@ TEST(FourierSource, NormalizeOverLimitByDefault) {
         max_abs = std::max(max_abs, v);
         if (v == 32767) ++flat_count;
     }
-    EXPECT_GT(max_abs, 32760); // 峰值被拉到满幅（浮点舍入 ±7 LSB）
-    EXPECT_LT(flat_count, 3); // 无削波平顶（削波时一个周期内有多个连续满幅采样）
+    EXPECT_GT(max_abs, 32760); // Peak brought to full scale (floating-point rounding ±7 LSB)
+    EXPECT_LT(flat_count, 3); // No clipped flat tops (clipping produces multiple consecutive full-scale samples within one period)
 }
 
 TEST(FourierSource, ClampModeClips) {
-    // 削波模式（normalize=false）：超限采样被削成 ±32767，出现大量连续满幅平顶
+    // Clipping mode (normalize=false): samples exceeding the limit are clipped to ±32767, producing many consecutive full-scale flat tops
     FourierSource src({{440, 1.0}, {880, 1.0}}, {8000}, 1, false);
     AudioChunk chunk;
     ASSERT_TRUE(src.get_chunk(chunk));
@@ -150,11 +150,11 @@ TEST(FourierSource, ClampModeClips) {
         if (v == 32767) ++flat_count;
     }
     EXPECT_EQ(max_abs, 32767);
-    EXPECT_GT(flat_count, 5); // 削波平顶显著多于归一化模式
+    EXPECT_GT(flat_count, 5); // Clipped flat tops are significantly more numerous than in normalization mode
 }
 
 TEST(FourierSource, NoScalingBelowLimit) {
-    // 峰值不超满幅时不缩放：50% 幅度输出峰值约 16383（保持音量语义）
+    // No scaling when the peak does not exceed full scale: 50% amplitude output peaks around 16383 (preserving volume semantics)
     FourierSource src({{440, 0.5}}, {8000}, 1);
     AudioChunk chunk;
     ASSERT_TRUE(src.get_chunk(chunk));
@@ -169,7 +169,7 @@ TEST(FourierSource, NoScalingBelowLimit) {
 }
 
 TEST(FourierSource, NegativeAmplitudeInvertsPhase) {
-    // 负幅度 = 反相：+A 与 -A 的输出互为相反数（±1 LSB）
+    // Negative amplitude = phase inversion: outputs for +A and -A are negatives of each other (±1 LSB)
     FourierSource pos({{440, 0.5}}, {8000}, 1);
     FourierSource neg({{440, -0.5}}, {8000}, 1);
     AudioChunk a, b;
@@ -187,8 +187,8 @@ TEST(FourierSource, NegativeAmplitudeInvertsPhase) {
 }
 
 TEST(FourierSource, SetNormalizeRegenerates) {
-    // 创建后切换防溢出方案应立即重新生成：先削波（出现连续满幅平顶），
-    // 切到归一化后平顶消失且峰值仍被拉到满幅
+    // Switching the overflow-prevention scheme after creation should regenerate immediately: first clip (producing consecutive full-scale flat tops),
+    // then switch to normalization; the flat tops disappear and the peak is still brought to full scale
     FourierSource src({{440, 1.0}, {880, 1.0}}, {8000}, 1, false);
     AudioChunk chunk;
     ASSERT_TRUE(src.get_chunk(chunk));
@@ -199,10 +199,10 @@ TEST(FourierSource, SetNormalizeRegenerates) {
     for (std::size_t i = 0; i < n; ++i) {
         if (std::abs(p[i]) == 32767) ++flat_count;
     }
-    EXPECT_GT(flat_count, 5); // 削波模式有大量平顶
+    EXPECT_GT(flat_count, 5); // Clipping mode has many flat tops
 
     src.set_normalize(true);
-    ASSERT_TRUE(src.get_chunk(chunk)); // buffer 已重生成，重新取指针
+    ASSERT_TRUE(src.get_chunk(chunk)); // buffer has been regenerated; obtain the pointer again
     p = reinterpret_cast<const std::int16_t *>(chunk.data);
     int max_abs = 0;
     flat_count = 0;
@@ -211,6 +211,6 @@ TEST(FourierSource, SetNormalizeRegenerates) {
         max_abs = std::max(max_abs, v);
         if (v == 32767) ++flat_count;
     }
-    EXPECT_GT(max_abs, 32760); // 峰值拉到满幅
-    EXPECT_LT(flat_count, 3); // 平顶消失（不削波）
+    EXPECT_GT(max_abs, 32760); // Peak brought to full scale
+    EXPECT_LT(flat_count, 3); // Flat tops disappear (no clipping)
 }

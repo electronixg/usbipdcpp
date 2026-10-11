@@ -15,7 +15,7 @@ class TransferHandle;
 
 
 /**
- * @brief 继承 VirtualInterfaceHandler 类，不要继承这个类
+ * @brief Inherit the VirtualInterfaceHandler class, do not inherit this class
  */
 class USBIPDCPP_API AbstInterfaceHandler {
 public:
@@ -24,33 +24,33 @@ public:
     }
 
     /**
-     * @brief 新的客户端连接时会调这个函数
-     * @param responder 传输应答接口（提交应答/停止传输用）
-     * @param ec 发生的ec
+     * @brief This function will be called when a new client connects
+     * @param responder transfer response interface (used to submit response/stop transfer)
+     * @param ec the ec that occurred
      */
     virtual void on_new_connection(TransferResponder &responder, error_code &ec) =0;
 
     /**
-     * @brief 返回所属接口的只读引用
+     * @brief returns a read-only reference to the interface to which it belongs.
      *
-     * 接口描述信息（接口号/端点等）一律经它访问，不要给本类加字段级
-     * getter。跨接口描述符要引用其他接口时（如 UAC AC Header 的
-     * baInterfaceNr），由装配方把对方 handler 关联过来后经
-     * `handler->get_interface()` 取
-     * @return 所属接口的 const 引用
+     * Access all interface description information (interface number/endpoints, etc.) through this; do not add field-level
+     * getters to this class. When a descriptor spanning interfaces needs to refer to another interface (such as UAC AC Header's
+     * baInterfaceNr), the assembler associates the other handler; obtain the information through
+     * `handler->get_interface()`
+     * @return const reference of the interface to which it belongs
      */
     [[nodiscard]] const UsbInterface &get_interface() const {
         return handle_interface;
     }
 
     /**
-     * @brief 当发生错误、客户端detach、主动关闭服务器等情况需要完全终止传输时会调用这个函数。被调用后不可以再提交消息
+     * @brief This function is called when the transfer needs to be completely terminated due to errors, client detach, active server shutdown, etc. Messages cannot be submitted after being called.
      */
     virtual void on_disconnection(error_code &ec) =0;
     /**
-     * @brief 所有seqnum都会调用这个函数，请确保只处理自己的seqnum
-     * @param unlink_seqnum 想要取消的包序号
-     * @param cmd_seqnum CMD_UNLINK 命令的序号（用于构造 RET_UNLINK）
+     * @brief All seqnum will call this function, please make sure to only process your own seqnum
+     * @param unlink_seqnum Sequence number of the packet to cancel
+     * @param cmd_seqnum CMD_UNLINK The sequence number of the command (used to construct RET_UNLINK)
      */
     virtual void handle_unlink_seqnum(std::uint32_t unlink_seqnum, std::uint32_t cmd_seqnum);
 

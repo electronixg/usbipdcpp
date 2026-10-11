@@ -8,20 +8,20 @@
 
 std::shared_ptr<usbipdcpp::UsbDevice> DeviceFactory::create_simple_device(int index,
                                                                           usbipdcpp::StringPool &string_pool) {
-    // 接口描述与 RelativeMouseHandler 相同（HID 03/00/00 + 中断 IN 8/10），复用其工厂建接口
+    // The interface description of  is the same as that of RelativeMouseHandler (HID 03/00/00 + interrupt IN 8/10), reusing its factory-built interface
     std::vector<usbipdcpp::UsbInterface> interfaces = {
             usbipdcpp::RelativeMouseHandler::make_interface(0x81),
     };
 
-    // 创建设备（dev_num 与 path 随 index 定制）
+    // creates device (dev_num and path are customized with index)
     auto device = usbipdcpp::UsbDevice::make(generate_busid(index), generate_vendor_id(index),
                                              generate_product_id(index), std::move(interfaces),
                                              1, static_cast<std::uint32_t>(index), 0, generate_path(index));
 
-    // 为接口设置示例自己的处理器（覆盖描述符模板语义）
+    // Sets the example's own handler for the interface (overrides descriptor template semantics)
     device->interfaces[0].with_handler<SimpleHidInterfaceHandler>(string_pool);
 
-    // 为设备设置处理器
+    // Set the device handler
     auto device_handler = device->with_handler<SimpleDeviceHandler>(string_pool);
     device_handler->setup_interface_handlers();
 
@@ -53,11 +53,11 @@ std::string DeviceFactory::generate_path(int index) {
 }
 
 std::uint16_t DeviceFactory::generate_vendor_id(int index) {
-    // 使用基础VID + index，保证每个设备有不同的VID
+    // uses basic VID + index to ensure that each device has a different VID
     return static_cast<std::uint16_t>(0x1234 + index - 1);
 }
 
 std::uint16_t DeviceFactory::generate_product_id(int index) {
-    // 使用基础PID + index，保证每个设备有不同的PID
+    // uses basic PID + index to ensure that each device has a different PID
     return static_cast<std::uint16_t>(0x5678 + index - 1);
 }

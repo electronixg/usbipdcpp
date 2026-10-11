@@ -6,7 +6,7 @@
 
 
 /**
- * @brief CDC ACM 通信接口处理器实现（回显串口）
+ * @brief CDC ACM communication interface processor implementation (echo serial port)
  */
 class MockCdcAcmCommunicationInterfaceHandler : public usbipdcpp::CdcAcmCommunicationInterfaceHandler {
 public:
@@ -19,7 +19,7 @@ public:
 
 
 /**
- * @brief CDC ACM 数据接口处理器实现（回显串口）
+ * @brief CDC ACM data interface processor implementation (echo serial port)
  */
 class MockCdcAcmDataInterfaceHandler : public usbipdcpp::CdcAcmDataInterfaceHandler {
 public:

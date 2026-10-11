@@ -51,11 +51,11 @@ int main(int argc, char **argv) {
     }
 
     LibusbServer server;
-    server.set_hotplug_enabled(false);  // Android 无 root 权限不支持热插拔
+    server.set_hotplug_enabled(false);  // Android does not support hotplug without root privileges
     asio::ip::tcp::endpoint endpoint(asio::ip::tcp::v4(), listen_port);
 
-    // Android 模式：直接传入 fd，bind 时会临时 wrap 获取设备信息
-    // 每次客户端连接时会重新 wrap fd
+    // Android mode: Directly pass in fd, and when bind, it will be temporarily wrapped to obtain device information.
+    // will re-wrap fd every time the client connects
     auto result = server.bind_host_device_with_wrapped_fd(fd);
     if (result != DeviceOperationResult::Success) {
         SPDLOG_ERROR("bind_host_device_with_wrapped_fd failed");
@@ -64,7 +64,7 @@ int main(int argc, char **argv) {
     }
 
     if (auto ec = server.start(endpoint); ec) {
-        SPDLOG_ERROR("服务器启动失败：{}", ec.message());
+        SPDLOG_ERROR("Server startup failed: {}", ec.message());
         return 1;
     }
     spdlog::info("enter any thing to stop the server");

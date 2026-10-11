@@ -1,15 +1,15 @@
-# AudioFileSource（--audio 选项）依赖 miniaudio（单头文件库，可选），检测逻辑
-# 照抄 mock_audio（AudioFileSource 源码在 mock_audio 目录，跨目录引用）：
-# miniaudio 查找两种方式：先直接找 miniaudio.h，找不到走 pkgconf（Termux 等
-# 只有 pkg-config 的环境）；两种都找不到才算真找不到，此时打印 DISABLED 并跳过
-# AudioFileSource（sine/fourier 音源不受影响），同 mock_uvc_ffmpeg 的做法。
-# stb_vorbis.c 的布局差异（vcpkg include 根 / Termux include/stb/ 子目录）
-# 由 AudioFileSource.cpp 里的 __has_include 自适应，无需在此检测。
+# AudioFileSource (--audio option) depends on miniaudio (single header file library, optional), detection logic
+# copies mock_audio (AudioFileSource source code is in the mock_audio directory, cross-directory reference):
+# Find miniaudio in two ways: first search for miniaudio.h directly, then fall back to pkgconf (for environments such as Termux
+# that provide only pkg-config). Treat it as missing only if both searches fail; then print DISABLED and skip
+# AudioFileSource (sine/fourier sources are unaffected), following the same approach as mock_uvc_ffmpeg.
+# Layout differences of  stb_vorbis.c (vcpkg include root/Termux include/stb/ subdirectory)
+# are handled adaptively by __has_include in AudioFileSource.cpp; no detection is needed here.
 find_path(MINIAUDIO_INCLUDE_DIR miniaudio.h)
 if (NOT MINIAUDIO_INCLUDE_DIR)
-    # Homebrew 0.11.25+ 把头文件装在 include/miniaudio/ 子目录，其 miniaudio.pc 的
-    # Cflags 也指向 include 根（pkgconf 分支同样找不到），故必须直接找子目录。
-    # PATH_SUFFIXES 使 find_path 返回 <prefix>/include/miniaudio，正是 -I 需要的目录
+    # Homebrew 0.11.25+ installs the header file in the include/miniaudio/ subdirectory, and its miniaudio.pc
+    # Cflags also points to the include root (the pkgconf branch cannot be found either), so the subdirectory must be found directly.
+    # PATH_SUFFIXES causes find_path to return <prefix>/include/miniaudio, which is the directory required by -I
     find_path(MINIAUDIO_INCLUDE_DIR miniaudio.h PATH_SUFFIXES miniaudio)
 endif ()
 if (MINIAUDIO_INCLUDE_DIR)
@@ -24,17 +24,17 @@ else ()
     endif ()
 endif ()
 
-# AudioVideoFileSource（--video 音画同步源）依赖 FFmpeg（含 libswresample 音频
-# 重采样），检测照 mock_uvc_ffmpeg；不可用时 --video 选项不注册
+# AudioVideoFileSource (--video audio and video synchronization source) depends on FFmpeg (including libswresample audio
+# resampling); detect it as in mock_uvc_ffmpeg. If unavailable, do not register the --video option
 find_package(PkgConfig QUIET)
 if (PkgConfig_FOUND)
     pkg_check_modules(ffmpeg IMPORTED_TARGET libavformat libavcodec libswscale libswresample libavutil)
 endif ()
 
 file(GLOB_RECURSE src *.cpp *.c)
-# 测试文件单独编译进 test target，不参与主程序（同 mock_audio 的做法）
+# The  test file is compiled separately into the test target and does not participate in the main program (same as mock_audio)
 list(FILTER src EXCLUDE REGEX "test_.*\\.cpp")
-# AudioVideoFileSource 只在 FFmpeg 可用时编入（非 FFmpeg 构建无 libav* 头）
+# AudioVideoFileSource is only compiled when FFmpeg is available (non-FFmpeg builds without libav* headers)
 list(FILTER src EXCLUDE REGEX "AudioVideoFileSource")
 if (MINIAUDIO_INCLUDE_DIRS)
     message(STATUS "miniaudio: ENABLED (include: ${MINIAUDIO_INCLUDE_DIRS})")
@@ -60,9 +60,9 @@ if (PkgConfig_FOUND AND ffmpeg_FOUND)
     target_compile_definitions(mock_webcam PRIVATE USBIPDCPP_USE_FFMPEG)
 endif ()
 
-# mock_webcam 装配层单元测试（实现随示例走：构建 tests 且 GTest 可用时添加，
-# 同 mock_audio；只测装配布局，依赖的 SineWaveSource/ColorBarSource 无第三方依赖，
-# 不要求 FFmpeg/miniaudio）
+# mock_webcam assembly unit tests (implementation accompanies the example: add when building tests and GTest is available,
+# as in mock_audio; only the assembled layout is tested, and SineWaveSource/ColorBarSource have no third-party dependencies,
+# does not require FFmpeg/miniaudio)
 if (USBIPDCPP_BUILD_TESTS)
     find_package(GTest QUIET)
     if (GTest_FOUND)
@@ -71,7 +71,7 @@ if (USBIPDCPP_BUILD_TESTS)
         add_executable(test_mock_webcam test_webcam.cpp)
         target_link_libraries(test_mock_webcam PRIVATE usbipdcpp_virtual_device GTest::gtest GTest::gtest_main)
         target_include_directories(test_mock_webcam PRIVATE .)
-        # PRE_TEST：测试发现移到构建期（同 tests/CMakeLists.txt 的做法，避免并行构建竞态）
+        # PRE_TEST: move test discovery to the build stage (same approach as tests/CMakeLists.txt, avoiding parallel-build races)
         gtest_discover_tests(test_mock_webcam DISCOVERY_MODE PRE_TEST)
     endif ()
 endif ()

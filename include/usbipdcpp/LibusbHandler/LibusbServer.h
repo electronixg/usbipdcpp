@@ -25,36 +25,36 @@ enum class DeviceOperationResult {
 };
 
 /**
- * @brief LibusbServer 行为配置
+ * @brief LibusbServer behavior configuration
  */
 struct LibusbServerConfig {
-    bool skip_hub = true; ///< 跳过 hub 设备（bDeviceClass == 0x09）
-    bool auto_bind_hotplug = false; ///< 热插拔时自动绑定新设备
+    bool skip_hub = true; ///< Skip hub device (bDeviceClass == 0x09)
+    bool auto_bind_hotplug = false; ///< Automatically bind new devices when hotplug
 
     /**
-     * @brief 设备绑定过滤器：返回 true 表示不导出该设备（跳过绑定）
+     * @brief device binding filter: returning true means not exporting the device (skipping binding)
      *
-     * 在取到设备描述符之后、打开设备之前调用（此时只有 libusb 的只读查询，
-     * 跳过不留任何残留状态）；bind_existing_devices 与热插拔自动绑定都经由
-     * bind_host_device 生效。skip_hub 先判、本过滤器后判，两者叠加而非互斥
-     * ——需要按 VID/PID、设备类等自定义排除规则时用它，不必改 skip_hub。
+     * is called after getting the device descriptor and before opening the device (at this time there is only read-only query of libusb,
+     * skips without leaving any residual status); bind_existing_devices and hotplug are automatically bound through
+     * bind_host_device takes effect. skip_hub is judged first and this filter is judged later. The two are superimposed rather than mutually exclusive.
+     * - Use this when you need to customize exclusion rules based on VID/PID, device class, etc. There is no need to change skip_hub.
      *
-     * @param dev libusb 设备（只读，回调内不要 unref）
-     * @param desc 已取到的设备描述符
+     * @param dev libusb device (read-only, do not unref in callback)
+     * @param desc The device descriptor that has been obtained
      */
     std::function<bool(libusb_device *dev, const libusb_device_descriptor &desc)> device_bind_filter;
 };
 
 /**
- * @brief 基于 libusb 的 USB/IP 服务器
+ * @brief libusb-based USB/IP server
  *
- * @attention 线程安全摘要：
- *   - 构造 / start / stop / ~LibusbServer：生命周期方法，必须在同一线程串行调用
- *   - bind / unbind / try_remove_dead_device / notify_device_removed：内部加锁，任意线程安全
- *   - print_device / list_host_devices：内部加锁，任意线程安全
- *   - get_device_names / find_by_busid：静态方法，操作独立的 libusb 设备列表，任意线程安全
- *   - get_server：始终安全（仅返回引用），但对返回对象的调用需遵循 Server 自身的线程约束
- *   - set_hotplug_enabled / is_hotplug_enabled：必须在 start() 之前调用/读取
+ * @attention Thread safety summary:
+ *   - Construct / start / stop / ~LibusbServer: life cycle method, must be called serially in the same thread
+ *   - bind / unbind / try_remove_dead_device / notify_device_removed: Internally locked, safe from any thread
+ *   - print_device / list_host_devices: Internal locking, safe from any thread
+ *   - get_device_names / find_by_busid: static method, operating independent libusb device list, arbitrary thread safety
+ *   - get_server: Always safe (only returns a reference), but calls to the returned object need to follow the Server's own thread constraints
+ *   - set_hotplug_enabled / is_hotplug_enabled: must be called/read before start()
  */
 class USBIPDCPP_API LibusbServer {
 public:
@@ -65,7 +65,7 @@ public:
     LibusbServer &operator=(LibusbServer &&) = delete;
 
     /**
-     * @brief Bind a physical USB device to make it available for export (普通模式).
+     * @brief Bind a physical USB device to make it available for export (normal mode).
      *
      * This function retrieves device information and adds it to the available devices list.
      * The device is not opened until a client connects (lazy binding).
@@ -80,12 +80,12 @@ public:
      *         HubFiltered / DeviceFiltered when skip_hub or device_bind_filter
      *         says to skip this device.
      *
-     * @thread_safety 内部加锁，任意线程安全。
+     * @thread_safety Internally locked, safe from any thread.
      */
     DeviceOperationResult bind_host_device(libusb_device *dev);
 
     /**
-     * @brief Bind a physical USB device with a system file descriptor (Android 模式).
+     * @brief Bind a physical USB device with a system file descriptor (Android mode).
      *
      * This is for Android where the device is accessed via a file descriptor obtained
      * from UsbManager.openDevice(). The fd is wrapped via libusb_wrap_sys_device()
@@ -99,7 +99,7 @@ public:
      *         DeviceInUse if that busid is currently used by a session;
      *         GetDescriptorFailed / GetConfigFailed on device checks.
      *
-     * @thread_safety 内部加锁，任意线程安全。
+     * @thread_safety Internally locked, safe from any thread.
      */
     DeviceOperationResult bind_host_device_with_wrapped_fd(intptr_t fd);
 
@@ -116,12 +116,12 @@ public:
      *         DeviceOperationResult::DeviceNotFound if not in available devices,
      *         DeviceOperationResult::DeviceInUse if currently in use.
      *
-     * @thread_safety 内部加锁，任意线程安全。
+     * @thread_safety Internally locked, safe from any thread.
      */
     DeviceOperationResult unbind_host_device(libusb_device *device);
 
     /**
-     * @brief Unbind a previously bound device by its file descriptor (Android 模式).
+     * @brief Unbind a previously bound device by its file descriptor (Android mode).
      *
      * Finds and removes the device that was bound with the specified fd.
      * On success the Server emits on_device_released(busid, DeviceRemoved) (see ServerObserver).
@@ -131,7 +131,7 @@ public:
      *         DeviceOperationResult::DeviceNotFound if not in available devices,
      *         DeviceOperationResult::DeviceInUse if currently in use.
      *
-     * @thread_safety 内部加锁，任意线程安全。
+     * @thread_safety Internally locked, safe from any thread.
      */
     DeviceOperationResult unbind_host_device_by_fd(intptr_t fd);
 
@@ -150,12 +150,12 @@ public:
      * @return DeviceOperationResult::Success if found and removed,
      *         DeviceOperationResult::DeviceNotFound if not found.
      *
-     * @thread_safety 内部加锁，任意线程安全。
+     * @thread_safety Internally locked, safe from any thread.
      */
     DeviceOperationResult try_remove_dead_device(const std::string &busid);
 
     /**
-     * @brief Notify that a device has been physically removed (Android 模式).
+     * @brief Notify that a device has been physically removed (Android mode).
      *
      * This should be called when the system detects a USB device has been detached.
      * If the device is currently in use, it will trigger disconnection and stop the session.
@@ -166,7 +166,7 @@ public:
      * @return DeviceOperationResult::Success if found and handled,
      *         DeviceOperationResult::DeviceNotFound if not found.
      *
-     * @thread_safety 内部加锁，任意线程安全。
+     * @thread_safety Internally locked, safe from any thread.
      */
     DeviceOperationResult notify_device_removed(const std::string &busid);
 
@@ -179,7 +179,7 @@ public:
      * @return The error code if the server fails to start (e.g. port already
      *         in use), no error otherwise. Does not throw.
      *
-     * @thread_safety 不可并发调用。至多调用一次（需先 stop() 才能再次调用）。
+     * @thread_safety cannot be called concurrently. Called at most once (stop() is required before calling again).
      */
     usbipdcpp::error_code start(const asio::ip::tcp::endpoint &ep);
 
@@ -189,7 +189,7 @@ public:
      * Stops the hotplug monitor, closes all device handles, releases interfaces,
      * and reattaches kernel drivers.
      *
-     * @thread_safety 不可并发调用。必须在 start() 之后、析构之前调用。
+     * @thread_safety cannot be called concurrently. Must be called after start() and before destruction.
      */
     void stop();
 
@@ -205,7 +205,7 @@ public:
      * @param skip_name Skip device name lookup (avoids calling get_device_names which may
      *                  block on libusb_open). When true, VID:PID is printed instead.
      *
-     * @thread_safety 内部加锁读取设备状态，任意线程安全。
+     * @thread_safety Internally locked to read device status, safe from any thread.
      */
     void print_device(libusb_device *dev, bool skip_name = false);
 
@@ -214,34 +214,34 @@ public:
      *
      * Prints detailed information about each device to stdout.
      *
-     * @thread_safety 使用 libusb 全局设备列表（libusb_get_device_list），任意线程安全。
+     * @thread_safety Use libusb global device list (libusb_get_device_list), safe from any thread.
      */
     void list_host_devices();
 
     /**
-     * @brief 扫描并绑定所有当前连接的设备。
+     * @brief Scans and binds all currently connected devices.
      *
-     * 根据 config.skip_hub 自动跳过 hub 设备。
-     * 已绑定或在用的设备也会跳过。可在任意线程调用。
+     * automatically skips the hub device based on config.skip_hub.
+     * Devices that are bound or in use will also be skipped. Can be called from any thread.
      */
     void bind_existing_devices();
 
     /**
      * @brief Get the underlying Server instance.
      *
-     * 与虚拟设备共用同一监听端口：物理设备经 bind_* 进入 server 的
-     * available_devices，虚拟设备用 `get_server().add_device(虚拟 UsbDevice)`
-     * 加进同一个 Server 即可——Server 对设备后端无感知（UsbDevice 统一承载
-     * LibusbDeviceHandler / VirtualDeviceHandler）。
+     * shares the same listening port with the virtual device: the physical device enters the server through bind_*
+     * available_devices, virtual device uses `get_server().add_device(virtual UsbDevice)`
+     * can be added to the same Server - the Server has no awareness of the device backend (UsbDevice uniformly carries
+     * LibusbDeviceHandler / VirtualDeviceHandler).
      *
-     * @warning 混用时注意 busid 唯一性：客户端按 busid attach，重复 busid
-     *          会命中不确定的设备。虚拟设备默认 busid 常为 "1-1"，与真实
-     *          设备的总线号（如 "1-1"）可能撞车，混用前给虚拟设备另行指定
-     *          不冲突的 busid。
+     * @warning When mixing, ensure busid uniqueness: clients attach by busid; duplicate busid values
+     *          match an indeterminate device. A virtual device's default busid is often "1-1", which may conflict with a physical
+     *          device's bus number (such as "1-1"); assign the virtual device a separate,
+     *          nonconflicting busid before mixing them.
      *
      * @return Reference to the internal Server object.
      *
-     * @thread_safety 始终安全（仅返回引用）。对返回对象的操作需遵循 Server 的线程约束。
+     * @thread_safety Always safe (only returns a reference). Operations on the returned objects must follow the thread constraints of the Server.
      */
     Server &get_server() {
         return server;
@@ -259,7 +259,7 @@ public:
      * @return A pair containing {manufacturer, product} names. Returns "Unknown Manufacturer"
      *         or "Unknown Product" if the corresponding string descriptor is not available.
      *
-     * @thread_safety 静态方法，打开独立的 libusb handle，任意线程安全。
+     * @thread_safety Static method, open an independent libusb handle, safe from any thread.
      */
     static std::pair<std::string, std::string> get_device_names(libusb_device *device);
 
@@ -270,7 +270,7 @@ public:
      * @return A libusb_device pointer if found, nullptr otherwise. The caller must call
      *         libusb_unref_device() when done with the device.
      *
-     * @thread_safety 静态方法，使用 libusb 全局设备列表，任意线程安全。
+     * @thread_safety Static method, using libusb global device list, any thread safe.
      */
     static libusb_device *find_by_busid(const std::string &busid);
 
@@ -282,7 +282,7 @@ public:
      *
      * @param enabled true to enable hotplug monitoring, false to disable.
      *
-     * @thread_safety 必须在 start() 之前调用。
+     * @thread_safety must be called before start().
      */
     void set_hotplug_enabled(bool enabled) {
         hotplug_enabled_by_user_ = enabled;
@@ -293,7 +293,7 @@ public:
      *
      * @return true if hotplug monitoring is enabled, false otherwise.
      *
-     * @thread_safety 读取原子变量，任意线程安全。但应在 start() 之后才有效。
+     * @thread_safety Read atomic variables, safe from any thread. But it should be valid after start().
      */
     bool is_hotplug_enabled() const {
         return hotplug_enabled_by_user_;
@@ -304,13 +304,13 @@ protected:
 
     std::atomic<bool> should_exit_libusb_event_thread = false;
 
-    // 不可在这个线程发送网络包
+    // Network packets cannot be sent in this thread.
     std::thread libusb_event_thread;
 
-    // 热插拔相关
+    // hotplug related
     libusb_hotplug_callback_handle hotplug_handle_ = 0;
     bool hotplug_enabled_ = false;
-    bool hotplug_enabled_by_user_ = true; // 用户设置的开关，默认启用
+    bool hotplug_enabled_by_user_ = true; // User-set switch, enabled by default
 
     LibusbServerConfig config;
 

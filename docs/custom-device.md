@@ -1,55 +1,55 @@
-# 如何实现一个自定义 USB 虚拟设备
+# Implementing a Custom Virtual USB Device
 
-本文讲解如何在 usbipdcpp 中实现自定义的 USB 虚拟设备（不需要真实硬件），包含两种方法：
+This article explains how to implement a custom virtual USB device in usbipdcpp (without physical hardware), using either of two methods:
 
-| 方法 | 需要了解的 USB 知识 | 适用场景 |
+| Method | Required USB knowledge | Suitable use cases |
 |---|---|---|
-| [方法一：PipeDeviceHandler](#方法一pipedevicehandler通用管道) | 几乎为零 | 只要一个「数据流」设备：主机写进来、设备读走；设备写出去、主机读走 |
-| [方法二：继承 VirtualInterfaceHandler](#方法二继承virtualinterfacehandler完全自定义) | 需要了解端点、传输类型、控制请求 | 需要实现特定 USB 类协议（HID/UAC/UVC/MSC），或对控制请求有特殊处理 |
+| [Method 1: PipeDeviceHandler](#method-1-pipedevicehandler-generic-pipes) | Almost none | A simple data-stream device: the host writes and the device reads; the device writes and the host reads |
+| [Method 2: Derive from VirtualInterfaceHandler](#method-2-derive-from-virtualinterfacehandler-full-customization) | Endpoints, transfer types, and control requests | Implementing a specific USB class protocol (HID/UAC/UVC/MSC), or handling control requests specially |
 
-两种方法的共同骨架是一样的（定义设备模型 → 绑定 handler → 启动服务器），区别只在「handler 怎么实现」。
+Both methods share the same framework (define the device model → bind handlers → start the server); only the handler implementation differs.
 
-## 背景：虚拟设备的三层结构
+## Background: The Three Layers of a Virtual Device
 
-虚拟设备按 USB 设备的三级结构组织：
+Virtual devices follow the three-level structure of USB devices:
 
 ```
-UsbDevice（设备描述符 + 接口列表）
- ├── UsbInterface[0] ──── VirtualInterfaceHandler（接口级 handler）
+UsbDevice (device descriptor + interface list)
+ ├── UsbInterface[0] ──── VirtualInterfaceHandler (interface-level handler)
  ├── UsbInterface[1] ──── VirtualInterfaceHandler
  └── ...
- + 设备级 handler：VirtualDeviceHandler / SimpleVirtualDeviceHandler
+ + device-level handler: VirtualDeviceHandler / SimpleVirtualDeviceHandler
 ```
 
-**数据流**（客户端 `usbip attach` 之后）：
+**Data flow** (after the client runs `usbip attach`):
 
 ```
-主机发 CMD_SUBMIT（一次 USB 传输）
-  → Session::receiver 线程读取
-  → 设备级 handler 的 receive_urb()
-  → 按端点类型分发：
-     控制传输 → 设备级 handle_control_urb（标准请求内部消化，非标准转接口 handler）
-     Bulk/Interrupt/Iso → 对应接口的 handler
-  → handler 通过 session->submit_ret_submit() 提交应答
-  → Session::sender 线程把 RET_SUBMIT 发回主机
+The host sends CMD_SUBMIT (one USB transfer)
+  → The Session::receiver thread reads it
+  → The device-level handler's receive_urb()
+  → Dispatch according to endpoint type:
+     Control transfer → device-level handle_control_urb (standard requests handled internally; non-standard requests forwarded to the interface handler)
+     Bulk/Interrupt/Iso → the corresponding interface's handler
+  → The handler submits a response through session->submit_ret_submit()
+  → The Session::sender thread sends RET_SUBMIT back to the host
 ```
 
-**描述符是自动生成的**：设备级 handler 根据你定义的 `UsbDevice` / `UsbInterface` / `UsbEndpoint` 结构自动拼出设备描述符、配置描述符、字符串描述符，主机枚举时直接使用，无需手工构造字节流。
+**Descriptors are generated automatically**: the device-level handler assembles device, configuration, and string descriptors from your `UsbDevice` / `UsbInterface` / `UsbEndpoint` structures. The host uses them directly during enumeration; you do not need to construct byte streams manually.
 
-## 第一步：定义设备模型
+## Step 1: Define the Device Model
 
-> **库内置 handler 的接口不要手写**：每个内置 InterfaceHandler 都提供同名静态工厂
-> `make_interface(<每个端点一个地址参数>...)`，返回与本 handler 描述符一致的
-> `UsbInterface`（如 `KeyboardHandler::make_interface(0x81)`）。接口 handler
-> 内部可能对接口结构有硬编码假设（如构造函数里记录端点地址、假定端点数量/属性），
-> 手写接口与 handler 的假设不符会导致枚举或数据传输异常，因此 **UsbInterface 一律
-> 建议用工厂创建**（自定义 handler 也照此提供自己的工厂，见 [make_interface 工厂](#make_interface-工厂)）。
-> 工厂**只返回描述符模板、不绑定 handler**：handler 构造持接口引用，接口对象须先入
-> 设备（`UsbDevice::make` 完成后地址稳定）再绑定（见「公共步骤」）。
-> `UsbDevice` 则没有此约束——想更灵活地配置时完全可以手动构造（所有成员都可改）。
-> 下面的手写 `UsbInterface`/`UsbEndpoint` 仅用于理解底层结构。
+> **Do not hand-write interfaces for built-in library handlers**: every built-in InterfaceHandler provides a static factory with the same name,
+> `make_interface(<one address argument per endpoint>...)`, which returns a
+> `UsbInterface` matching that handler's descriptors (e.g. `KeyboardHandler::make_interface(0x81)`). Interface handlers
+> may make hard-coded assumptions about the interface structure (e.g. recording endpoint addresses in the constructor or assuming endpoint counts/attributes).
+> A hand-written interface that violates those assumptions causes enumeration or data-transfer failures, so **always
+> prefer factory-created UsbInterface objects** (custom handlers should provide their own factories too; see [make_interface Factory](#make_interface-factory)).
+> Factories **return only descriptor templates; they do not bind handlers**: handler constructors hold interface references, so the interface object must first be placed in
+> the device (its address is stable after `UsbDevice::make` completes), then bound (see "Shared Steps").
+> `UsbDevice` has no such constraint: you can construct it manually for more flexible configuration (all members are mutable).
+> The hand-written `UsbInterface`/`UsbEndpoint` below only illustrates the underlying structure.
 
-所有设备都从定义描述符结构开始：
+Every device starts with descriptor structures:
 
 ```cpp
 #include "usbipdcpp/Server.h"
@@ -60,21 +60,21 @@ using namespace usbipdcpp;
 
 StringPool string_pool;
 
-// 接口定义：class/subclass/protocol 是 USB 类标识（0xFF = vendor 自定义类）
+// Interface definition: class/subclass/protocol identify the USB class (0xFF = vendor-specific class)
 std::vector<UsbInterface> interfaces = {
         UsbInterface{
                 .interface_class = 0xFF,        // vendor specific
                 .interface_subclass = 0x00,
                 .interface_protocol = 0x00,
-                .endpoints = {{                 // 外层 = alternate setting 列表，内层 = 该 alt 的端点
+                .endpoints = {{                 // Outer list = alternate settings; inner list = endpoints for that alt
                         UsbEndpoint{
-                                .address = 0x81,          // 0x80 | 端点号 1 = IN（设备 → 主机）
-                                .attributes = 0x02,       // Bulk（0x03 = Interrupt，0x01 = Isochronous）
-                                .max_packet_size = 64,    // Full speed 的 bulk 上限
+                                .address = 0x81,          // 0x80 | endpoint number 1 = IN (device → host)
+                                .attributes = 0x02,       // Bulk(0x03 = Interrupt,0x01 = Isochronous)
+                                .max_packet_size = 64,    // Full-speed bulk maximum
                                 .interval = 0,
                         },
                         UsbEndpoint{
-                                .address = 0x02,          // OUT（主机 → 设备）
+                                .address = 0x02,          // OUT (host → device)
                                 .attributes = 0x02,
                                 .max_packet_size = 64,
                                 .interval = 0,
@@ -83,17 +83,17 @@ std::vector<UsbInterface> interfaces = {
         },
 };
 
-// 设备定义：VID/PID、速度、接口列表、EP0
+// Device definition: VID/PID, speed, interface list, EP0
 auto device = std::make_shared<UsbDevice>(UsbDevice{
-        .path = "/usbipdcpp/my_device",   // 设备路径（usbip list 显示用）
-        .busid = "1-1",                   // busid（usbip attach -b 用的标识）
+        .path = "/usbipdcpp/my_device",   // Device path (shown by usbip list)
+        .busid = "1-1",                   // busid (identifier used by usbip attach -b)
         .bus_num = 1,
         .dev_num = 1,
         .speed = static_cast<std::uint32_t>(UsbSpeed::Full),
         .vendor_id = 0x1234,
         .product_id = 0x5678,
         .device_bcd = 0x0100,
-        .device_class = 0x00,             // 0 = 在接口层定义类
+        .device_class = 0x00,             // 0 = class defined at the interface level
         .device_subclass = 0x00,
         .device_protocol = 0x00,
         .configuration_value = 1,
@@ -104,58 +104,58 @@ auto device = std::make_shared<UsbDevice>(UsbDevice{
 });
 ```
 
-关键点：
+Key points:
 
-- **端点地址**：高位置 1 是 IN（设备→主机），低 7 位是端点号。EP0 是控制端点，不用手动定义（上面的 `ep0_in`/`ep0_out` 字段）
-- **`attributes`**：低 2 位是传输类型——`0x00` 控制、`0x01` 等时、`0x02` Bulk、`0x03` 中断。HID 用中断端点，存储/MSC 用 Bulk
-- **`endpoints` 是 `vector<vector<UsbEndpoint>>`**：外层下标是 alternate setting（alt 0 必须有）
-- **`speed`** 决定 EP0 大小（Full=64，Low=8）和描述符里的 bMaxPacketSize0，也决定了 `max_packet_size` 的合理取值
+- **Endpoint address**: a set high bit means IN (device→host); the low 7 bits contain the endpoint number. EP0 is the control endpoint and need not be defined manually (the `ep0_in`/`ep0_out` fields above)
+- **`attributes`**: the low 2 bits specify transfer type: `0x00` control, `0x01` isochronous, `0x02` Bulk, `0x03` interrupt. HID uses interrupt endpoints; storage/MSC uses Bulk
+- **`endpoints` is `vector<vector<UsbEndpoint>>`**: the outer index is the alternate setting (alt 0 must exist)
+- **`speed`** determines EP0 size (Full=64, Low=8), bMaxPacketSize0 in the descriptor, and appropriate values for `max_packet_size`
 
-## 公共步骤：绑定 handler 并启动服务器
+## Shared Steps: Bind Handlers and Start the Server
 
-两种方法共用的骨架（方法一/二各自替换 `with_handler` 那一行）：
+Both methods use this framework (replace the `with_handler` line for Method 1 or 2):
 
 ```cpp
-// 1. 绑定设备级 handler（关键一步）
+// 1. Bind the device-level handler (essential step)
 auto handler = device->with_handler<XXXDeviceHandler>(string_pool);
-handler->setup_interface_handlers();   // 把接口 handler 的端点注册进设备级路由表
+handler->setup_interface_handlers();   // Register interface-handler endpoints in the device-level routing table
 
-// 2. 注册到服务器并启动
+// 2. Register with the server and start it
 Server server;
 server.add_device(std::move(device));
 
 asio::ip::tcp::endpoint endpoint{asio::ip::tcp::v4(), 53240};
 if (auto ec = server.start(endpoint); ec) {
-    SPDLOG_ERROR("服务器启动失败：{}", ec.message());
+    SPDLOG_ERROR("Server startup failed: {}", ec.message());
     return 1;
 }
-// 连接：usbip attach -r <主机> -b 1-1
+// Connect: usbip attach -r <host> -b 1-1
 ```
 
 ---
 
-## 方法一：PipeDeviceHandler（通用管道）
+## Method 1: PipeDeviceHandler (Generic Pipes)
 
-`PipeDeviceHandler` 把设备实现成一组 FIFO：**不需要实现任何 USB 协议细节**，所有端点自动管道化，标准控制请求自动处理。业务代码只面对两个阻塞函数：
+`PipeDeviceHandler` implements the device as a set of FIFOs: **no USB protocol details need to be implemented**. All endpoints become pipes automatically, and standard control requests are handled automatically. Application code uses only two blocking functions:
 
 ```cpp
 #include "usbipdcpp/virtual_device/PipeDeviceHandler.h"
 
 struct PipeXfer {
-    std::uint8_t ep;                  // 端点地址（含方向位）；控制请求时为 0
-    std::optional<SetupPacket> setup_req; // 仅控制请求（ep==0）时有效
-    data_type data;                   // OUT 数据或控制请求数据
+    std::uint8_t ep;                  // Endpoint address (including direction bit); 0 for control requests
+    std::optional<SetupPacket> setup_req; // Valid only for control requests (ep==0)
+    data_type data;                   // OUT data or control-request data
 };
 
-bool read(PipeXfer &xfer, std::uint32_t timeout_ms = 0);       // 等一个 OUT 传输或非标准控制请求
-std::size_t write(const PipeXfer &xfer, std::uint32_t timeout_ms = 0); // 发数据到 IN 端点（FIFO 满则阻塞）
+bool read(PipeXfer &xfer, std::uint32_t timeout_ms = 0);       // Wait for an OUT transfer or non-standard control request
+std::size_t write(const PipeXfer &xfer, std::uint32_t timeout_ms = 0); // Send data to an IN endpoint (blocks if the FIFO is full)
 ```
 
-- `read()`：阻塞等待主机发来的 OUT 数据（或 class/vendor 控制请求，此时 `setup_req` 有值）。`timeout_ms = 0` 无限等；断连返回 false
-- `write()`：把数据写入指定 IN 端点的 FIFO。**FIFO 满时阻塞**（等主机把数据读走），`timeout_ms = 0` 无限等；断连返回 0
-- 退出语义：断连时 `read` 返回 false、`write` 返回 0；`read` 会先把已排队的 OUT 数据消费完再返回 false
+- `read()`: blocks waiting for OUT data from the host (or a class/vendor control request, in which case `setup_req` has a value). `timeout_ms = 0` waits indefinitely; returns false on disconnection
+- `write()`: writes data to the specified IN endpoint's FIFO. **Blocks when the FIFO is full** (until the host reads the data). `timeout_ms = 0` waits indefinitely; returns 0 on disconnection
+- Exit semantics: on disconnection, `read` returns false and `write` returns 0; `read` drains queued OUT data before returning false
 
-### 完整示例（回显设备）
+### Complete Example (Echo Device)
 
 ```cpp
 #include <atomic>
@@ -170,9 +170,9 @@ using namespace usbipdcpp;
 int main() {
     StringPool string_pool;
 
-    // （第一步里的 interfaces 定义，bulk IN 0x81 + bulk OUT 0x02，vendor 类）
+    // (The interfaces definition from Step 1: bulk IN 0x81 + bulk OUT 0x02, vendor-specific class)
 
-    auto device = std::make_shared<UsbDevice>(UsbDevice{ /* 第一步里的设备定义 */ });
+    auto device = std::make_shared<UsbDevice>(UsbDevice{ /* Device definition from Step 1 */ });
     auto pipe = device->with_handler<PipeDeviceHandler>(string_pool);
     pipe->setup_interface_handlers();
 
@@ -180,62 +180,62 @@ int main() {
     server.add_device(std::move(device));
     asio::ip::tcp::endpoint endpoint{asio::ip::tcp::v4(), 53240};
     if (auto ec = server.start(endpoint); ec) {
-        SPDLOG_ERROR("服务器启动失败：{}", ec.message());
+        SPDLOG_ERROR("Server startup failed: {}", ec.message());
         return 1;
     }
 
     std::atomic<bool> running{true};
-    // 业务线程：收到的 OUT 数据原样发回 IN 端点
+    // Application thread: echo received OUT data unchanged through the IN endpoint
     std::thread echo_thread([&]() {
         PipeXfer xfer;
         while (running) {
-            if (pipe->read(xfer, 200)) {               // 200ms 超时轮询，便于退出
+            if (pipe->read(xfer, 200)) {               // Poll with a 200ms timeout to allow exit
                 pipe->write(PipeXfer{.ep = 0x81, .data = std::move(xfer.data)}, 200);
             }
         }
     });
 
     std::cin.get();
-    running = false;      // 先停业务线程
+    running = false;      // Stop the application thread first
     echo_thread.join();
-    server.stop();        // 再停服务器
+    server.stop();        // Then stop the server
     return 0;
 }
 ```
 
-完整可编译版本见 `examples/mock_pipe/mock_pipe_main.cpp`（含回显 + 周期消息两个线程）。
+See `examples/mock_pipe/mock_pipe_main.cpp` for a complete compilable version (with threads for echoing and periodic messages).
 
-**退出顺序有讲究**：业务线程必须**先退出**（不再调用 `read`/`write`），再
-`server.stop()`——否则 handler 随会话析构时，业务线程还阻塞在 read/write 上
-就是 use-after-free（示例里用 `running` 标志 + 短超时轮询实现）。
+**Shutdown order matters**: the application thread must **exit first** (stop calling `read`/`write`), before
+`server.stop()`; otherwise, when the handler is destroyed with the session, the application thread remains blocked in read/write,
+causing use-after-free (the example uses a `running` flag plus polling with a short timeout).
 
-### 需要 USB 类识别符时
+### When a USB Class Identifier Is Needed
 
-管道设备默认是 vendor 类（接口 class=0xFF），**主机端没有驱动会加载**。要让主机按特定设备类识别（如 HID 鼠标），两个步骤：
+A pipe device uses the vendor-specific class by default (interface class=0xFF), so **no host driver is loaded**. To let the host recognize a specific device class (e.g. a HID mouse), take two steps:
 
-1. 接口的 `interface_class` 改成对应类（如 `ClassCode::HID`），并把端点类型改成该类的规范（HID 用中断端点）
-2. 提供类描述符——`PipeDeviceHandler` 本身不生成类描述符，需要手动设置（在连接前）：
+1. Change the interface's `interface_class` to the corresponding class (e.g. `ClassCode::HID`) and use the endpoint types required by that class (HID uses interrupt endpoints)
+2. Supply class descriptors: `PipeDeviceHandler` does not generate them; set them manually before connection:
 
 ```cpp
-// HID 设备：HID 描述符（type 0x21）挂在接口描述符之后
+// HID device: append the HID descriptor (type 0x21) after the interface descriptor
 pipe->set_class_specific_descriptor({
-        0x09, 0x21, 0x11, 0x01, 0x00, 0x01, 0x22, 0x3E, 0x00,  // HID 描述符（9 字节）
+        0x09, 0x21, 0x11, 0x01, 0x00, 0x01, 0x22, 0x3E, 0x00,  // HID descriptor (9 bytes)
 });
-// HID 报告描述符（type 0x22）：主机 GET_DESCRIPTOR 时按类型返回
+// HID report descriptor (type 0x22): returned by type for the host's GET_DESCRIPTOR request
 pipe->set_custom_descriptor(0x22, report_descriptor_bytes);
 ```
 
-参考 `examples/mock_pipe_hid/` 的完整例子。
+See the complete example in `examples/mock_pipe_hid/`.
 
-### 标准请求行为可配置
+### Configurable Standard-Request Behavior
 
-管道设备的接口级标准请求默认行为：接受接口定义里存在的 alt（SET_INTERFACE，
-其余拒绝）、其余请求接受并回成功。需要特殊行为时，在连接前设置回调结构体
-`standard_request_handler`——8 个回调对应 8 个接口/端点级标准请求，未设置的回调
-保持默认行为。回调在 session receiver 线程调用，第一个参数是 handler 自身的引用：
+Default interface-level standard-request behavior for pipe devices: accept alternate settings present in the interface definition (SET_INTERFACE,
+reject other settings), and accept other requests with a success response. For special behavior, set the callback structure before connection:
+`standard_request_handler`: 8 callbacks correspond to 8 interface/endpoint-level standard requests. Unset callbacks
+retain their defaults. Callbacks run on the session receiver thread; their first argument is a reference to the handler itself:
 
 ```cpp
-// 演示：拒绝接口级 SET_FEATURE（该设备不支持任何接口级 feature）
+// Demonstration: reject interface-level SET_FEATURE (this device supports no interface-level features)
 PipeStandardRequestHandler handler;
 handler.set_feature = [](PipeDeviceHandler &pipe, std::uint16_t feature_selector, std::uint32_t *p_status) {
     *p_status = static_cast<std::uint32_t>(UrbStatusType::StatusEPIPE);
@@ -243,61 +243,61 @@ handler.set_feature = [](PipeDeviceHandler &pipe, std::uint16_t feature_selector
 pipe->set_standard_request_handler(std::move(handler));
 ```
 
-| 回调成员 | 对应请求 | 回调参数（除 pipe 引用外） |
+| Callback member | Corresponding request | Callback arguments (excluding the pipe reference) |
 |---|---|---|
-| `clear_feature` / `set_feature` | 接口级 CLEAR/SET_FEATURE | feature_selector, p_status |
-| `endpoint_clear_feature` / `endpoint_set_feature` | 端点级 CLEAR/SET_FEATURE | feature_selector, ep_address, p_status |
-| `get_interface` | GET_INTERFACE | p_status（返回当前 alt） |
+| `clear_feature` / `set_feature` | Interface-level CLEAR/SET_FEATURE | feature_selector, p_status |
+| `endpoint_clear_feature` / `endpoint_set_feature` | Endpoint-level CLEAR/SET_FEATURE | feature_selector, ep_address, p_status |
+| `get_interface` | GET_INTERFACE | p_status (returns the current alt) |
 | `set_interface` | SET_INTERFACE | alternate_setting, p_status |
-| `get_status` / `endpoint_get_status` | 接口/端点级 GET_STATUS | (ep_address), p_status（返回状态值） |
+| `get_status` / `endpoint_get_status` | Interface/endpoint-level GET_STATUS | (ep_address), p_status (returns the status value) |
 
-`p_status` 是应答状态（0 = 成功），非 0 时主机收到对应的 USB 错误。
+`p_status` is the response status (0 = success); nonzero values cause the host to receive the corresponding USB error.
 
-### 适用边界
+### Applicability and Limitations
 
-- 数据面只有「读 OUT 流 + 写 IN 流」两种操作——所有端点共享同一个数据流，没有按端点区分的语义
-- 标准控制请求（枚举）自动处理；**非标准**控制请求（class/vendor setup）会出现在 `read()` 返回的 `PipeXfer` 里（`ep==0`、`setup_req` 有值），应答用 `write({.ep = 0, .data = ...})`
-- 不适合：需要响应主机的带状态查询/配置类协议（如音频的采样率协商、UVC 的流参数协商）——这些控制请求又多又杂，管道模型处理起来不自然
+- The data path provides only "read OUT stream + write IN stream": all endpoints share the same data stream, with no endpoint-specific semantics
+- Standard control requests (enumeration) are handled automatically; **non-standard** control requests (class/vendor setup) appear in the `PipeXfer` returned by `read()` (`ep==0`, `setup_req` has a value). Respond with `write({.ep = 0, .data = ...})`
+- Unsuitable for stateful query/configuration protocols requiring responses to the host (e.g. audio sample-rate negotiation or UVC stream-parameter negotiation): these control requests are numerous and varied, and the pipe model handles them awkwardly
 
 ---
 
-## 方法二：继承 VirtualInterfaceHandler（完全自定义）
+## Method 2: Derive from VirtualInterfaceHandler (Full Customization)
 
-**这是实现自定义设备的推荐方式。** 需要实现类特定协议时，继承接口级 handler。先看继承关系：
+**This is the recommended way to implement a custom device.** Derive from the interface-level handler to implement a class-specific protocol. First, examine the inheritance hierarchy:
 
 ```
 AbstInterfaceHandler
- └── VirtualInterfaceHandler      ← 虚拟设备的接口级基类
-      ├── HidVirtualInterfaceHandler   （HID 类已实现）
-      ├── CdcAcmVirtualInterfaceHandler（CDC ACM 串口类已实现）
-      └── 你自己的 handler             ← 从这里继承
+ └── VirtualInterfaceHandler      ← Interface-level base class for virtual devices
+      ├── HidVirtualInterfaceHandler   (HID class already implemented)
+      ├── CdcAcmVirtualInterfaceHandler (CDC ACM serial-port class already implemented)
+      └── Your own handler             ← Derive from this class
 ```
 
-设备级 handler 用 `SimpleVirtualDeviceHandler`（标准请求默认实现都回 OK），接口 handler 的标准请求回调也都有默认实现。
+Use `SimpleVirtualDeviceHandler` for the device-level handler (its default standard-request implementations all return OK). Interface-handler standard-request callbacks also have default implementations.
 
-### 标准请求：库内部处理，默认行为已够用
+### Standard Requests: Handled Internally, with Sufficient Defaults
 
-**标准控制请求（枚举/状态查询）的解析和应答全部在库内部完成**（设备级
-`VirtualDeviceHandler::handle_control_urb`）：
+**Parsing and responses for standard control requests (enumeration/status queries) are handled entirely inside the library** (device-level
+`VirtualDeviceHandler::handle_control_urb`):
 
 ```
-主机发标准控制请求（bmRequestType 低 5 位 = 0，如 GET_DESCRIPTOR / SET_ADDRESS /
-SET_CONFIGURATION / GET_STATUS / GET_INTERFACE / SET_INTERFACE / SET_FEATURE ...）
-  └→ 设备级 handle_control_urb 解析并应答
-       ├─ recipient = 设备   → 设备级内部处理（描述符、地址、配置……全部自动）
-       └─ recipient = 接口/端点 → 回调本 handler 的 request_*（8 个标准请求回调）
+The host sends a standard control request (low 5 bits of bmRequestType = 0, e.g. GET_DESCRIPTOR / SET_ADDRESS /
+SET_CONFIGURATION / GET_STATUS / GET_INTERFACE / SET_INTERFACE / SET_FEATURE ...)
+  └→ Device-level handle_control_urb parses and responds
+       ├─ recipient = device   → handled internally at device level (descriptors, address, configuration... all automatic)
+       └─ recipient = interface/endpoint → calls this handler's request_* callbacks (8 standard-request callbacks)
 ```
 
-继承 `VirtualInterfaceHandler` 后**不需要强制实现任何函数**，基类默认行为已是最简
-正确行为，只有特殊需求的设备才重写：
+Deriving from `VirtualInterfaceHandler` **does not require implementing any functions**; the base class already provides the simplest
+correct behavior. Override only for devices with special requirements:
 
-| 回调 | 默认行为 |
+| Callback | Default behavior |
 |---|---|
-| 8 个标准请求回调（`request_*`） | 接受并回成功；`request_set_interface` 只接受设备定义里存在的 alt（其余回 EPIPE）；`request_get_interface` 返回当前 alt |
-| `get_class_specific_descriptor` | 返回空（没有类描述符） |
-| 数据面 5 个（`handle_bulk_transfer` / `handle_interrupt_transfer` / `handle_isochronous_transfer` / `handle_non_standard_request_type_control_urb`（及 to_endpoint）） | 回 EPIPE——**必须重写**，否则主机发的传输全部报错 |
+| 8 standard-request callbacks (`request_*`) | Accept and return success; `request_set_interface` accepts only alternate settings present in the device definition (others return EPIPE); `request_get_interface` returns the current alt |
+| `get_class_specific_descriptor` | Returns empty (no class descriptors) |
+| 5 data-path callbacks (`handle_bulk_transfer` / `handle_interrupt_transfer` / `handle_isochronous_transfer` / `handle_non_standard_request_type_control_urb` (and to_endpoint)) | Return EPIPE—**must be overridden**, otherwise all transfers sent by the host fail |
 
-重写示例（接口级 SET_FEATURE 一律拒绝）：
+Override example (reject all interface-level SET_FEATURE requests):
 
 ```cpp
 void request_set_feature(std::uint16_t, std::uint32_t *p_status) override {
@@ -305,62 +305,62 @@ void request_set_feature(std::uint16_t, std::uint32_t *p_status) override {
 }
 ```
 
-**只有非标准请求（CLASS/VENDOR 类型）才需要你自己解析**——回调是
-`handle_non_standard_request_type_control_urb`（默认回 EPIPE）。例如 HID 的
-GET_REPORT/SET_REPORT 是 class 请求，由 `HidVirtualInterfaceHandler` 在这个回调里解析。
+**Only non-standard requests (CLASS/VENDOR types) require your own parsing**; their callback is
+`handle_non_standard_request_type_control_urb` (returns EPIPE by default). For example, HID's
+GET_REPORT/SET_REPORT are class requests parsed by `HidVirtualInterfaceHandler` in this callback.
 
-### 核心机制：IN 数据面的「挂起-应答」模式
+### Core Mechanism: Pending Requests and Responses for IN Data
 
-USB 设备协议是**异步**的：主机发 IN 请求时设备可能没有数据，设备有数据时主机可能没在请求。库提供 `InEndpointChannel` 组件（`include/usbipdcpp/virtual_device/InEndpointChannel.h`）封装这种错峰：
+USB device protocols are **asynchronous**: a device may have no data when the host requests IN data, and the host may not be requesting when data becomes available. The library's `InEndpointChannel` component (`include/usbipdcpp/virtual_device/InEndpointChannel.h`) handles this timing mismatch:
 
 ```
-主机发 IN 请求（handle_bulk_transfer，ep 是 IN）
-  ├─ 数据缓冲非空 → 立即填 transfer 回 RET_SUBMIT
-  └─ 无数据 → 请求挂起（按端点排队），等数据
+The host sends an IN request (handle_bulk_transfer, ep is IN)
+  ├─ Data buffer nonempty → populate transfer immediately and return RET_SUBMIT
+  └─ No data → leave the request pending (queued by endpoint), waiting for data
 
-业务线程产生数据（push / write）
-  ├─ 有挂起的请求 → 从队列取出应答
-  └─ 无挂起请求 → 数据进缓冲，等主机下次请求
+The application thread produces data (push / write)
+  ├─ Pending requests exist → remove one from the queue and respond
+  └─ No pending requests → buffer the data, waiting for the host's next request
 ```
 
-组件内部完成请求排队/应答、双锁（数据侧阻塞等空间时不占用请求队列锁）、断连
-清理与唤醒；数据填充走 `TransferHandle` 持有的 `TransferOperator::set_transfer_data`
-（组件不假设 transfer 内部结构，GenericTransfer / libusb 等任意实现都可以）。
-按消费语义分两种模式：
+The component handles request queuing/responses, two locks (blocking for space on the data side does not hold the request-queue lock), and disconnection
+cleanup and wakeup. It populates data through `TransferOperator::set_transfer_data` of the operator held by `TransferHandle`
+(the component makes no assumptions about transfer internals; any implementation, such as GenericTransfer / libusb, is supported).
+Two modes are provided according to consumption semantics:
 
-| 模式 | 类 | 适用场景 | 生产数据入口 |
+| Mode | Class | Use cases | Data production entry point |
 |---|---|---|---|
-| 消息模式 | `MessageInChannel` | 一条数据 = 一个完整消息：HID 输入报告、UVC 状态通知 | `push(data)` 非阻塞，缓冲超上限丢最旧 |
-| 字节流模式 | `ByteStreamInChannel` | 数据是连续字节流按请求长度分片：CDC 数据接口、通用管道 | `write(data, timeout_ms)` 阻塞，缓冲满等宿主取走（对齐内核 FIFO） |
+| Message mode | `MessageInChannel` | Each data item is one complete message: HID input reports, UVC status notifications | `push(data)` is nonblocking; exceeding the buffer limit drops the oldest item |
+| Byte-stream mode | `ByteStreamInChannel` | Continuous bytes split according to request lengths: CDC data interfaces, generic pipes | `write(data, timeout_ms)` blocks, waiting for the host to consume data when the buffer is full (matching kernel FIFO behavior) |
 
-**完整示例：一个回显接口 handler**（OUT 收什么，IN 还什么，顺带响应一个 vendor 控制请求）：
+**Complete example: an echo interface handler** (returns through IN whatever it receives through OUT, and also responds to a vendor control request):
 
 ```cpp
 #include "usbipdcpp/Session.h"
 #include "usbipdcpp/virtual_device/InEndpointChannel.h"
 #include "usbipdcpp/virtual_device/VirtualDeviceHandler.h"
 #include "usbipdcpp/virtual_device/VirtualInterfaceHandler.h"
-// 以上是接口 handler 类所需的 includes；整个程序还需要第一步的 includes
-// （StringPool / Device / Server）
+// These includes are required by the interface-handler class; the complete program also needs the includes from Step 1
+// (StringPool / Device / Server)
 
 class EchoInterfaceHandler : public VirtualInterfaceHandler {
 public:
     EchoInterfaceHandler(UsbInterface &handle_interface, StringPool &string_pool) :
         VirtualInterfaceHandler(handle_interface, string_pool) {
-        // 缓冲上限：主机长期不读时丢最旧保最新，防止内存无限增长
+        // Buffer limit: drop oldest data and retain newest if the host stops reading, preventing unbounded memory growth
         echo_channel.set_max_pending_messages(1024);
     }
 
     /**
-     * @brief 创建回显接口（描述符模板，未绑定 handler）。库内置 handler 都提供
-     * 同名工厂，自定义 handler 可选提供（约定见下文「make_interface 工厂」小节）：
+     * @brief Create an echo interface (descriptor template, without a bound handler). Built-in handlers all provide
+     * a factory with this name; custom handlers may optionally do so (see the "make_interface Factory" conventions below):
      *
-     * 形参 = 该接口每类端点一个地址（参数名即用途，调用方可显式指定任意地址），
-     * 端点属性/方向由工厂给定合理默认，只暴露地址可变。
-     * handler 不在工厂里绑定：handler 构造持接口引用，须等接口入设备（地址稳定）
-     * 后由调用方 device->interfaces[i].with_handler<EchoInterfaceHandler>(string_pool) 绑定。
-     * @param in_ep Bulk IN 端点地址（设备→主机）
-     * @param out_ep Bulk OUT 端点地址（主机→设备）
+     * Parameters = one address per endpoint type in this interface (names identify their roles; callers may explicitly supply any addresses).
+     * The factory supplies appropriate default endpoint attributes/directions; only addresses are configurable.
+     * Do not bind the handler in the factory: its constructor holds an interface reference. Wait until the interface is in the device (stable address),
+     * then let the caller bind it with device->interfaces[i].with_handler<EchoInterfaceHandler>(string_pool).
+     * @param in_ep Bulk IN endpoint address (device→host)
+     * @param out_ep Bulk OUT endpoint address (host→device)
      */
     static UsbInterface make_interface(std::uint8_t in_ep, std::uint8_t out_ep) {
         UsbInterface i{
@@ -379,39 +379,39 @@ public:
         return i;
     }
 
-    // ===== 生命周期：会话绑定与断连清理（通道内部状态必须在这两个回调里维护） =====
+    // ===== Lifecycle: session binding and disconnection cleanup (channel state must be maintained in these callbacks) =====
     void on_new_connection(Session &current_session, error_code &ec) override {
-        // 父类先设 session 指针（通道应答请求要用），再绑定通道并重置断连状态
+        // Base class sets session first (needed for channel responses); then bind the channel and reset disconnection state
         VirtualInterfaceHandler::on_new_connection(current_session, ec);
         echo_channel.on_new_connection(&current_session);
     }
 
     void on_disconnection(error_code &ec) override {
-        // 先清通道（缓冲 + 挂起请求，TransferHandle 析构时自动释放），再调父类清 session
+        // Clear the channel first (buffer + pending requests, automatically released by TransferHandle destruction); then let the base class clear session
         echo_channel.on_disconnection();
         VirtualInterfaceHandler::on_disconnection(ec);
     }
 
-    // ===== 数据面 =====
+    // ===== Data path =====
     void handle_bulk_transfer(std::uint32_t seqnum, const UsbEndpoint &ep, std::uint32_t transfer_flags,
                               std::uint32_t transfer_buffer_length, TransferHandle transfer,
                               error_code &ec) override {
         if (ep.is_in()) {
-            // ===== IN：主机请求数据，全部交给通道（有数据立即应答，无数据挂起等 push） =====
+            // ===== IN: delegate host data requests entirely to the channel (respond immediately if data exists; otherwise wait for push) =====
             echo_channel.on_in_request(ep.address, seqnum, transfer_buffer_length, std::move(transfer));
         }
         else {
-            // ===== OUT：取出主机数据 =====
+            // ===== OUT: retrieve data from the host =====
             auto *trx = GenericTransfer::from_handle(transfer.get());
-            // 主机的 OUT 请求变成了设备要产生的数据，故需要通过 IN 请求发回
-            // （有挂起请求时通道直接应答）
+            // The host's OUT request supplies data that the device must produce, so return it through an IN request
+            // (the channel responds directly when a request is pending)
             echo_channel.push(data_type(trx->data.begin(), trx->data.end()));
             session->submit_ret_submit(
                     UsbIpResponse::UsbIpRetSubmit::create_ret_submit_ok_without_data(seqnum, 0));
         }
     }
 
-    // ===== 非标准控制请求（class/vendor setup）：这里回应 vendor 请求 0xAA =====
+    // ===== Non-standard control requests (class/vendor setup): respond to vendor request 0xAA here =====
     void handle_non_standard_request_type_control_urb(std::uint32_t seqnum, const UsbEndpoint &ep,
                                                       std::uint32_t transfer_flags,
                                                       std::uint32_t transfer_buffer_length,
@@ -419,7 +419,7 @@ public:
                                                       error_code &ec) override {
         if (setup.request == 0xAA && !setup.is_out()) {
             auto *trx = GenericTransfer::from_handle(transfer.get());
-            trx->data = {0x42, 0x00};  // 应答数据
+            trx->data = {0x42, 0x00};  // Response data
             trx->actual_length = 2;
             session->submit_ret_submit(UsbIpResponse::UsbIpRetSubmit::create_ret_submit_ok_with_no_iso(
                     seqnum, 2, std::move(transfer)));
@@ -430,7 +430,7 @@ public:
         }
     }
 
-    // ===== UNLINK：主机取消挂起的传输 =====
+    // ===== UNLINK: the host cancels a pending transfer =====
     void handle_unlink_seqnum(std::uint32_t unlink_seqnum, std::uint32_t cmd_seqnum) override {
         bool cancelled = echo_channel.cancel_pending(unlink_seqnum);
         session->submit_ret_unlink(UsbIpResponse::UsbIpRetUnlink::create_ret_unlink(
@@ -438,75 +438,75 @@ public:
     }
 
 private:
-    // 回显通道（消息模式）：OUT 收到的数据经它发回，一条 OUT 数据 = 一条消息
+    // Echo channel (message mode): returns OUT data through IN; one OUT data item = one message
     MessageInChannel echo_channel;
 };
 ```
 
-> 注意：
-> - **生命周期回调是必须的**：`on_new_connection` 里绑定会话并重置断连状态，
->   `on_disconnection` 里清缓冲与挂起请求（漏掉会用悬垂 session 指针或残留
->   上一会话的状态）
-> - 多端点场景：一个通道管一个端点（`on_in_request` 传端点地址，同端点的请求
->   保持 FIFO 顺序），按端点懒建通道的参考见 `PipeDeviceHandler::get_in_channel`
-> - 字节流模式：把上面的 `MessageInChannel` 换成 `ByteStreamInChannel`、`push`
->   换成 `write`（可带 `timeout_ms` 阻塞等宿主取走）即可。字节流还支持 pull
->   模型：`set_pull_callback` 在 IN 请求到达且缓冲/队列全空时现场生成数据
->   （CDC 数据接口的 `on_data_requested` 就是这个用途）。回调在锁内调用，
->   回调里不要再调用本通道的写方法（会死锁）
-> - 完整参照：`src/virtual_device/HidVirtualInterfaceHandler.cpp`（消息模式 +
->   push）、`src/virtual_device/CdcAcmVirtualInterfaceHandler.cpp`（字节流模式 +
->   阻塞写 + pull）、`src/virtual_device/PipeDeviceHandler.cpp`（按端点懒建通道）
+> Note:
+> - **Lifecycle callbacks are required**: bind the session and reset disconnection state in `on_new_connection`;
+>   clear buffered data and pending requests in `on_disconnection` (omitting this leaves a dangling session pointer or residual
+>   state from the previous session)
+> - Multiple endpoints: one channel manages one endpoint (pass its address to `on_in_request`; requests for that endpoint
+>   retain FIFO order). See `PipeDeviceHandler::get_in_channel` for lazily creating channels by endpoint
+> - Byte-stream mode: replace `MessageInChannel` above with `ByteStreamInChannel`, and replace `push`
+>   with `write` (optionally with `timeout_ms` to block until the host consumes data). Byte streams also support a pull
+>   model: `set_pull_callback` produces data on demand when an IN request arrives and both buffer and queue are empty
+>   (this is the purpose of the CDC data interface's `on_data_requested`). The callback runs under the lock;
+>   do not call this channel's write methods inside it (that would deadlock)
+> - Complete references: `src/virtual_device/HidVirtualInterfaceHandler.cpp` (message mode +
+>   push), `src/virtual_device/CdcAcmVirtualInterfaceHandler.cpp` (byte-stream mode +
+>   blocking writes + pull), `src/virtual_device/PipeDeviceHandler.cpp` (lazy per-endpoint channels)
 
-### 完整文件：绑定与使用
+### Complete File: Binding and Usage
 
-两个绑定入口的区别：
+The two binding entry points differ as follows:
 
-- `device->with_handler<T>(...)`——绑定**设备级** handler（每个虚拟设备一个）
-- `interfaces[i].with_handler<T>(...)`——给**单个接口**绑定接口级 handler。必须在
-  设备创建完成后调用（handler 构造持接口引用，接口入 `device->interfaces` 后地址
-  才稳定；`make_interface` 只返回描述符模板，不绑 handler）。
-  `setup_interface_handlers()` 只注册绑定了 handler 的接口的端点，**没绑 handler 的接口
-  主机访问不到**（设备级 handler 不会自动创建接口 handler；方法一的 PipeDeviceHandler
-  会在 setup_interface_handlers 时给所有接口自动绑管道接口 handler，所以方法一不需要手动绑）
+- `device->with_handler<T>(...)`: binds the **device-level** handler (one per virtual device)
+- `interfaces[i].with_handler<T>(...)`: binds an interface-level handler to **one interface**. Call only after
+  device creation completes (the constructor holds an interface reference; the interface address becomes stable only after it enters
+  `device->interfaces`; `make_interface` returns only a descriptor template, without binding a handler).
+  `setup_interface_handlers()` registers endpoints only for interfaces with bound handlers; **the host cannot access
+  interfaces without handlers** (the device-level handler does not automatically create interface handlers; Method 1's PipeDeviceHandler
+  automatically binds pipe interface handlers to every interface during setup_interface_handlers, so no manual binding is needed for Method 1)
 
-### make_interface 工厂
+### make_interface Factory
 
-库内置 handler（`KeyboardHandler`/`RelativeMouseHandler`/`AbsoluteMouseHandler`/
+Built-in handlers (`KeyboardHandler`/`RelativeMouseHandler`/`AbsoluteMouseHandler`/
 `GamepadHandler`/`DigitizerHandler`/`MscBulkOnlyHandler`/`CdcAcmCommunicationInterfaceHandler`/
-`CdcAcmDataInterfaceHandler`）都提供同名静态工厂：
+`CdcAcmDataInterfaceHandler`) all provide a static factory with the same name:
 
 ```cpp
-// 形参 = 该接口每个端点一个地址（参数名即用途），调用方可显式指定任意地址；
-// 端点属性（attributes/max_packet_size/interval/方向）由工厂给定合理默认，
-// 返回未绑定 handler 的描述符模板（handler 由调用方在设备创建后绑定）
+// Parameters = one address per endpoint in this interface (names identify roles); callers may explicitly specify any addresses;
+// the factory supplies appropriate default attributes (attributes/max_packet_size/interval/direction),
+// and returns a descriptor template without a bound handler (the caller binds it after device creation)
 static UsbInterface make_interface(std::uint8_t in_ep, std::uint8_t out_ep);
 ```
 
-约定：
+Conventions:
 
-- **工厂只描述接口，不绑定 handler**：handler 构造持接口引用，接口对象入设备
-  （`UsbDevice::make` 完成）后地址才稳定，此时调用
-  `device->interfaces[i].with_handler<T>(string_pool, ...)` 绑定
-- **端点地址必须显式传**（不能省）——外界要能控制端点号，参数名即该端点的用途
-- **handler 构造带业务参数**（如 AbsoluteMouseHandler 的屏幕尺寸、DigitizerHandler 的
-  坐标上限）：绑定 handler 时传给 with_handler，工厂不接收
-- **同方向多端点需要区分"作用"**（如同一接口两个 IN 端点用途不同）：工厂的地址参数
-  不足以表达语义，由该 handler 的**构造函数**额外收一份「用途端点地址」，调用方
-  绑定（with_handler）时透传，handler 内部按用途记住地址、按 ep 分流。框架层不做映射猜测
-- 自定义 handler 可选提供同名工厂（上面 EchoInterfaceHandler 就是范例），不提供也不
-  影响——`UsbInterface` 仍可手写聚合 + `device->interfaces[i].with_handler<T>(...)` 绑定
-- **UsbDevice 可以手动构造**：需要比 make 参数更灵活的配置时（如接口数量动态变化），
-  直接 `UsbDevice{...}` 聚合初始化即可（所有成员都可改）；**UsbInterface 则建议一律
-  走工厂**——接口 handler 内部可能硬编码了接口的端点结构（构造时记录端点地址、
-  假定端点数量/属性），手写接口与 handler 的假设不一致会在枚举或数据传输时出问题
-- 设备级同理：`UsbDevice::make(busid, vid, pid, interfaces, ...)` 一步建好设备——
-  默认参数按改动频率从高到低排列（`bus_num`/`dev_num`/`device_class`/`path`/`speed` 在前，
-  后面是 `device_bcd`/`device_subclass`/`device_protocol`/`configuration_value`/
-  `num_configurations`），EP0 按 speed 自动生成；返回后仍可改任意字段再绑定设备级 handler
+- **Factories describe interfaces without binding handlers**: handler constructors hold interface references; addresses become stable only after interfaces enter the device
+  (`UsbDevice::make` completes). At that point, call
+  `device->interfaces[i].with_handler<T>(string_pool, ...)` to bind
+- **Endpoint addresses must be explicit** (cannot be omitted): callers must control endpoint numbers; parameter names identify endpoint roles
+- **Handler constructors receive application parameters** (e.g. AbsoluteMouseHandler screen dimensions, DigitizerHandler
+  coordinate limits): pass these to with_handler when binding; factories do not accept them
+- **Multiple endpoints in the same direction need distinct roles** (e.g. two IN endpoints in one interface have different purposes): factory address arguments
+  alone cannot express this meaning, so the handler's **constructor** additionally accepts the endpoint address for its role; the caller
+  passes it through when binding (with_handler). The handler stores addresses by role and dispatches by ep; the framework does not guess mappings
+- Custom handlers may optionally provide a factory with the same name (EchoInterfaceHandler above is an example). Omitting it has no
+  effect: you may still hand-write an aggregate `UsbInterface` and bind with `device->interfaces[i].with_handler<T>(...)`
+- **UsbDevice may be constructed manually**: for configuration more flexible than make parameters (e.g. dynamically varying interface counts),
+  use `UsbDevice{...}` aggregate initialization directly (all members are mutable). **Always prefer factories for UsbInterface**:
+  interface handlers may hard-code endpoint structures (recording endpoint addresses in the constructor,
+  assuming endpoint counts/attributes); an incompatible hand-written interface causes enumeration or data-transfer problems
+- The device-level equivalent is `UsbDevice::make(busid, vid, pid, interfaces, ...)`, which creates the device in one step:
+  default parameters are ordered by decreasing change frequency (`bus_num`/`dev_num`/`device_class`/`path`/`speed` first,
+  followed by `device_bcd`/`device_subclass`/`device_protocol`/`configuration_value`/
+  `num_configurations`). EP0 is generated automatically from speed; you may still change any field after return before binding the device-level handler
 
-把上面各段拼起来，一个完整的自定义设备文件长这样（接口定义用
-`EchoInterfaceHandler::make_interface`；数据面在接口 handler 内部，设备不需要业务线程）：
+Putting the sections above together gives this complete custom-device file (define the interface using
+`EchoInterfaceHandler::make_interface`; the data path is inside the interface handler, so the device needs no application thread):
 
 ```cpp
 #include "usbipdcpp/Device.h"
@@ -519,25 +519,25 @@ static UsbInterface make_interface(std::uint8_t in_ep, std::uint8_t out_ep);
 
 using namespace usbipdcpp;
 
-// 这里放上面定义的 EchoInterfaceHandler 类
+// Insert the EchoInterfaceHandler class defined above here
 
 int main() {
     StringPool string_pool;
 
-    // EchoInterfaceHandler::make_interface 返回描述符模板（vendor 类，bulk IN
-    // 0x81 + bulk OUT 0x02）；接口 handler 须在设备创建后绑定（handler 持接口
-    // 引用，接口入设备后地址才稳定）
+    // EchoInterfaceHandler::make_interface returns a descriptor template (vendor-specific class, bulk IN
+    // 0x81 + bulk OUT 0x02). Bind the interface handler after creating the device (the handler holds an interface
+    // reference; the interface address becomes stable only after it enters the device)
     auto device = UsbDevice::make("1-1", 0x1234, 0x5678,
                                   {EchoInterfaceHandler::make_interface(0x81, 0x02)});
     device->interfaces[0].with_handler<EchoInterfaceHandler>(string_pool);
     auto device_handler = device->with_handler<SimpleVirtualDeviceHandler>(string_pool);
-    device_handler->setup_interface_handlers();   // 必须：注册端点路由 + 接口 handler
+    device_handler->setup_interface_handlers();   // Required: register endpoint routing + interface handlers
 
     Server server;
     server.add_device(std::move(device));
     asio::ip::tcp::endpoint endpoint{asio::ip::tcp::v4(), 53240};
     if (auto ec = server.start(endpoint); ec) {
-        SPDLOG_ERROR("服务器启动失败：{}", ec.message());
+        SPDLOG_ERROR("Server startup failed: {}", ec.message());
         return 1;
     }
 
@@ -547,113 +547,113 @@ int main() {
 }
 ```
 
-### 更真实的参考实现
+### More Realistic Reference Implementations
 
-| 文件 | 特点 |
+| File | Features |
 |---|---|
-| `include/usbipdcpp/virtual_device/devices/KeyboardHandler.h` + 实现 | 继承 `HidVirtualInterfaceHandler` 的完整设备：报告描述符、报告数据面、LED 状态、`wait_for_client` |
-| `examples/mock_keyboard/mock_keyboard_main.cpp` | 上述 handler 的完整用法（含 `press_key` 业务线程） |
-| `src/virtual_device/HidVirtualInterfaceHandler.cpp` | 中断端点的挂起-应答（`MessageInChannel`）+ `send_input_report` push 数据 + UNLINK，最干净的参照 |
-| `src/virtual_device/CdcAcmVirtualInterfaceHandler.cpp` | 多端点 + 阻塞写（`ByteStreamInChannel`，缓冲满等宿主取走）+ pull 回调（`on_data_requested`），接口有 alt 时的样例 |
-| `src/virtual_device/PipeDeviceHandler.cpp` | 设备级聚合多个接口 handler 的样例（也证明了 handler 可以转发给设备级） |
+| `include/usbipdcpp/virtual_device/devices/KeyboardHandler.h` + implementation | Complete device derived from `HidVirtualInterfaceHandler`: report descriptor, report data path, LED state, `wait_for_client` |
+| `examples/mock_keyboard/mock_keyboard_main.cpp` | Complete usage of that handler (including a `press_key` application thread) |
+| `src/virtual_device/HidVirtualInterfaceHandler.cpp` | Pending requests/responses for interrupt endpoints (`MessageInChannel`) + data pushed by `send_input_report` + UNLINK; the clearest reference |
+| `src/virtual_device/CdcAcmVirtualInterfaceHandler.cpp` | Multiple endpoints + blocking writes (`ByteStreamInChannel`, waiting for host consumption when full) + pull callback (`on_data_requested`); an example of interfaces with alternate settings |
+| `src/virtual_device/PipeDeviceHandler.cpp` | Example of a device-level handler aggregating multiple interface handlers (also demonstrates forwarding from interface handlers to the device level) |
 
-## 两种方法对比
+## Comparing the Two Methods
 
-| | PipeDeviceHandler | 继承 VirtualInterfaceHandler |
+| | PipeDeviceHandler | Derive from VirtualInterfaceHandler |
 |---|---|---|
-| 学习成本 | 低：read/write 两个函数 | 高：要懂端点/传输类型/控制请求 |
-| 数据面 | 统一数据流（所有端点共享） | 每端点/每接口独立语义 |
-| 控制请求 | 标准请求自动处理；非标准的经 read() 透出 | 完全自己实现（可精确应答每种 class/vendor 请求） |
-| 典型用途 | 通用管道、串口转发、简单回显、HID 快速原型 | HID/UAC/UVC/MSC 等真实 USB 类、带状态协商的设备 |
-| 主机驱动 | 默认 vendor 类无驱动；需类描述符时手动 set_* | 接口 class 正确 + 类描述符齐全，主机驱动直接加载 |
+| Learning effort | Low: two functions, read/write | High: understand endpoints/transfer types/control requests |
+| Data path | Unified stream (shared by all endpoints) | Independent semantics per endpoint/interface |
+| Control requests | Standard requests handled automatically; non-standard requests exposed through read() | Implemented yourself (precise responses to each class/vendor request) |
+| Typical uses | Generic pipes, serial forwarding, simple echo, rapid HID prototypes | Actual USB classes such as HID/UAC/UVC/MSC; devices with stateful negotiation |
+| Host driver | Default vendor-specific class has no driver; manually set_* when class descriptors are needed | Correct interface class + complete class descriptors allow the host driver to load directly |
 
-**怎么选：实现自定义设备推荐方法二（继承 `VirtualInterfaceHandler`）**。
-方法一适合「整设备就是一个字节管道」的场景（如把虚拟设备当文件读写），
-一旦要按端点区分语义、或实现特定 USB 类协议（HID 报告、CDC 控制线状态、
-UVC 流协商等），管道模型就不够用——方法二的回调里可以精确控制每个端点的
-行为，标准请求仍由库消化。项目内所有类设备（HID / CDC ACM / UVC）都是
-方法二实现，`PipeDeviceHandler` 本身也是通过内部接口 handler 走同一套回调。
+**Choosing a method: Method 2 (derive from `VirtualInterfaceHandler`) is recommended for custom devices**.
+Method 1 suits devices that are entirely a byte pipe (e.g. reading/writing a virtual device like a file).
+Once you need endpoint-specific semantics or a specific USB class protocol (HID reports, CDC control-line state,
+UVC stream negotiation, etc.), the pipe model is insufficient. Method 2's callbacks give precise control over each endpoint's
+behavior, while the library still handles standard requests. All class devices in this project (HID / CDC ACM / UVC) use
+Method 2; `PipeDeviceHandler` itself uses the same callbacks through its internal interface handlers.
 
-## 验证
+## Validation
 
-1. 服务器启动后，主机端 `usbip list -r <服务器>` 能看到设备
-2. `usbip attach -r <服务器> -b <busid>` 连接（本项目的 usbip 工具用法：`usbip -t <端口> attach -r ...`）
-3. 连接后按你的设备类型操作（写数据/读数据/看 `dmesg` 的枚举日志）
-4. Windows 客户端：`usbipd` / wsl 里 attach 后看设备管理器是否枚举出对应驱动
+1. After server startup, `usbip list -r <server>` on the host should show the device
+2. Connect with `usbip attach -r <server> -b <busid>` (this project's usbip tool usage: `usbip -t <port> attach -r ...`)
+3. Perform operations appropriate to your device type (write/read data or inspect enumeration logs with `dmesg`)
+4. Windows client: after `usbipd` / attach in wsl, check Device Manager for enumeration of the corresponding driver
 
-调试提示：`spdlog::set_level(spdlog::level::trace)` 可打开每个 CMD_SUBMIT/RET_SUBMIT 的流转日志（`src/virtual_device/VirtualDeviceHandler.cpp` 顶部定义 `USBIPDCPP_STRACE` 还能看到所有控制请求明细，排查枚举卡住很有用）。
+Debugging tip: `spdlog::set_level(spdlog::level::trace)` enables logs tracing each CMD_SUBMIT/RET_SUBMIT. Defining `USBIPDCPP_STRACE` at the top of `src/virtual_device/VirtualDeviceHandler.cpp` also shows all control-request details, useful for diagnosing stuck enumeration.
 
-## 多接口协同工作（功能/接口组 + IAD）
+## Coordinating Multiple Interfaces (Function/Interface Group + IAD)
 
-很多 USB 类不是一个接口能完成的：RNDIS/ECM 是「通信接口 + 数据接口」两个
-接口协同，UAC 是「AC 控制接口 + AS 流接口」，UVC 是「VC + VS」。本节讲这类
-设备的正确工作流——接口怎么填入 `UsbDevice` 才合法、IAD 怎么声明、装配
-辅助函数怎么用。
+Many USB classes require more than one interface: RNDIS/ECM coordinate two interfaces,
+"communication + data"; UAC uses "AC control + AS streaming", and UVC uses "VC + VS". This section describes the correct
+workflow for such devices: populating interfaces validly in `UsbDevice`, declaring IADs, and using
+assembly helpers.
 
-### interface_number：接口编号的语义与赋值
+### interface_number: Interface Number Semantics and Assignment
 
-`UsbInterface::interface_number` 是 USB 规范的 bInterfaceNumber（接口号），
-控制请求（SET_INTERFACE 等）按它寻址，配置描述符的 bInterfaceNumber 严格
-按它生成。**它与数组下标是两个概念**：
+`UsbInterface::interface_number` is the USB specification's bInterfaceNumber (interface number).
+Control requests (SET_INTERFACE, etc.) address interfaces by it, and bInterfaceNumber in the configuration descriptor is generated strictly
+from it. **It is distinct from the array index**:
 
-- `make_interface` 等描述符模板工厂**不负责填接口号**（默认 0）
-- 接口从 0 连续编号的设备（绝大多数虚拟设备）：创建设备后调用一次
-  `device->assign_interface_numbers()`，按下标依次赋值 0, 1, 2, ...
-- 特殊编号的设备（跳号、与其他功能交错）：手动给每个接口填
+- Descriptor-template factories such as `make_interface` **do not assign interface numbers** (default 0)
+- For devices numbered consecutively from 0 (most virtual devices), call
+  `device->assign_interface_numbers()` once after creation to assign 0, 1, 2, ... in index order
+- For specially numbered devices (gaps or interleaving with other functions), manually populate each interface's
   `interface_number`
 
 ```cpp
 auto device = UsbDevice::make("1-1", 0x1234, 0x56E2,
                               {CommHandler::make_interface(0x83), DataHandler::make_interface(0x81, 0x02)});
-device->assign_interface_numbers(); // 接口 0、1 的 interface_number 依次填好
+device->assign_interface_numbers(); // Assign interface_number for interfaces 0 and 1 in order
 ```
 
-### IAD：接口关联描述符
+### IAD: Interface Association Descriptor
 
-多接口功能要在 Windows 上被识别为**复合设备**必须有 IAD（接口关联描述符，
-对齐内核 gadget 各功能的 `*_iad_descriptor`）。没有它，Windows 不会按功能
-分组枚举子接口，也不做 MS OS 描述符探测——实测 RNDIS 设备没有 IAD 时被
-usbser 误绑成串口（COM 口）而不是网卡。
+A multi-interface function requires an IAD (Interface Association Descriptor) to be recognized as a **composite device** on Windows,
+matching each kernel gadget function's `*_iad_descriptor`. Without it, Windows neither enumerates subordinate interfaces
+in function groups nor probes MS OS descriptors. In testing, an RNDIS device without an IAD was
+incorrectly bound by usbser as a serial port (COM port), rather than a network adapter.
 
-IAD 是**功能（接口组）的声明性属性**，挂在功能首个接口上：
+An IAD is a **declarative property of a function (interface group)**, attached to the function's first interface:
 
 ```cpp
-// 字段：bInterfaceCount, bFunctionClass, bFunctionSubClass, bFunctionProtocol, iFunction
-// bLength/bDescriptorType 自动填；bFirstInterface 生成时按接口号回填，不用传
+// Fields: bInterfaceCount, bFunctionClass, bFunctionSubClass, bFunctionProtocol, iFunction
+// bLength/bDescriptorType are automatic; bFirstInterface is filled from the interface number during generation, so do not pass it
 intf.interface_association_descriptor = IadDesc::make(
         2, static_cast<std::uint8_t>(ClassCode::CDC), 0x06 /* USB_CDC_SUBCLASS_ETHERNET */);
 ```
 
-- RNDIS：`IadDesc::make(2, ClassCode::CDC, 0x06)`（通信 + 数据两个接口，对齐内核
-  f_rndis.c 的 rndis_iad_descriptor）
-- UVC：`IadDesc::make(2, CC_VIDEO, SC_VIDEO_INTERFACE_COLLECTION, 0, iFunction)`，
-  iFunction 必须等于 VC 接口的 iInterface（UVC 1.5 Table 3-1）
-- 一个设备可以多个 IAD（每个功能各挂各的首个接口），配置描述符生成时按
-  接口顺序内插，**每个 IAD 紧邻所属接口描述符之前**
+- RNDIS: `IadDesc::make(2, ClassCode::CDC, 0x06)` (communication + data interfaces, matching the kernel's
+  rndis_iad_descriptor in f_rndis.c)
+- UVC:`IadDesc::make(2, CC_VIDEO, SC_VIDEO_INTERFACE_COLLECTION, 0, iFunction)`,
+  iFunction must equal the VC interface's iInterface (UVC 1.5 Table 3-1)
+- A device may have multiple IADs (each function attaches one to its first interface). During configuration descriptor generation, insert them
+  in interface order; **each IAD immediately precedes its associated interface descriptor**
 
-推荐把 IAD 的声明放在**功能自己的 make_interface 或装配 helper 里**（属于
-功能定义，调用方无需关心）。`RndisCommunicationInterfaceHandler::make_interface`
-就是这么做的——装配 RNDIS 设备时 IAD 自动带上。
+Declare the IAD in **the function's own make_interface or assembly helper** (it belongs to
+the function definition, so callers need not handle it). `RndisCommunicationInterfaceHandler::make_interface`
+does this: assembling an RNDIS device automatically includes its IAD.
 
-### 装配工作流（helper 模式）
+### Assembly Workflow (Helper Pattern)
 
-多接口功能通常有协同 handler 互持引用（RNDIS 数据 handler 持通信 handler
-指针、UVC 的 VC/VS 互指）。库提供统一装配模式（`UvcDeviceHelper`、
-`UacDeviceHelper` 即此模式）：
+Multi-interface functions usually have cooperating handlers holding references to one another (RNDIS data handlers hold communication-handler
+pointers; UVC VC/VS refer to each other). The library provides a common assembly pattern (`UvcDeviceHelper` and
+`UacDeviceHelper` follow it):
 
-1. **按 interface_number 定位接口**，不依赖数组下标（复合设备里功能接口
-   可能与其他功能交错）：`device->find_interfaces_by_number<N>(first_number)`
-   返回 `std::array<UsbInterface*, N>`，按编号偏移填指针、缺失填 nullptr
-2. **用 `with_handler` 绑定 handler**（接口已在设备里、地址稳定后才合法），
-   不直接改 `interfaces[i].handler`
-3. **互持引用 + IAD 声明在 helper 内完成**，调用方一行搞定
-4. **返回 `std::error_code`**，接口缺失等错误通过返回值上报，不抛异常
+1. **Locate interfaces by interface_number**, independently of array indices (function interfaces in composite devices
+   may interleave with other functions): `device->find_interfaces_by_number<N>(first_number)`
+   returns `std::array<UsbInterface*, N>`, with pointers at number-relative offsets and nullptr for missing interfaces
+2. **Bind handlers using `with_handler`** (valid only after interfaces enter the device and have stable addresses);
+   do not modify `interfaces[i].handler` directly
+3. **Set mutual references and declare the IAD inside the helper**; the caller needs one line
+4. **Return `std::error_code`**; report missing interfaces and other errors through the return value, without exceptions
 
 ```cpp
 std::error_code MyFeatureHelper::setup(std::shared_ptr<UsbDevice> device,
                                        std::uint8_t first_interface_number,
                                        StringPool &string_pool, ...) {
-    // 1. 按编号定位相邻两个接口
+    // 1. Locate two adjacent interfaces by number
     auto found = device->find_interfaces_by_number<2>(first_interface_number);
     if (!found[0] || !found[1]) {
         return make_error_code(ErrorType::INVALID_ARG);
@@ -661,28 +661,28 @@ std::error_code MyFeatureHelper::setup(std::shared_ptr<UsbDevice> device,
     auto *intf0 = found[0];
     auto *intf1 = found[1];
 
-    // 2. with_handler 绑定（非破坏：只动这两个接口的 handler）
+    // 2. Bind with with_handler (non-destructive: only changes these two interfaces' handlers)
     auto h0 = intf0->with_handler<FeatureControlHandler>(string_pool);
-    auto h1 = intf1->with_handler<FeatureDataHandler>(string_pool, h0.get()); // 3. 互持引用
+    auto h1 = intf1->with_handler<FeatureDataHandler>(string_pool, h0.get()); // 3. Mutual references
 
-    // 3. IAD 声明（功能首个接口）
+    // 3. Declare the IAD (on the function's first interface)
     intf0->interface_association_descriptor = IadDesc::make(
             2, static_cast<std::uint8_t>(ClassCode::CDC), 0x06);
 
     auto dh = device->handler ? std::dynamic_pointer_cast<VirtualDeviceHandler>(device->handler)
                               : device->with_handler<SimpleVirtualDeviceHandler>(string_pool);
-    dh->setup_interface_handlers(); // 必须：注册端点路由 + 接口 handler
+    dh->setup_interface_handlers(); // Required: register endpoint routing + interface handlers
     return {};
 }
 
-// 调用方：
+// Caller:
 if (auto ec = MyFeatureHelper::setup(device, 0, string_pool, ...); ec) {
-    SPDLOG_ERROR("功能装配失败：{}", ec.message());
+    SPDLOG_ERROR("Function assembly failed: {}", ec.message());
     return 1;
 }
 ```
 
-### 完整示例（RNDIS 双接口，examples/mock_rndis 的骨架）
+### Complete Example (Two-Interface RNDIS, examples/mock_rndis Framework)
 
 ```cpp
 #include "usbipdcpp/virtual_device/MSOSSimpleVirtualDeviceHandler.h"
@@ -690,19 +690,19 @@ if (auto ec = MyFeatureHelper::setup(device, 0, string_pool, ...); ec) {
 // ...
 
 std::vector<UsbInterface> interfaces = {
-        RndisCommunicationInterfaceHandler::make_interface(0x83), // 自带 IAD（CDC/0x06/count=2）
+        RndisCommunicationInterfaceHandler::make_interface(0x83), // Includes its own IAD (CDC/0x06/count=2)
         RndisDataInterfaceHandler::make_interface(0x81, 0x02),
 };
 auto device = UsbDevice::make(busid, 0x1234, 0x56E3, std::move(interfaces),
                               1, 1, static_cast<std::uint8_t>(ClassCode::CDC), "/usbipdcpp/mock_rndis");
-device->assign_interface_numbers(); // interface_number 按 0, 1 填好
+device->assign_interface_numbers(); // Assign interface_number values 0 and 1
 
-// 装配：数据 handler 持通信 handler 指针（状态机归属方）
+// Assembly: data handler holds a pointer to the communication handler (which owns the state machine)
 auto comm = device->interfaces[0].with_handler<RndisCommunicationInterfaceHandler>(string_pool, mac, UsbSpeed::Full);
 device->interfaces[1].with_handler<RndisDataInterfaceHandler>(string_pool, backend.get(), comm.get());
 
-// MS OS 1.0 Compatible ID "RNDIS"：Windows 按它加载内置 rndismp 网卡驱动
-// （配合 IAD 才能触发探测；没有则被 usbser 误绑成串口）
+// MS OS 1.0 Compatible ID "RNDIS": Windows uses it to load the built-in rndismp network adapter driver
+// (IAD is also required to trigger probing; without it, usbser incorrectly binds it as a serial port)
 auto dev_handler = device->with_handler<MSOSSimpleVirtualDeviceHandler>(string_pool);
 dev_handler->set_ms_os_compatible_id("RNDIS");
 dev_handler->setup_interface_handlers();

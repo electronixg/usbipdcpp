@@ -14,8 +14,8 @@ namespace usbipdcpp {
 
 class RndisDataInterfaceHandler;
 
-// RNDIS 设备状态机（对齐内核 rndis.c：UNINITIALIZED → INITIALIZED →
-// DATA_INITIALIZED（SET filter≠0 后 carrier on），HALT/断连回 UNINITIALIZED）
+// RNDIS device state machine (aligned kernel rndis.c: UNINITIALIZED → INITIALIZED →
+// DATA_INITIALIZED (SET filter≠0 then carrier on), HALT/disconnected back to UNINITIALIZED)
 enum class RndisState : std::uint8_t {
     Uninitialized,
     Initialized,
@@ -23,53 +23,53 @@ enum class RndisState : std::uint8_t {
 };
 
 /**
- * @brief RNDIS 通信接口处理器：响应 CDC 封装命令，维护 RNDIS 状态机与响应队列
+ * @brief RNDIS communication interface handler: responds to CDC encapsulation commands, maintains RNDIS state machine and response queue
  *
- * 对应 RNDIS 的控制接口（02/02/0xFF：COMM 类 + ACM 子类 + Vendor 协议，
- * 对齐内核 f_rndis.c——Windows 与 Linux rndis_host 均按此匹配，不用微软
- * 专有 RNDIS 描述符）。RNDIS 控制消息（INIT/QUERY/SET/KEEPALIVE/RESET/HALT）
- * 全部经 ep0 的 SEND_ENCAPSULATED_COMMAND 送入，响应排队由
- * GET_ENCAPSULATED_RESPONSE 取走；每条响应入队都经中断 IN 端点发
- * RESPONSE_AVAILABLE 通知（对齐 rndis.c 的 resp_avail 回调）。
+ * corresponds to the control interface of RNDIS (02/02/0xFF: COMM class + ACM subclass + Vendor protocol,
+ * aligned kernel f_rndis.c - Windows and Linux rndis_host are matched according to this, no need to use Microsoft
+ * proprietary RNDIS descriptor). RNDIS control messages (INIT/QUERY/SET/KEEPALIVE/RESET/HALT)
+ * is all sent through SEND_ENCAPSULATED_COMMAND of ep0, and the response queue is
+ * GET_ENCAPSULATED_RESPONSE Take away; each response is queued and sent through the interrupt IN endpoint
+ * RESPONSE_AVAILABLE notification (resp_avail callback aligned to rndis.c).
  */
 class USBIPDCPP_API RndisCommunicationInterfaceHandler : public VirtualInterfaceHandler {
 public:
     /**
-     * @param handle_interface 本接口
-     * @param string_pool 字符串池（需活得比 handler 久）
-     * @param mac_address 设备 MAC 地址（OID_802_3_*_ADDRESS 查询返回）
-     * @param speed 设备速度（OID_GEN_LINK_SPEED 按此上报，100bps 单位，对齐
-     *        内核 f_rndis.c 的 bitrate()）
+     * @param handle_interface This interface
+     * @param string_pool string pool (needs to live longer than handler)
+     * @param mac_address device MAC address (returned by OID_802_3_*_ADDRESS query)
+     * @param speed Device speed (reported through OID_GEN_LINK_SPEED in 100bps units, consistent with
+     *        kernel f_rndis.c's bitrate())
      */
     RndisCommunicationInterfaceHandler(UsbInterface &handle_interface, StringPool &string_pool,
                                        std::array<std::uint8_t, 6> mac_address, UsbSpeed speed);
 
     /**
-     * @brief 创建 RNDIS 通信接口（描述符模板，未绑定 handler）
+     * @brief Create RNDIS communication interface (descriptor template, unbound handler)
      *
-     * 接口定义：COMM 类 + ACM 子类 + Vendor 协议（02/02/0xFF），一个中断 IN
-     * 端点（mps=8、interval=32ms，RESPONSE_AVAILABLE 通知；对齐内核
-     * f_rndis.c 的 fs_control_intf_ep：状态端点 mps≥8 且 interval≠0 是
-     * cdc_ether 主机驱动绑定 RNDIS 的硬性要求）。
-     * @param interrupt_in_ep 中断 IN 端点地址（设备→主机，状态通知）
-     * @return 未绑定 handler 的 UsbInterface
+     * interface definition: COMM class + ACM subclass + Vendor protocol (02/02/0xFF), an interrupt IN
+     * endpoint (mps=8, interval=32ms, RESPONSE_AVAILABLE notification; align kernel
+     * fs_control_intf_ep of f_rndis.c: status endpoint mps≥8 and interval≠0 is
+     * a mandatory requirement for the cdc_ether host driver to bind RNDIS).
+     * @param interrupt_in_ep Interrupt IN endpoint address (device → host, status notification)
+     * @return UsbInterface with unbound handler
      */
     static UsbInterface make_interface(std::uint8_t interrupt_in_ep);
 
     /**
-     * @brief 关联数据接口处理器（装配时调用）
+     * @brief associated data interface handler (called during assembly)
      *
-     * 通信接口类特定描述符的 bDataInterface（CallManagement/Union）引用
-     * 数据接口号，装配时从数据 handler 的 get_interface() 取——复合设备里
-     * 通信接口不从接口 0 起，硬编码 1 会让主机驱动（rndis_host/Windows
-     * rndismp）找不到数据接口
-     * @param handler 数据接口 handler
+     * bDataInterface (CallManagement/Union) reference of specific descriptor of communication interface class
+     * data interface number, taken from get_interface() of the data handler during assembly - in the composite device
+     * the communication interface does not start at interface 0; hardcoding 1 prevents host drivers (rndis_host/Windows
+     * rndismp) from finding the data interface
+     * @param handler data interface handler
      */
     void set_data_handler(RndisDataInterfaceHandler *handler) {
         data_handler_ = handler;
     }
 
-    // ========== 内部实现（子类无需关心） ==========
+    // ========== Internal implementation (subclasses do not need to care) ==========
 
     void handle_non_standard_request_type_control_urb(std::uint32_t seqnum, const UsbEndpoint &ep,
                                                       std::uint32_t transfer_flags,
@@ -83,20 +83,20 @@ public:
 
     [[nodiscard]] data_type get_class_specific_descriptor() override;
 
-    // ========== 状态查询 API ==========
+    // ========== Status Query API ==========
 
-    /// 数据通道是否已启用：INIT 且主机设置了非零包过滤器（对齐 rndis.c 的
-    /// RNDIS_DATA_INITIALIZED——filter≠0 才 carrier on 开始收发）
+    /// Is the data channel enabled: INIT and the host has a non-zero packet filter set (aligned to rndis.c
+    /// RNDIS_DATA_INITIALIZED——filter ≠ 0 (carrier on starts sending and receiving)
     [[nodiscard]] bool is_data_enabled() const {
         return state_ == RndisState::DataInitialized;
     }
 
-    /// 当前 RNDIS 状态机状态
+    /// Current RNDIS state machine status
     [[nodiscard]] RndisState get_state() const {
         return state_;
     }
 
-    // ========== 内部实现（子类无需关心） ==========
+    // ========== Internal implementation (subclasses do not need to care) ==========
 
     void on_new_connection(TransferResponder &current_session, std::error_code &ec) override;
 
@@ -105,64 +105,64 @@ public:
     void handle_unlink_seqnum(std::uint32_t unlink_seqnum, std::uint32_t cmd_seqnum) override;
 
 protected:
-    // 响应队列：GET_ENCAPSULATED_RESPONSE 按序取走（对齐 rndis.c 的响应队列）。
-    // 状态机与队列是 RNDIS 协议核心，数据接口经 is_data_enabled() 查询
+    // response queue: GET_ENCAPSULATED_RESPONSE is taken in sequence (aligned to the response queue of rndis.c).
+    // state machine and queue are the core of RNDIS protocol, and the data interface is queried through is_data_enabled()
     std::deque<data_type> response_queue_;
     RndisState state_ = RndisState::Uninitialized;
     std::uint16_t packet_filter_ = 0;
     std::array<std::uint8_t, 6> mac_address_{};
-    std::uint32_t link_speed_100bps_ = 0; // OID_GEN_LINK_SPEED 返回值（100bps 单位）
-    std::uint8_t interface_number_; // 本接口号（通知 wIndex 用，构造时从接口对象取）
-    RndisDataInterfaceHandler *data_handler_ = nullptr; // set_data_handler 装配时写入
+    std::uint32_t link_speed_100bps_ = 0; // OID_GEN_LINK_SPEED return value (100bps unit)
+    std::uint8_t interface_number_; // This interface number (notified to wIndex, taken from the interface object during construction)
+    RndisDataInterfaceHandler *data_handler_ = nullptr; // set_data_handler Write during assembly
 
-    /// 状态通知通道（中断 IN 端点）：一条通知 = 一个完整消息（8 字节
-    /// RESPONSE_AVAILABLE）。有挂起请求直接应答，否则入缓冲（上限 30 条）
+    /// Status notification channel (interrupt IN endpoint): one notification = one complete message (8 bytes
+    /// RESPONSE_AVAILABLE). If there is a pending request, respond directly, otherwise it will be buffered (upper limit 30)
     MessageInChannel notification_channel;
 
-    // 消息处理（对齐 rndis.c 的 rndis_msg_parser）
+    // message processing (rndis_msg_parser aligned to rndis.c)
     void process_rndis_message(const data_type &msg);
-    /// 入队一条响应并发 RESPONSE_AVAILABLE 通知（超上限丢最旧）
+    /// Enqueue a response and send RESPONSE_AVAILABLE notification (the oldest is discarded if the upper limit is exceeded)
     void enqueue_response(data_type &&response);
-    /// 查询 OID 返回数据区字节；未知 OID 返回空（组装 NOT_SUPPORTED 的 QUERY_C）
+    /// Query OID returns data area bytes; unknown OID returns empty (assemble QUERY_C of NOT_SUPPORTED)
     data_type query_oid(std::uint32_t oid);
-    /// 复位设备状态（HALT/断连）：回 UNINITIALIZED 并清空响应队列
+    /// Reset device status (HALT/disconnect): Return to UNINITIALIZED and clear the response queue
     void reset_device_state();
 };
 
 /**
- * @brief RNDIS 数据接口处理器：bulk 收发 RNDIS_MSG_PACKET 封装的以太网帧
+ * @brief RNDIS data interface handler: bulk sends and receives RNDIS_MSG_PACKET encapsulated Ethernet frames
  *
- * 对应 RNDIS 数据接口（0A/00/00，无 altsetting，对齐内核 f_rndis.c 的
- * rndis_data_intf——RNDIS 不需要 ECM 的 NOP altsetting）。主机发来的
- * bulk OUT 是 RNDIS_MSG_PACKET 消息（头 24 字节 + 以太网帧，一次传输可
- * 聚合多包/带尾填充），剥头后逐帧交给 NetworkBackend；发往主机的帧包上
- * 44 字节头（DataOffset=36，数据从字节 44 起）。封装格式对齐内核 rndis.c
- * 的 rndis_add_hdr / rndis_rm_hdr
+ * corresponds to the RNDIS data interface (0A/00/00, no altsetting, aligned to the kernel f_rndis.c
+ * rndis_data_intf - RNDIS does not require NOP altsetting for ECM). Sent by the host
+ * bulk OUT is RNDIS_MSG_PACKET message (header 24 bytes + Ethernet frame, one transfer can
+ * aggregates multi-packets/tail padding), strips headers and hands them to NetworkBackend frame by frame; on frame packets sent to the host
+ * 44 byte header (DataOffset=36, data starts from byte 44). Package format aligned core rndis.c
+ * of rndis_add_hdr / rndis_rm_hdr
  */
 class USBIPDCPP_API RndisDataInterfaceHandler : public VirtualInterfaceHandler {
 public:
     /**
-     * @param handle_interface 本接口
-     * @param string_pool 字符串池（需活得比 handler 久）
-     * @param backend 网络后端（可空）。非空时主机发来的帧解析剥头后直接交给
-     *        backend 消费并立即应答；为空走挂起模式（on_frame_received /
-     *        take_frame，取的是原始 RNDIS 消息）
-     * @param comm 通信接口处理器（RNDIS 状态机归属方），需活得比本 handler 久
+     * @param handle_interface This interface
+     * @param string_pool string pool (needs to live longer than handler)
+     * @param backend Network backend (nullable). When nonnull, host frames are parsed, their headers stripped, and passed directly to
+     *        backend for consumption and immediate response; when null, use suspend mode (on_frame_received /
+     *        take_frame, the original RNDIS message is taken)
+     * @param comm Communication interface handler (RNDIS state machine owner), needs to live longer than this handler
      */
     RndisDataInterfaceHandler(UsbInterface &handle_interface, StringPool &string_pool, NetworkBackend *backend,
                               RndisCommunicationInterfaceHandler *comm);
 
     /**
-     * @brief 创建 RNDIS 数据接口（描述符模板，未绑定 handler）
+     * @brief Create RNDIS data interface (descriptor template, unbound handler)
      *
-     * 接口定义：CDC Data 类（0A/00/00），两个 Bulk 端点（Full speed，mps=64）。
-     * @param in_ep Bulk IN 端点地址（设备→主机，发帧）
-     * @param out_ep Bulk OUT 端点地址（主机→设备，收帧）
-     * @return 未绑定 handler 的 UsbInterface
+     * interface definition: CDC Data class (0A/00/00), two Bulk endpoints (Full speed, mps=64).
+     * @param in_ep Bulk IN endpoint address (device → host, send frame)
+     * @param out_ep Bulk OUT endpoint address (host → device, receive frame)
+     * @return UsbInterface with unbound handler
      */
     static UsbInterface make_interface(std::uint8_t in_ep, std::uint8_t out_ep);
 
-    // ========== 内部实现（子类无需关心） ==========
+    // ========== Internal implementation (subclasses do not need to care) ==========
 
     void handle_bulk_transfer(std::uint32_t seqnum, const UsbEndpoint &ep, std::uint32_t transfer_flags,
                               std::uint32_t transfer_buffer_length, TransferHandle transfer,
@@ -176,46 +176,46 @@ public:
 
     [[nodiscard]] data_type get_class_specific_descriptor() override;
 
-    // ========== 子类可选重写的回调 ==========
+    // ========== Optional overridden callback for subclasses ==========
 
     /**
-     * @brief 主机发来一帧时回调（未设置 NetworkBackend 时的消费入口）
-     * @param frame 以太网帧（右值引用，已剥 RNDIS 头）。契约：返回 false 表示
-     *        未处理，请求整体挂起入通道（frame 可被移动走，原数据留在挂起
-     *        请求里，等 take_frame() 取走）
-     * @return true=已消费这条帧；false=未处理，挂起
+     * @brief Callback when the host sends a frame (consumption entry when NetworkBackend is not set)
+     * @param frame Ethernet frame (rvalue reference, RNDIS header stripped). Contract: Return false to indicate
+     *        is not processed, and the request is suspended as a whole into the channel (the frame can be moved, and the original data remains in the suspended channel)
+     *        request, wait for take_frame() to take it away)
+     * @return true=This frame has been consumed; false=Unprocessed, pending
      */
     virtual bool on_frame_received(data_type &&frame);
 
-    // ========== 发帧 API（设备→主机，消息模式，非阻塞） ==========
+    // ========== Frame sending API (device → host, message mode, non-blocking) ==========
 
     /**
-     * @brief 发一帧到主机（自动包 RNDIS_MSG_PACKET 头；非阻塞，缓冲超上限时
-     * 丢最旧——网络数据可丢，TCP 重传兜底）
-     * @return 实际入缓冲字节数（含 RNDIS 头）；断连返回 0
+     * @brief Send a frame to the host (automatically prepend RNDIS_MSG_PACKET header; nonblocking, discard the oldest when the buffer exceeds its limit:
+     * network data may be dropped, with TCP retransmission as a fallback)
+     * @return The actual number of buffered bytes (including RNDIS header); disconnect and return 0
      */
     std::size_t send_frame(const std::uint8_t *data, std::size_t size);
 
-    /// 发一帧到主机（非阻塞）
+    /// Send a frame to the host (non-blocking)
     std::size_t send_frame(const data_type &frame);
 
-    // ========== 取帧 API（主机→设备，挂起模式） ==========
+    // ========== Frame fetching API (host → device, suspend mode) ==========
 
     /**
-     * @brief 阻塞取一帧主机发来的原始数据。timeout_ms=0 无限等；断连返回
-     * nullopt。OUT 请求先挂起不立即应答（主机 NAK 背压），取走时才应答
+     * @brief Blocks the acquisition of a frame of raw data sent from the host. timeout_ms=0 Wait infinitely; disconnect and return
+     * nullopt. The OUT request is suspended first and does not respond immediately (host NAK back pressure). It will only respond when it is taken away.
      */
     std::optional<OutEndpointChannel::Pending> take_frame(std::uint32_t timeout_ms = 0);
 
-    /// 非阻塞取一帧；无数据返回 nullopt
+    /// Non-blocking fetching a frame; no data returned nullopt
     std::optional<OutEndpointChannel::Pending> try_take_frame();
 
-    // ========== 缓冲区配置 API ==========
+    // ========== Buffer configuration API ==========
 
-    /// 设置发帧缓冲上限（条数，默认 0 = 无限；超限丢最旧）
+    /// Set the upper limit of the frame buffer (number of frames, default 0 = unlimited; discard the oldest if it exceeds the limit)
     void set_tx_max_pending(std::size_t max_pending);
 
-    // ========== 内部实现（子类无需关心） ==========
+    // ========== Internal implementation (subclasses do not need to care) ==========
 
     void on_new_connection(TransferResponder &current_session, std::error_code &ec) override;
 
@@ -224,16 +224,16 @@ public:
     void handle_unlink_seqnum(std::uint32_t unlink_seqnum, std::uint32_t cmd_seqnum) override;
 
 protected:
-    /// 发帧通道（消息模式）：一个 URB 恰好一帧（一条 RNDIS_MSG_PACKET 消息），
-    /// 帧比请求短发短包结束——主机 usbnet 按消息长度拆包，字节流分片会坏帧
+    /// Frame sending channel (message mode): one URB exactly one frame (one RNDIS_MSG_PACKET message),
+    /// End with a short packet if the frame is shorter than the request: host usbnet splits by message length; byte-stream fragmentation corrupts frames
     MessageInChannel in_channel;
 
-    /// 收帧通道：主机 bulk OUT 请求先挂起不应答（NAK 背压），take_frame()
-    /// 取走时读出数据并应答
+    /// Frame receiving channel: The host bulk OUT request is suspended first and does not respond (NAK back pressure), take_frame()
+    /// Read the data and respond when taking it away
     OutEndpointChannel out_channel;
 
     NetworkBackend *backend_ = nullptr;
-    RndisCommunicationInterfaceHandler *comm_ = nullptr; // RNDIS 状态机归属方
+    RndisCommunicationInterfaceHandler *comm_ = nullptr; // RNDIS state machine ownership party
 };
 
 } // namespace usbipdcpp

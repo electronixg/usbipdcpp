@@ -11,13 +11,13 @@
 namespace usbipdcpp {
 
 /**
- * @brief USB HID 触摸屏虚拟设备处理器（单点触摸）
+ * @brief USB HID touchscreen virtual device handler (single touch)
  *
- * 报告格式（6 字节）：
- *   [0]    bit0=Tip Switch, bit1=In Range，其余保留
- *   [1-2]  X 坐标（uint16 LE）
- *   [3-4]  Y 坐标（uint16 LE）
- *   [5]    按压力度（0~255）
+ * Report format (6 bytes):
+ *   [0]    bit0=Tip Switch, bit1=In Range, remaining bits reserved
+ *   [1-2]  X coordinate (uint16 LE)
+ *   [3-4]  Y coordinate (uint16 LE)
+ *   [5]    Pressure (0~255)
  */
 class USBIPDCPP_API DigitizerHandler : public HidVirtualInterfaceHandler {
 public:
@@ -25,10 +25,10 @@ public:
     static constexpr std::uint16_t DEFAULT_MAX = 32767;
 
     /**
-     * @param handle_interface USB 接口
-     * @param string_pool 字符串池
-     * @param x_max X 轴最大值（默认 32767）
-     * @param y_max Y 轴最大值（默认 32767）
+     * @param handle_interface USB interface
+     * @param string_pool String pool
+     * @param x_max Maximum X-axis value (default 32767)
+     * @param y_max Maximum Y-axis value (default 32767)
      */
     explicit DigitizerHandler(UsbInterface &handle_interface, StringPool &string_pool,
                               std::uint16_t x_max = DEFAULT_MAX, std::uint16_t y_max = DEFAULT_MAX);
@@ -36,11 +36,11 @@ public:
     ~DigitizerHandler() override = default;
 
     /**
-     * @brief 创建标准的 HID 触摸屏接口（描述符模板，未绑定 handler）
+     * @brief Create a standard HID touchscreen interface (descriptor template, no handler bound)
      *
-     * 接口定义：HID 类（03/00/00），一个中断 IN 端点。
-     * @param in_ep 中断 IN 端点地址（设备→主机，触摸报告）
-     * @return 未绑定 handler 的 UsbInterface
+     * Interface definition: HID class (03/00/00), one interrupt IN endpoint.
+     * @param in_ep Interrupt IN endpoint address (device→host, touch reports)
+     * @return UsbInterface with unbound handler
      */
     static UsbInterface make_interface(std::uint8_t in_ep) {
         UsbInterface i{
@@ -49,13 +49,13 @@ public:
                 .interface_protocol = 0x00,
                 .endpoints = {{UsbEndpoint{.address = in_ep,
                                            .attributes = static_cast<std::uint8_t>(EndpointAttributes::Interrupt),
-                                           .max_packet_size = 6, // 报告固定 6 字节
+                                           .max_packet_size = 6, // Report is fixed at 6 bytes
                                            .interval = 10}}},
         };
         return i;
     }
 
-    // ========== HidVirtualInterfaceHandler 接口实现 ==========
+    // ========== HidVirtualInterfaceHandler interface implementation ==========
 
     void on_new_connection(TransferResponder &current_session, error_code &ec) override;
     void on_disconnection(error_code &ec) override;
@@ -63,26 +63,26 @@ public:
     std::uint16_t get_report_descriptor_size() override;
     data_type get_report_descriptor() override;
 
-    // ========== 触摸 API ==========
+    // ========== Touch API ==========
 
-    /// 触摸按下（或移动），坐标范围 [0, max]，压力范围 0~255（默认 128）
+    /// Touch down (or move), coordinates [0, max], pressure 0~255 (default 128)
     void touch(std::uint16_t x, std::uint16_t y, std::uint8_t pressure = 128);
 
-    /// 移动（同 touch）
+    /// Move (same as touch)
     void move(std::uint16_t x, std::uint16_t y, std::uint8_t pressure = 128) {
         touch(x, y, pressure);
     }
 
-    /// 抬起
+    /// Lift off
     void release();
 
-    /// 是否正在触摸
+    /// Whether currently touching
     [[nodiscard]] bool is_touching() const;
 
-    /// 获取当前坐标
+    /// Get current coordinates
     [[nodiscard]] std::pair<std::uint16_t, std::uint16_t> get_position() const;
 
-    /// 获取坐标最大值
+    /// Get maximum coordinates
     [[nodiscard]] std::uint16_t get_x_max() const {
         return x_max_;
     }
@@ -90,7 +90,7 @@ public:
         return y_max_;
     }
 
-    /// 等待客户端连接
+    /// Wait for a client connection
     bool wait_for_client(int timeout_ms = -1);
 
 private:

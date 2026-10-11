@@ -18,48 +18,48 @@ public:
         string_configuration_value = string_pool.new_string(L"Default Configuration");
         string_manufacturer_value = string_pool.new_string(L"Usbipdcpp");
         string_product_value = string_pool.new_string(L"Usbipdcpp Virtual Device");
-        string_serial_value = 0; // 无序列号，匹配物理 UVC 设备行为
+        string_serial_value = 0; // No serial number, matching physical UVC device behavior
     }
 
     void receive_urb(UsbIpCommand::UsbIpCmdSubmit cmd, UsbEndpoint ep, std::optional<UsbInterface> interface,
                      usbipdcpp::error_code &ec) override;
     /**
-     * @brief 新的客户端连接时会调这个函数
+     * @brief This function will be called when a new client connects
      * @param current_session
-     * @param ec 发生的ec
+     * @param ec the ec that occurred
      */
     void on_new_connection(TransferResponder &current_session, error_code &ec) override;
     /**
-     * @brief 当发生错误、客户端detach、主动关闭服务器等情况需要完全终止传输时会调用这个函数。被调用后不可以再提交消息
+     * @brief This function is called when the transfer needs to be completely terminated due to errors, client detach, active server shutdown, etc. Messages cannot be submitted after being called.
      */
     void on_disconnection(error_code &ec) override;
 
     void handle_unlink_seqnum(std::uint32_t unlink_seqnum, std::uint32_t cmd_seqnum) override;
 
-    /// 访问设备级传输调度器（vudc 等价物，见 TransferScheduler）。
-    /// 等时等需要按帧节奏响应的传输由 handler 提交给它调度
+    /// Access the device-level transfer scheduler (vudc equivalent, see TransferScheduler).
+    /// The handler submits transfers requiring frame-paced responses, such as isochronous transfers, to it for scheduling
     TransferScheduler &get_transfer_scheduler() {
         return transfer_scheduler;
     }
 
-    /// 启用/禁用设备级传输调度器（默认禁用：不需要调度器的设备不启动
-    /// 调度线程，避免无谓开销）。需要等时等帧节奏传输的派生类在构造时
-    /// 调用此函数启用，调度器随连接建立/断开自动启动/停止
+    /// Enable/disable the device-level transfer scheduler (disabled by default: devices not needing it do not start
+    /// a scheduling thread, avoiding unnecessary overhead). Derived classes needing frame-paced transfers, such as isochronous transfers,
+    /// call this during construction to enable it; the scheduler starts/stops automatically on connection/disconnection
     void set_use_transfer_scheduler(bool enable) {
         use_transfer_scheduler = enable;
     }
 
     /**
-     * @brief 设置所有接口 handler 的 device_handler 指针
-     * @note 应在创建完 UsbDevice 并设置好所有接口 handler 之后调用。
-     * 设为 virtual：子类重写后能自定义初始化 interface_handlers 的流程
+     * @brief Set every interface handler's device_handler pointer
+     * @note Call after creating UsbDevice and setting all interface handlers.
+     * Virtual: subclasses can override to customize interface_handlers initialization
      */
     virtual void setup_interface_handlers();
 
 protected:
     void change_device_ep0_max_size_by_speed();
 
-    // 由 receive_urb 调用，分发给具体的 handle_xxx_transfer
+    // Called by receive_urb to dispatch to the specific handle_xxx_transfer
     void dispatch_urb(const UsbIpCommand::UsbIpCmdSubmit &cmd, std::uint32_t seqnum, const UsbEndpoint &ep,
                       std::optional<UsbInterface> &interface, std::uint32_t transfer_flags,
                       std::uint32_t transfer_buffer_length, const SetupPacket &setup_packet, usbipdcpp::error_code &ec);
@@ -127,15 +127,15 @@ protected:
     virtual data_type get_custom_descriptor(std::uint8_t type, std::uint8_t language_id,
                                             std::uint16_t descriptor_length, std::uint32_t *p_status);
 
-    /// 处理特殊字符串索引（如 Microsoft OS 0xEE）。返回 nullopt 表示继续走 string_pool 查找
+    /// Handle special string indices (such as Microsoft OS 0xEE). Return nullopt to continue lookup in string_pool
     virtual std::optional<data_type> get_special_string_descriptor(std::uint8_t string_index);
 
     virtual void set_descriptor(std::uint16_t configuration_value) = 0;
 
 public:
     void change_string_configuration(const std::wstring &new_str) {
-        // 首次设置（索引 0 未分配）时先分配有效索引，避免 change_string(0) 抛异常；
-        // 已分配则直接更新。四个 change_string_* 统一此健壮性处理
+        // On first setting (index 0 is unallocated), allocate a valid index first to avoid exceptions from change_string(0);
+        // if already allocated, update directly. All four change_string_* functions use this robustness handling
         if (string_configuration_value == 0) {
             string_configuration_value = string_pool.new_string(new_str);
         }
@@ -163,7 +163,7 @@ public:
     }
 
     void change_string_serial(const std::wstring &new_str) {
-        // string_serial_value 默认 0（无序列号，不占字符串池索引）
+        // string_serial_value defaults to 0 (no serial number, consumes no string pool index)
         if (string_serial_value == 0) {
             string_serial_value = string_pool.new_string(new_str);
         }
@@ -195,10 +195,10 @@ protected:
     Version usb_version;
     std::shared_mutex data_mutex;
 
-    /// 设备级传输调度器：连接建立时启动、断开时停止（生命周期见
-    /// on_new_connection / on_disconnection），所有接口共享
+    /// Device-level transfer scheduler: starts on connection, stops on disconnection (lifecycle in
+    /// on_new_connection / on_disconnection), shared by all interfaces
     TransferScheduler transfer_scheduler;
-    /// 是否启用 transfer_scheduler（默认关，见 set_use_transfer_scheduler）
+    /// Whether transfer_scheduler is enabled (default off; see set_use_transfer_scheduler)
     bool use_transfer_scheduler = false;
 };
 } // namespace usbipdcpp

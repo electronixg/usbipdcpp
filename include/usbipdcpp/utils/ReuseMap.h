@@ -7,9 +7,9 @@
 namespace usbipdcpp {
 
 /**
- * @brief 基于 std::vector 的 map，删除时标记槽位为空，
- *        下次插入复用空槽，空槽用尽才 push_back 扩容。
- *        线性查找 O(n)，适合小容量高频 insert/erase 场景。
+ * @brief Map based on std::vector; deletion marks a slot as empty,
+ *        the next insertion reuses an empty slot, expanding with push_back only when no empty slots remain.
+ *        linear search O(n), suitable for small-capacity and high-frequency insert/erase scenarios.
  */
 template<typename Key, typename Value>
 class ReuseMap {
@@ -23,18 +23,18 @@ class ReuseMap {
     size_t size_ = 0;
 
 public:
-    /// 预分配内存，避免后续 push_back 时 reallocate
+    /// Pre-allocate memory to avoid reallocate in subsequent push_back
     void reserve(size_t n) { slots_.reserve(n); }
 
     size_t size() const { return size_; }
     bool empty() const { return size_ == 0; }
 
     Value *insert(const Key &key, Value value) {
-        // 先查是否已存在
+        // first check whether it already exists
         for (auto &slot : slots_) {
             if (slot.occupied && slot.key == key) return &slot.value;
         }
-        // 复用空槽
+        // Reuse an empty slot
         for (auto &slot : slots_) {
             if (!slot.occupied) {
                 slot.key = key;
@@ -44,7 +44,7 @@ public:
                 return &slot.value;
             }
         }
-        // 无空槽，扩容
+        // No empty slot, capacity expansion
         slots_.push_back({key, std::move(value), true});
         size_++;
         return &slots_.back().value;

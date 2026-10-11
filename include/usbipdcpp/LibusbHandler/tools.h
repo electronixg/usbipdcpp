@@ -19,8 +19,8 @@ inline std::string get_device_busid(libusb_device *device) {
             busid += std::to_string(ports[i]);
         }
     } else {
-        // 拓扑信息不可用（如 Android wrap_sys_device），用 bus-addr:port 格式。
-        // addr 在总线上唯一，且冒号不会出现在正常拓扑路径中，不会与任何设备冲突。
+        // topology information is not available (such as Android wrap_sys_device), use bus-addr:port format.
+        // addr is unique on the bus, and the colon will not appear in the normal topology path and will not conflict with any device.
         busid += "-" + std::to_string(libusb_get_device_address(device))
               + ":" + std::to_string(libusb_get_port_number(device));
     }

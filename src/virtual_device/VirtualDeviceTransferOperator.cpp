@@ -15,10 +15,10 @@ TransferOperator *VirtualDeviceTransferOperator::get_operator_for_ep(std::uint8_
 void *VirtualDeviceTransferOperator::alloc_transfer_handle(std::size_t buffer_length, int num_iso_packets,
                                                            const UsbIpHeaderBasic &header,
                                                            const SetupPacket &setup_packet) {
-    // header.ep 是 USB/IP 线格式端点号（不带方向位），需按 direction 补上方向位
-    // 再查注册表（ep_operators_ 的键是含方向位的完整端点地址，见
-    // setup_interface_handlers 的 register_endpoint_operator）。与
-    // UsbIpCmdSubmit::from_socket 还原 real_ep 的逻辑保持一致
+    // header.ep is a USB/IP wire-format endpoint number (without direction bit); add the direction bit according to direction
+    // before looking up the registry (ep_operators_ keys are full endpoint addresses including direction; see
+    // setup_interface_handlers register_endpoint_operator). Keep consistent with
+    // UsbIpCmdSubmit::from_socket's real_ep reconstruction logic
     std::uint8_t real_ep = static_cast<std::uint8_t>(header.ep);
     if (header.direction == UsbIpDirection::In)
         real_ep |= 0x80;
@@ -27,9 +27,9 @@ void *VirtualDeviceTransferOperator::alloc_transfer_handle(std::size_t buffer_le
 }
 
 void VirtualDeviceTransferOperator::free_transfer_handle(void *handle) {
-    // leaf op 已存入 TransferHandle，正常路径不会走到这里。
-    // 如果走了，说明 caller 没有正确使用 TransferHandle::get_operator()。
-    SPDLOG_ERROR("VDTO::free_transfer_handle handle={:p} 不应被调用", static_cast<const void *>(handle));
+    // leaf op is already stored in TransferHandle; the normal path never reaches here.
+    // If reached, the caller is not using TransferHandle::get_operator() correctly.
+    SPDLOG_ERROR("VDTO::free_transfer_handle handle={:p} should not be called", static_cast<const void *>(handle));
 }
 
 std::size_t VirtualDeviceTransferOperator::get_actual_length(void *handle) {
@@ -37,8 +37,8 @@ std::size_t VirtualDeviceTransferOperator::get_actual_length(void *handle) {
 }
 
 bool VirtualDeviceTransferOperator::transfer_is_in(void *handle) {
-    // 防御路径：正常流程 TransferHandle 绑定 leaf op（见 protocol.cpp 的
-    // set_handle），to_socket 不会拿到本路由 op
+    // Defensive path: normal flow binds TransferHandle to leaf op (see protocol.cpp
+    // set_handle), so to_socket never receives this routing op
     return generic_op_.transfer_is_in(handle);
 }
 

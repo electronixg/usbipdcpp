@@ -18,14 +18,14 @@ struct SetupPacket {
 
     using array_storage = array_data_type<8>;
 
-    //转成小端
+    //converted to little-endian
     [[nodiscard]] array_storage to_bytes() const {
         array_storage result;
 
         result[0] = request_type;
         result[1] = request;
 
-        //小端，低位在低地址
+        //Little-endian: least significant byte at the lowest address
         result[2] = value & 0xFF;
         result[3] = value >> 8;
 
@@ -47,9 +47,9 @@ struct SetupPacket {
     bool operator==(const SetupPacket &other) const = default;
 
     /**
-     * @brief 从字节数组中解析setup包，请万分注意，setup包使用小端序传输
-     * @param setup 字节数组
-     * @return 解析后的setup包
+     * @brief Parse a setup packet from a byte array; take particular care that setup packets are transferred in little-endian order
+     * @param setup byte array
+     * @return Parsed setup packet
      */
     static SetupPacket parse(const array_storage &setup) {
         return {
@@ -94,8 +94,8 @@ struct SetupPacket {
 
     [[nodiscard]] bool is_clear_halt_cmd() const {
         // Linux kernel: bRequestType == USB_RECIP_ENDPOINT (0x02)
-        // 即 Standard(0x00) + Endpoint(0x02) + OUT(0x00) = 0x02
-        // 必须完整检查，不能只看Recip
+        // is Standard(0x00) + Endpoint(0x02) + OUT(0x00) = 0x02
+        // must be checked completely, not just the Recip
         return request == static_cast<std::uint8_t>(StandardRequest::ClearFeature) &&
                request_type == static_cast<std::uint8_t>(RequestRecipient::Endpoint) &&
                value == USB_ENDPOINT_HALT;
@@ -103,22 +103,22 @@ struct SetupPacket {
 
     [[nodiscard]] bool is_set_interface_cmd() const {
         // Linux kernel: bRequestType == USB_RECIP_INTERFACE (0x01)
-        // 即 Standard(0x00) + Interface(0x01) + OUT(0x00) = 0x01
+        // is Standard(0x00) + Interface(0x01) + OUT(0x00) = 0x01
         return request == static_cast<std::uint8_t>(StandardRequest::SetInterface) &&
                request_type == static_cast<std::uint8_t>(RequestRecipient::Interface);
     }
 
     [[nodiscard]] bool is_set_configuration_cmd() const {
         // Linux kernel: bRequestType == USB_RECIP_DEVICE (0x00)
-        // 即 Standard(0x00) + Device(0x00) + OUT(0x00) = 0x00
+        // is Standard(0x00) + Device(0x00) + OUT(0x00) = 0x00
         return request == static_cast<std::uint8_t>(StandardRequest::SetConfiguration) &&
                request_type == static_cast<std::uint8_t>(RequestRecipient::Device);
     }
 
-    /// 判断控制传输是否为 OUT 方向。`|| !length`：wLength==0 时无数据阶段，
-    /// 按 OUT（不发送数据回客户端）处理。与参考项目 usbipd-libusb 的
-    /// masking_bogus_flags 判定一致（driver-libusb/stub_rx.c：
-    /// `is_out = !(bmRequestType & USB_DIR_IN) || !wLength`）
+    /// Determine whether the control transfer is in the OUT direction. `|| !length`: There is no data stage when wLength==0,
+    /// Treat it as OUT (send no data back to the client). Consistent with the reference project usbipd-libusb's
+    /// masking_bogus_flags check (driver-libusb/stub_rx.c:
+    /// `is_out = !(bmRequestType & USB_DIR_IN) || !wLength`)
     [[nodiscard]] bool is_out() const {
         return !(request_type & 0x80) || !length;
     }
@@ -127,9 +127,9 @@ struct SetupPacket {
         return !is_out();
     }
 
-    /// 计算带方向位的 ep0 端点地址：OUT 控制传输（主机到设备，含
-    /// wLength==0 的无数据阶段）为 0x00，IN（设备到主机）为 0x80。
-    /// 当前库内无调用点（保留为公共 API）
+    /// Calculate ep0 endpoint address with direction bit: OUT control transfer (host to device, including
+    /// the no-data stage with wLength==0) is 0x00; IN (device to host) is 0x80.
+    /// There is no call point in the current library (reserved as a public API)
     [[nodiscard]] std::uint8_t calc_ep0_address() const {
         if (is_out()) {
             return 0x00;
@@ -142,8 +142,8 @@ struct SetupPacket {
 
     [[nodiscard]] bool is_reset_device_cmd() const {
         // Linux kernel: bRequestType == USB_RT_PORT (0x23)
-        // 即 Class(0x20) + Other(0x03) + OUT(0x00) = 0x23
-        // 必须完整检查bRequestType，不能分开检查Type和Recip而忽略Dir
+        // is Class(0x20) + Other(0x03) + OUT(0x00) = 0x23
+        // bRequestType must be checked completely, Type and Recip cannot be checked separately and Dir ignored
         if ((request == static_cast<std::uint8_t>(StandardRequest::SetFeature)) &&
             (request_type == (static_cast<std::uint8_t>(RequestType::Class) |
                               static_cast<std::uint8_t>(RequestRecipient::Other))) &&

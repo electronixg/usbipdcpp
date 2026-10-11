@@ -5,7 +5,7 @@ file(GLOB BINDING_SOURCES CONFIGURE_DEPENDS
     ${CMAKE_CURRENT_SOURCE_DIR}/devices/*.cpp
 )
 
-# 内部编译目标，真正产出 .pyd
+# Internal build target that actually produces the .pyd
 pybind11_add_module(_usbipdcpp_py ${BINDING_SOURCES})
 
 set_target_properties(_usbipdcpp_py PROPERTIES OUTPUT_NAME usbipdcpp)
@@ -22,7 +22,7 @@ target_include_directories(_usbipdcpp_py PRIVATE
     ${PROJECT_SOURCE_DIR}/include
 )
 
-# 将依赖的共享库 DLL 复制到 python_package，确保 .pyd 能直接加载
+# Copy the required shared-library DLLs to python_package so the .pyd can be loaded directly
 if(USBIPDCPP_BUILD_SHARED_LIBS AND WIN32)
     add_custom_command(
         OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/.copy_dlls_done"
@@ -42,7 +42,7 @@ else()
     set(STUBGEN_DEP "_usbipdcpp_py")
 endif()
 
-# 构建后自动生成 .pyi 存根文件，方便 IDE 代码补全
+# Automatically generate .pyi stub files after the build to support IDE code completion
 find_program(PYBIND11_STUBGEN_EXE pybind11-stubgen)
 if(PYBIND11_STUBGEN_EXE)
     add_custom_command(
@@ -68,5 +68,5 @@ else()
                     "Install with: pip install pybind11-stubgen")
 endif()
 
-# 对外目标，构建 --target usbipdcpp_python 即触发整个链
+# Public target: building --target usbipdcpp_python triggers the entire chain
 add_custom_target(usbipdcpp_python DEPENDS ${USBPY_FINAL_DEP})

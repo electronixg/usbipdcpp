@@ -8,17 +8,17 @@
 
 namespace usbipdcpp {
 
-/// 正弦波测试音源
-/// 预生成 1 秒 PCM 循环播放，get_chunk 每次返回整段。
-/// 仅支持 16 位有符号 PCM，频率需为整数 Hz（保证 1 秒内恰好整周期，循环拼接处无相位跳变）。
-/// 支持多个采样率（SET_CUR 可切换），采样率需为 8kHz 整数倍
-/// （高速等时传输下每 microframe 数据量需为整数字节）。
+/// Sine-wave test audio source
+/// Pregenerate 1 second of PCM for looped playback; get_chunk returns the whole segment each time.
+/// Supports only signed 16-bit PCM; frequency must be an integer Hz (exact whole cycles in 1 second, without phase discontinuities at loop boundaries).
+/// Supports multiple sample rates (switchable with SET_CUR); rates must be integer multiples of 8kHz
+/// (high-speed isochronous transfers require an integer number of bytes per microframe).
 class USBIPDCPP_API SineWaveSource : public AudioSource {
 public:
-    /// @param frequency_hz 正弦频率（整数 Hz，默认 440）
-    /// @param sample_rates 支持的采样率列表（Hz，默认 {48000}），首个为初始采样率
-    /// @param channels 声道数（1 或 2，默认 1）
-    /// @param amplitude 幅度，0.0~1.0 满幅比例（默认 0.5）
+    /// @param frequency_hz Sine frequency (integer Hz, default 440)
+    /// @param sample_rates Supported sample rates (Hz, default {48000}); the first is the initial sample rate
+    /// @param channels Channel count (1 or 2, default 1)
+    /// @param amplitude Amplitude, full-scale ratio 0.0~1.0 (default 0.5)
     explicit SineWaveSource(std::uint32_t frequency_hz = 440, std::vector<std::uint32_t> sample_rates = {48000},
                             std::uint16_t channels = 1, double amplitude = 0.5);
 
@@ -28,7 +28,7 @@ public:
     bool get_chunk(AudioChunk &chunk) override;
 
 private:
-    /// 重新生成 1 秒正弦 PCM
+    /// Regenerate 1 second of sine-wave PCM
     void regenerate();
 
     std::uint32_t frequency_hz;

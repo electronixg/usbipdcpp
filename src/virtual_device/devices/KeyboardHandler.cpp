@@ -10,9 +10,9 @@ namespace usbipdcpp {
 
 KeyboardHandler::KeyboardHandler(UsbInterface &handle_interface, StringPool &string_pool) :
     HidVirtualInterfaceHandler(handle_interface, string_pool) {
-    // 两个独立报告，通过 Report ID 区分（兼容 Boot Protocol）
+    // Two independent reports distinguished by Report ID (Boot Protocol compatible)
     report_descriptor_ = {
-            // ===== Report ID 1: 标准键盘 =====
+            // ===== Report ID 1: standard keyboard =====
             // Usage Page (Generic Desktop)
             0x05,
             0x01,
@@ -46,7 +46,7 @@ KeyboardHandler::KeyboardHandler(UsbInterface &handle_interface, StringPool &str
             // Report Count (8)
             0x95,
             0x08,
-            // Input (Data,Var,Abs) — 修饰键字节
+            // Input (Data,Var,Abs) — modifier byte
             0x81,
             0x02,
             // Report Size (8)
@@ -55,7 +55,7 @@ KeyboardHandler::KeyboardHandler(UsbInterface &handle_interface, StringPool &str
             // Report Count (1)
             0x95,
             0x01,
-            // Input (Const) — 保留字节
+            // Input (Const) — reserved byte
             0x81,
             0x01,
             // Usage Page (Key Codes)
@@ -79,7 +79,7 @@ KeyboardHandler::KeyboardHandler(UsbInterface &handle_interface, StringPool &str
             // Report Count (6)
             0x95,
             0x06,
-            // Input (Data,Var,Abs) — 按键码
+            // Input (Data,Var,Abs) — keycodes
             0x81,
             0x00,
             // End Collection (Keyboard)
@@ -128,8 +128,8 @@ KeyboardHandler::KeyboardHandler(UsbInterface &handle_interface, StringPool &str
 void KeyboardHandler::on_new_connection(TransferResponder &current_session, error_code &ec) {
     HidVirtualInterfaceHandler::on_new_connection(current_session, ec);
 
-    // 锁内置位再唤醒（与 on_disconnection 同源的标准 CV 模式）：
-    // 无锁置位会让 wait_for_client 的 CV 分支等满超时才醒来
+    // Set the flag under the lock, then wake (standard CV pattern, same as on_disconnection):
+    // setting without locking makes wait_for_client's CV branch wait until its full timeout before waking
     {
         std::lock_guard lock(client_connect_mutex_);
         client_connected_ = true;
@@ -156,18 +156,18 @@ void KeyboardHandler::on_new_connection(TransferResponder &current_session, erro
                     (current_state_.modifier != last_state_.modifier) || (current_state_.keys != last_state_.keys);
             bool consumer_set = (current_state_.consumer_usage != 0);
 
-            // Report ID 1: 标准键盘（9 字节含 Report ID）
+            // Report ID 1: standard keyboard (9 bytes including Report ID)
             if (kb_changed) {
                 std::array<std::uint8_t, 9> report{};
                 report[0] = REPORT_ID_KEYBOARD;
                 report[1] = current_state_.modifier;
-                report[2] = 0; // 保留字节
+                report[2] = 0; // Reserved byte
                 for (std::size_t i = 0; i < MAX_KEYS; ++i) {
                     report[3 + i] = current_state_.keys[i];
                 }
                 send_input_report(asio::buffer(report));
             }
-            // Report ID 2: Consumer Control（3 字节含 Report ID），单次触发后自动清零
+            // Report ID 2: Consumer Control (3 bytes including Report ID), automatically zeroed after one trigger
             if (consumer_set) {
                 std::array<std::uint8_t, 3> report{};
                 report[0] = REPORT_ID_CONSUMER;
@@ -184,9 +184,9 @@ void KeyboardHandler::on_new_connection(TransferResponder &current_session, erro
 }
 
 void KeyboardHandler::on_disconnection(error_code &ec) {
-    // 锁内置位再唤醒（标准 CV 模式）：无锁置位 + notify 会丢失唤醒——
-    // send_thread_ 在 wait 的"检查谓词→睡眠"窗口错过 notify 后永久睡眠，
-    // 下面的 join() 卡死（压测复现）
+    // Set the flag under the lock, then wake (standard CV pattern): setting without locking + notify loses wakeups:
+    // if send_thread_ misses notify in wait's "predicate check→sleep" window, it sleeps permanently,
+    // hanging join() below (reproduced in stress tests)
     {
         std::lock_guard lock(state_mutex_);
         should_stop_ = true;
@@ -211,7 +211,7 @@ data_type KeyboardHandler::request_get_report(std::uint8_t type, std::uint8_t re
     if (static_cast<HIDReportType>(type) == HIDReportType::Input) {
         std::lock_guard lock(state_mutex_);
         if (report_id == REPORT_ID_CONSUMER) {
-            // Consumer Control 报告（3 字节含 Report ID）
+            // Consumer Control report (3 bytes including Report ID)
             data_type result(3, 0);
             result[0] = REPORT_ID_CONSUMER;
             uint16_t consumer = current_state_.consumer_usage;
@@ -219,7 +219,7 @@ data_type KeyboardHandler::request_get_report(std::uint8_t type, std::uint8_t re
             result[2] = (consumer >> 8) & 0xFF;
             return result;
         }
-        // 默认返回键盘报告（9 字节含 Report ID）
+        // Return keyboard report by default (9 bytes including Report ID)
         data_type result(9, 0);
         result[0] = REPORT_ID_KEYBOARD;
         result[1] = current_state_.modifier;
@@ -235,7 +235,7 @@ data_type KeyboardHandler::request_get_report(std::uint8_t type, std::uint8_t re
 
 void KeyboardHandler::request_set_report(std::uint8_t type, std::uint8_t report_id, std::uint16_t length,
                                          const data_type &data, std::uint32_t *p_status) {
-    // 主机发送的输出报告：LED 状态。data 可能含 Report ID 前缀
+    // Host-sent output report: LED state. data may contain a Report ID prefix
     if (static_cast<HIDReportType>(type) == HIDReportType::Output && !data.empty()) {
         led_status_ = (length > 1 && data[0] <= 0x02) ? data[1] : data[0];
         *p_status = 0;
@@ -247,8 +247,8 @@ void KeyboardHandler::request_set_report(std::uint8_t type, std::uint8_t report_
 data_type KeyboardHandler::request_get_idle(std::uint8_t type, std::uint8_t report_id, std::uint16_t length,
                                             std::uint32_t *p_status) {
     data_type result;
-    // idle rate 是 16 位，控制传输数据阶段必须小端（此前用大端是 bug：
-    // 主机按小端解读，非 0 的 idle 值会读错）
+    // idle rate is 16-bit; control-transfer data stage must be little-endian (previous big-endian use was a bug:
+    // the host interprets little-endian, misreading nonzero idle values)
     vector_append_to_le(result, static_cast<std::uint16_t>(idle_speed_.load()));
     return result;
 }
@@ -258,19 +258,19 @@ void KeyboardHandler::request_set_idle(std::uint8_t speed, std::uint32_t *p_stat
     *p_status = 0;
 }
 
-// ========== 按键 API ==========
+// ========== Key API ==========
 
 void KeyboardHandler::press_key(std::uint8_t keycode) {
     if (keycode == 0)
         return;
 
     std::lock_guard lock(state_mutex_);
-    // 检查是否已按下
+    // Check whether already pressed
     for (std::size_t i = 0; i < MAX_KEYS; ++i) {
         if (current_state_.keys[i] == keycode)
             return;
     }
-    // 插入到第一个空闲槽位
+    // Insert into the first free slot
     for (std::size_t i = 0; i < MAX_KEYS; ++i) {
         if (current_state_.keys[i] == 0) {
             current_state_.keys[i] = keycode;
@@ -278,7 +278,7 @@ void KeyboardHandler::press_key(std::uint8_t keycode) {
             return;
         }
     }
-    SPDLOG_WARN("键盘按键已满（{} 键），忽略 0x{:02X}", MAX_KEYS, keycode);
+    SPDLOG_WARN("Keyboard key slots full ({} keys), ignoring 0x{:02X}", MAX_KEYS, keycode);
 }
 
 void KeyboardHandler::release_key(std::uint8_t keycode) {
@@ -297,7 +297,7 @@ void KeyboardHandler::release_key(std::uint8_t keycode) {
     if (!found)
         return;
 
-    // 压缩：移除空洞
+    // Compact: remove gaps
     std::size_t write = 0;
     for (std::size_t read = 0; read < MAX_KEYS; ++read) {
         if (current_state_.keys[read] != 0) {
@@ -326,7 +326,7 @@ void KeyboardHandler::release_all() {
 
 void KeyboardHandler::press_keys(std::initializer_list<std::uint8_t> keycodes) {
     std::lock_guard lock(state_mutex_);
-    // 先清零
+    // Zero first
     for (std::size_t i = 0; i < MAX_KEYS; ++i) {
         current_state_.keys[i] = 0;
     }
@@ -348,7 +348,7 @@ bool KeyboardHandler::is_key_pressed(std::uint8_t keycode) const {
     return false;
 }
 
-// ========== 修饰键 API ==========
+// ========== Modifier API ==========
 
 void KeyboardHandler::set_modifier(std::uint8_t mask) {
     std::lock_guard lock(state_mutex_);
@@ -371,7 +371,7 @@ std::uint8_t KeyboardHandler::get_modifier() const {
     return current_state_.modifier;
 }
 
-// ========== 媒体键 API ==========
+// ========== Media key API ==========
 
 void KeyboardHandler::press_media_key(std::uint16_t usage) {
     std::lock_guard lock(state_mutex_);
@@ -379,7 +379,7 @@ void KeyboardHandler::press_media_key(std::uint16_t usage) {
     state_cv_.notify_one();
 }
 
-// ========== LED 状态 ==========
+// ========== LED state ==========
 
 std::uint8_t KeyboardHandler::get_led_status() const {
     return led_status_.load();

@@ -12,7 +12,7 @@ using namespace usbipdcpp;
 
 namespace {
 
-// 记录应答的测试通道：派生类实现 CRTP 接口 reply 记录（不真的发 socket）
+// Test channel recording responses: derived class implements CRTP reply interface to record (without actual socket transmission)
 class RecordingOutChannel : public OutEndpointChannelBase<RecordingOutChannel> {
 public:
     struct Replied {
@@ -22,16 +22,16 @@ public:
     };
     std::vector<Replied> replied;
 
-    // CRTP 接口：应答一个请求（基类在取走/上限拒绝时调用）
+    // CRTP interface: respond to one request (base class calls it on retrieval/rejection at limit)
     void reply(std::uint32_t seqnum, std::uint32_t length, std::uint32_t status = 0) {
         replied.push_back({seqnum, length, status});
     }
 };
 
-// 构造带数据的传输句柄（op 为进程级单例：队列中残留请求的 handle 可能在测试结束、
-// channel 析构时才销毁，静态 op 保证它始终有效，不依赖局部变量生命周期）
+// Construct transfer handle containing data (op is a process-wide singleton: handles of requests remaining queued may be destroyed only at test end,
+// when channel is destroyed; static op guarantees validity independently of local-variable lifetime)
 struct TransferMaker {
-    static inline GenericTransferOperator op;  // 无状态，多线程并发 free 安全
+    static inline GenericTransferOperator op;  // Stateless; concurrent free from multiple threads is safe
     TransferHandle make(const data_type &data) {
         auto *trx = new GenericTransfer{};
         trx->data = data;
@@ -46,12 +46,12 @@ TEST(TestOutEndpointChannel, RequestPendsUntilTaken) {
     channel.on_new_connection();
     TransferMaker maker;
 
-    // 请求挂起：不应答（NAK 背压：主机 URB 挂着直到业务侧取走）
+    // Request pending: no response (NAK backpressure: host URB remains pending until application retrieves it)
     channel.on_out_request(0x02, 10, maker.make({1, 2, 3}));
     EXPECT_TRUE(channel.replied.empty());
     ASSERT_EQ(channel.size(), 1u);
 
-    // 业务侧取走：读出数据并应答
+    // Application retrieves it: read data and respond
     auto p = channel.try_take();
     ASSERT_TRUE(p.has_value());
     EXPECT_EQ(p->ep, 0x02);
@@ -68,7 +68,7 @@ TEST(TestOutEndpointChannel, FifoOrderPreserved) {
     channel.on_new_connection();
     TransferMaker maker;
 
-    // 多个请求按入队顺序取出，应答顺序一致
+    // Retrieve multiple requests in enqueue order, with matching response order
     channel.on_out_request(0x02, 1, maker.make({1}));
     channel.on_out_request(0x02, 2, maker.make({2, 2}));
     channel.on_out_request(0x02, 3, maker.make({3, 3, 3}));
@@ -91,7 +91,7 @@ TEST(TestOutEndpointChannel, TakeBlocksUntilData) {
     channel.on_new_connection();
     TransferMaker maker;
 
-    // 先阻塞取，另一个线程稍后入队：take 被唤醒
+    // First block retrieving; another thread enqueues later: take awakened
     std::thread producer([&]() {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
         channel.on_out_request(0x02, 7, maker.make({9}));
@@ -105,17 +105,17 @@ TEST(TestOutEndpointChannel, TakeBlocksUntilData) {
 TEST(TestOutEndpointChannel, TakeTimeoutReturnsNullopt) {
     RecordingOutChannel channel;
     channel.on_new_connection();
-    // 无数据且未断连：超时返回 nullopt
+    // No data and not disconnected: timeout returns nullopt
     auto p = channel.take(30);
     EXPECT_FALSE(p.has_value());
 }
 
 TEST(TestOutEndpointChannel, InitialDisconnectedTakeReturnsNull) {
     RecordingOutChannel channel;
-    // 未 on_new_connection（初始断连）：take 立即返回 nullopt
+    // on_new_connection not called (initially disconnected): take immediately returns nullopt
     auto p = channel.take(0);
     EXPECT_FALSE(p.has_value());
-    // 断连时 on_out_request 直接释放请求，不入队
+    // When disconnected, on_out_request releases request directly without enqueueing
     TransferMaker maker;
     channel.on_out_request(0x02, 1, maker.make({1}));
     EXPECT_EQ(channel.size(), 0u);
@@ -126,7 +126,7 @@ TEST(TestOutEndpointChannel, EmptyDataRequestAnsweredWithZero) {
     channel.on_new_connection();
     TransferMaker maker;
 
-    // 空数据请求：应答 0 长度，请求被消费
+    // Empty-data request: 0-length response; request consumed
     channel.on_out_request(0x02, 60, maker.make({}));
     auto p = channel.try_take();
     ASSERT_TRUE(p.has_value());
@@ -140,7 +140,7 @@ TEST(TestOutEndpointChannel, NotificationWithoutTransfer) {
     RecordingOutChannel channel;
     channel.on_new_connection();
 
-    // 纯通知（控制 IN 的 setup 透出）：transfer 为空，take 只返回 setup 不应答
+    // Notification only (exposed control IN setup): transfer empty; take returns only setup, without responding
     SetupPacket setup;
     setup.request = 0xAA;
     channel.on_out_request(0, 5, TransferHandle{}, setup);
@@ -159,7 +159,7 @@ TEST(TestOutEndpointChannel, NotificationAndDataMixedOrder) {
     channel.on_new_connection();
     TransferMaker maker;
 
-    // 通知与数据请求混排：按入队顺序消费
+    // Notifications interleaved with data requests: consume in enqueue order
     SetupPacket setup;
     setup.request = 0xAA;
     channel.on_out_request(0x02, 1, maker.make({1}));
@@ -174,7 +174,7 @@ TEST(TestOutEndpointChannel, NotificationAndDataMixedOrder) {
     EXPECT_TRUE(p2->setup_req.has_value());
     EXPECT_TRUE(p2->data.empty());
     EXPECT_EQ(p3->data, (data_type{3}));
-    // 只有数据请求应答（seqnum 1、3），通知不应答
+    // Only data requests receive responses (seqnum 1, 3); notifications receive none
     ASSERT_EQ(channel.replied.size(), 2u);
     EXPECT_EQ(channel.replied[0].seqnum, 1u);
     EXPECT_EQ(channel.replied[1].seqnum, 3u);
@@ -185,7 +185,7 @@ TEST(TestOutEndpointChannel, MultipleEndpointsEpPreserved) {
     channel.on_new_connection();
     TransferMaker maker;
 
-    // 不同端点请求：take 带回各自的 ep（队列全局 FIFO，ep 随请求走）
+    // Requests on different endpoints: take returns respective ep (queue globally FIFO; ep follows request)
     channel.on_out_request(0x02, 1, maker.make({1}));
     channel.on_out_request(0x83, 2, maker.make({2}));
     channel.on_out_request(0x04, 3, maker.make({3}));
@@ -204,7 +204,7 @@ TEST(TestOutEndpointChannel, ManyPendingRequestsTakenInOrder) {
     channel.on_new_connection();
     TransferMaker maker;
 
-    // 10 个请求全部挂起，再逐个 take：按入队顺序消费 + 应答
+    // All 10 requests pending, then take individually: consume + respond in enqueue order
     for (std::uint32_t i = 1; i <= 10; i++) {
         channel.on_out_request(0x02, i, maker.make({static_cast<std::uint8_t>(i)}));
     }
@@ -230,9 +230,9 @@ TEST(TestOutEndpointChannel, CancelPending) {
     channel.on_out_request(0x02, 10, maker.make({1}));
     channel.on_out_request(0x02, 11, maker.make({2}));
 
-    // 命中：请求移除（transfer 析构释放），不再应答
+    // Found: request removed (transfer destruction releases it); no further response
     EXPECT_TRUE(channel.cancel_pending(10));
-    // 未命中
+    // Not found
     EXPECT_FALSE(channel.cancel_pending(99));
 
     auto p = channel.try_take();
@@ -250,7 +250,7 @@ TEST(TestOutEndpointChannel, DisconnectClearsAndWakes) {
     channel.on_out_request(0x02, 1, maker.make({1}));
     channel.on_disconnection();
 
-    // 队列已清：take 立即返回 nullopt（断连）
+    // Queue cleared: take immediately returns nullopt (disconnected)
     auto p = channel.take(10);
     EXPECT_FALSE(p.has_value());
     EXPECT_EQ(channel.size(), 0u);
@@ -260,7 +260,7 @@ TEST(TestOutEndpointChannel, DisconnectWakesBlockedTaker) {
     RecordingOutChannel channel;
     channel.on_new_connection();
 
-    // take 阻塞中断连：被唤醒并返回 nullopt
+    // Disconnect while take blocked: awaken and return nullopt
     std::thread disconnector([&]() {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
         channel.on_disconnection();
@@ -278,7 +278,7 @@ TEST(TestOutEndpointChannel, MaxPendingRejectsWithBusy) {
 
     channel.on_out_request(0x02, 1, maker.make({1}));
     channel.on_out_request(0x02, 2, maker.make({2}));
-    // 超上限：EPIPE 拒绝，不入队
+    // Over limit: reject with EPIPE, do not enqueue
     channel.on_out_request(0x02, 3, maker.make({3}));
 
     ASSERT_EQ(channel.replied.size(), 1u);
@@ -287,14 +287,14 @@ TEST(TestOutEndpointChannel, MaxPendingRejectsWithBusy) {
               static_cast<std::uint32_t>(UrbStatusType::StatusEPIPE));
     EXPECT_EQ(channel.size(), 2u);
 
-    // 取走一条后空位释放，新请求可入队
+    // Retrieving one frees a slot; new request may enqueue
     EXPECT_TRUE(channel.try_take().has_value());
     channel.on_out_request(0x02, 4, maker.make({4}));
     EXPECT_EQ(channel.size(), 2u);
 }
 
 TEST(TestOutEndpointChannel, GetTransferDataAppends) {
-    // op 接口语义：数据追加到 out 末尾，返回追加字节数
+    // op interface semantics: append data to end of out, return number of appended bytes
     TransferMaker maker;
     auto handle = maker.make({1, 2, 3});
 
@@ -305,13 +305,13 @@ TEST(TestOutEndpointChannel, GetTransferDataAppends) {
     EXPECT_EQ(n, 3u);
     EXPECT_EQ(out, (data_type{0xAA, 1, 2, 3}));
 
-    // 再读一次（handle 数据不变）：继续追加
+    // Read again (handle data unchanged): continue appending
     out.clear();
     n = maker.op.get_transfer_data(handle.get(), out, supported);
     EXPECT_EQ(n, 3u);
     EXPECT_EQ(out, (data_type{1, 2, 3}));
 
-    // 默认实现：不支持（supported=false，返回 0）
+    // Default implementation: unsupported (supported=false, return 0)
     class DefaultOp : public TransferOperator {
     public:
         void *alloc_transfer_handle(std::size_t, int, const UsbIpHeaderBasic &, const SetupPacket &) override {
@@ -357,7 +357,7 @@ TEST(TestOutEndpointChannel, ConcurrentPushAndTakeNoLoss) {
 
     EXPECT_EQ(channel.size(), 0u);
     ASSERT_EQ(channel.replied.size(), N);
-    // 应答 seqnum 覆盖 0..N-1 无重复（FIFO 无丢失）
+    // Response seqnums cover 0..N-1 without duplicates (FIFO without loss)
     std::vector<bool> seen(N, false);
     for (auto &r: channel.replied) {
         ASSERT_LT(r.seqnum, N);
@@ -374,7 +374,7 @@ TEST(TestOutEndpointChannel, ConcurrentBlockingTakeAndPush) {
     TransferMaker maker;
     constexpr int N = 500;
 
-    // 多个线程反复阻塞 take（每个消费一条），一个线程持续入队
+    // Multiple threads repeatedly block in take (each consumes one), one thread continuously enqueues
     std::atomic<int> consumed{0};
     std::vector<std::thread> takers;
     for (int t = 0; t < 4; t++) {
@@ -403,7 +403,7 @@ TEST(TestOutEndpointChannel, ConcurrentBlockingTakeAndPush) {
 }
 
 TEST(TestOutEndpointChannel, ConcurrentDisconnectAndPushNoCrash) {
-    // 断连与入队并发：不崩溃，最终状态一致（断连后请求不再入队）
+    // Disconnection concurrent with enqueueing: no crash, consistent final state (requests no longer enqueue after disconnection)
     RecordingOutChannel channel;
     channel.on_new_connection();
     TransferMaker maker;
@@ -420,16 +420,16 @@ TEST(TestOutEndpointChannel, ConcurrentDisconnectAndPushNoCrash) {
     disconnector.join();
     pusher.join();
 
-    // 断连标志生效后请求被直接释放：队列最终为空
+    // Once disconnection flag takes effect, release requests directly: queue ends empty
     EXPECT_EQ(channel.size(), 0u);
     auto p = channel.take(10);
     EXPECT_FALSE(p.has_value());
 }
 
 TEST(TestOutEndpointChannel, ConcurrentSubmitAndUnlink) {
-    // UNLINK（cancel_pending）与请求入队（on_out_request）并发：
-    // 每条请求最终恰好一种结局（被应答或被取消），不丢不重。
-    // 竞态在两个独立锁内（入队持 mutex_，cancel 也持同一个锁），合法结果唯一。
+    // UNLINK (cancel_pending) concurrent with request enqueueing (on_out_request):
+    // Each request ends in exactly one outcome (responded or canceled), without loss/duplication.
+    // Race occurs within two separate lock scopes (enqueue holds mutex_; cancel holds same lock); valid outcome unique.
     RecordingOutChannel channel;
     channel.on_new_connection();
     TransferMaker maker;
@@ -451,22 +451,22 @@ TEST(TestOutEndpointChannel, ConcurrentSubmitAndUnlink) {
     submitter.join();
     unlinker.join();
 
-    // 未被取消的请求仍留在队列，全部取出应答（Pending 无 seqnum，验证用 replied）
+    // Uncanceled requests remain queued; retrieve and respond to all (Pending has no seqnum; verification uses replied)
     while (channel.try_take()) {
     }
 
-    // 每条请求两种结局互斥且完备：应答数 + 取消数 == N（竞态在锁内，不重不丢）
+    // Both outcomes mutually exclusive and exhaustive: responses + cancellations == N (race inside lock; no duplicates/loss)
     EXPECT_EQ(channel.replied.size() + static_cast<std::size_t>(cancelled),
               static_cast<std::size_t>(N));
 
-    // 应答的 seqnum 无重复且在范围内
+    // Response seqnums unique and in range
     std::vector<bool> replied_seen(N, false);
     for (auto &r: channel.replied) {
         ASSERT_LT(r.seqnum, static_cast<std::uint32_t>(N));
         ASSERT_FALSE(replied_seen[r.seqnum]);
         replied_seen[r.seqnum] = true;
     }
-    // 没应答的一定被取消：取消数 == 未应答数
+    // Every unanswered request must have been canceled: cancellations == unanswered requests
     std::size_t not_replied = N - channel.replied.size();
     EXPECT_EQ(static_cast<std::size_t>(cancelled), not_replied);
 }

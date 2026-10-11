@@ -8,21 +8,21 @@
 #include "usbipdcpp/utils/RingBuffer.h"
 #include "usbipdcpp/virtual_device/audio_sinks/AudioSink.h"
 
-struct ma_device; // 前置声明（miniaudio 的 typedef 在全局命名空间）：头文件不暴露 miniaudio 类型
+struct ma_device; // forward declaration (miniaudio’s typedef is in the global namespace): the header file does not expose the miniaudio type
 
 namespace usbipdcpp {
 
-/// 本机声卡播放音频汇（基于 miniaudio，拉模型回调从环形缓冲取数据填声卡，
-/// 缓冲不足时填静音）。采样率/声道协商变化时重启播放设备，重采样由声卡驱动处理。
-/// 打开播放设备失败（无声卡等）不抛异常：打错误日志后进入丢弃模式
-/// （write_pcm 仅计数），设备仍可正常枚举
+/// Audio sink for local sound-card playback (based on miniaudio; a pull-model callback reads the ring buffer to feed the sound card,
+/// Fill in mute when the buffer is insufficient). Restart the playback device when the sampling rate/channel negotiation changes, and the resampling is handled by the sound card driver.
+/// Failed to open the playback device (no sound card, etc.) without throwing an exception: enter the discard mode after logging the error
+/// (write_pcm only counts), the device can still be enumerated normally
 class PlaybackSink : public AudioSink {
 public:
-    /// @param device_name 播放设备名（miniaudio 枚举名，默认空 = 系统默认输出设备）
+    /// @param device_name Playback device name (miniaudio enumeration name, default empty = system default output device)
     explicit PlaybackSink(std::string device_name = {});
     ~PlaybackSink() override;
 
-    // 持有 ma_device 原始指针，禁止拷贝（浅拷贝会双释放）
+    // holds the original pointer of ma_device, copying is prohibited (shallow copy will double release)
     PlaybackSink(const PlaybackSink &) = delete;
     PlaybackSink &operator=(const PlaybackSink &) = delete;
 
@@ -32,28 +32,28 @@ public:
     void write_pcm(const std::uint8_t *data, std::size_t size) override;
     void reset() override;
 
-    /// 已收到的 PCM 字节总数（统计用）
+    /// Total number of PCM bytes received (for statistics)
     [[nodiscard]] std::uint64_t received_bytes() const;
 
 private:
-    void open_device(); // 按当前格式打开播放设备；失败进丢弃模式（调用方需已持有 mutex）
+    void open_device(); // Open the playback device according to the current format; fail and enter discard mode (the caller must already hold mutex)
     void close_device();
-    // miniaudio 拉模型回调（ma_device_data_proc 签名）
+    // miniaudio pull model callback (ma_device_data_proc signature)
     static void data_callback(struct ma_device *device, void *output, const void *input,
                               std::uint32_t frame_count);
 
     std::string device_name;
     AudioFormatInfo format{1, 16, 48000};
-    mutable std::mutex mutex; // 收流线程写缓冲 vs 播放回调读缓冲
-    // 512KB 约 2.7s @96kHz 单声道（0.7s @48kHz 双声道）：吸收主机 URB 突发与
-    // 网络尖峰的抖动余量；满则丢新数据（回调填静音）
+    mutable std::mutex mutex; // Streaming thread write buffer vs playback callback read buffer
+    // 512KB is about 2.7s @96kHz mono (0.7s @48kHz stereo): jitter headroom for host URB bursts and
+    // Jitter margin for network peaks; if full, new data will be lost (callback fills in silence)
     RingBuffer buffer{512 * 1024};
     std::uint64_t received = 0;
-    bool discarding = false; // 播放设备不可用：仅计数
+    bool discarding = false; // Playback device unavailable: count only
 
-    void *device = nullptr; // ma_device*（new 分配，析构释放）
-    bool device_initialized = false; // ma_device_init 成功后才 uninit
-    void *context = nullptr; // ma_context*（--device 指定名字时自建，需活得比 device 久）
+    void *device = nullptr; // ma_device* (new allocation, destruction release)
+    bool device_initialized = false; // Call uninit only after ma_device_init succeeds
+    void *context = nullptr; // ma_context* (self-built when --device specifies the name, it needs to live longer than device)
 };
 
 } // namespace usbipdcpp

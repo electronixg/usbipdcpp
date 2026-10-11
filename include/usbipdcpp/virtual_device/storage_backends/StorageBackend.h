@@ -7,36 +7,36 @@
 namespace usbipdcpp {
 
 /**
- * @brief 块存储后端抽象基类。
+ * @brief Abstract base class for block storage backends.
  *
- * MscBulkOnlyHandler 通过此接口读写磁盘块，不关心底层是 raw 文件、qcow2
- * 还是其他格式。派生类实现 read/write/block_count。
+ * MscBulkOnlyHandler reads/writes disk blocks through this interface, independent of whether storage uses a raw file, qcow2,
+ * or another format. Derived classes implement read/write/block_count.
  */
 class StorageBackend {
 public:
     virtual ~StorageBackend() = default;
 
-    /** @return 实际读取的字节数 */
+    /** @return The number of bytes actually read */
     virtual std::size_t read(std::uint64_t lba, std::uint16_t count, void *buffer) = 0;
-    /** @return 实际写入的字节数 */
+    /** @return The number of bytes actually written */
     virtual std::size_t write(std::uint64_t lba, std::uint16_t count, const void *data) = 0;
 
-    // 释放 LBA 范围的物理存储（可选，默认空实现）
+    // Release physical storage for an LBA range (optional, default no-op)
     virtual void punch_hole(std::uint64_t lba, std::uint64_t count) {
     }
 
-    // 返回 LBA 处映射内存的直读指针（nullptr 表示无 mmap，需走 staging_data_ 中转）
+    // Return a direct-read pointer to mapped memory at LBA (nullptr means no mmap, requiring staging_data_ intermediate buffering)
     virtual void *get_direct_buffer(std::uint64_t lba) {
         return nullptr;
     }
 
-    // 零拷贝发送（sendfile / TransmitFile），默认 false → 回退 asio::write
+    // Zero-copy send (sendfile / TransmitFile), default false → fall back to asio::write
     virtual bool send_direct(std::uint64_t lba, std::size_t offset, std::size_t length, intptr_t sock_fd,
                              std::error_code &ec) {
         return false;
     }
 
-    // 零拷贝接收（splice sock→pipe→file），默认 false → 回退 asio::read
+    // Zero-copy receive (splice sock→pipe→file), default false → fall back to asio::read
     virtual bool recv_direct(std::uint64_t lba, std::size_t offset, std::size_t length, intptr_t sock_fd,
                              std::error_code &ec) {
         return false;

@@ -17,17 +17,17 @@ using namespace usbipdcpp::test;
 
 namespace {
 
-// 管道设备 + 其 handler 指针（handler 由 device 持有，生命周期同 device）
+// Pipe device + handler pointer (handler owned by device, same lifetime as device)
 struct PipeFixture {
     std::shared_ptr<UsbDevice> device;
     PipeDeviceHandler *pipe = nullptr;
-    // 传输分配器：fixture 成员（fixture 先于测试局部 stub 声明，析构在后）——
-    // submits 里的 RetSubmit 持 TransferHandle，析构时要用 op 释放
+    // Transfer allocator: fixture member (fixture declared before test-local stub and destroyed afterward)—
+    // RetSubmit entries in submits hold TransferHandle; destruction uses op to release it
     GenericTransferOperator op;
 };
 
-// 构造管道设备（与 examples/mock_pipe 相同的构造方式）：
-// vendor 类接口 + bulk IN(0x81) + bulk OUT(0x02)
+// Construct pipe device (same construction as examples/mock_pipe):
+// vendor-class interface + bulk IN(0x81) + bulk OUT(0x02)
 PipeFixture make_pipe_device(StringPool &string_pool) {
     std::vector<UsbInterface> interfaces = {
             UsbInterface{
@@ -73,8 +73,8 @@ PipeFixture make_pipe_device(StringPool &string_pool) {
     return {device, pipe.get()};
 }
 
-// 构造双 OUT 端点管道设备（bulk IN 0x81 + bulk OUT 0x02/0x04），
-// 用于验证 read 的跨端点全局顺序
+// Construct pipe device with two OUT endpoints (bulk IN 0x81 + bulk OUT 0x02/0x04),
+// to verify global ordering of read across endpoints
 PipeFixture make_pipe_device_two_out(StringPool &string_pool) {
     std::vector<UsbInterface> interfaces = {
             UsbInterface{
@@ -129,7 +129,7 @@ PipeFixture make_pipe_device_two_out(StringPool &string_pool) {
 } // namespace
 
 TEST(TestPipeDeviceHandler, OutDataReachesRead) {
-    // OUT 传输：数据经 read() 返回，ep 与数据一致，handler 回 OK RET_SUBMIT
+    // OUT transfer: read() returns data; ep matches data; handler returns OK RET_SUBMIT
     StringPool string_pool;
     auto fixture = make_pipe_device(string_pool);
     CaptureResponder stub;
@@ -140,7 +140,7 @@ TEST(TestPipeDeviceHandler, OutDataReachesRead) {
     auto &intf = fixture.device->interfaces[0];
     const data_type payload = {'p', 'i', 'p', 'e', '!'};
 
-    // 业务线程阻塞 read；主线程投递 OUT 传输
+    // Application thread blocks in read; main thread submits OUT transfer
     PipeXfer xfer;
     std::thread reader([&]() { ASSERT_TRUE(fixture.pipe->read(xfer, 2000)); });
 
@@ -162,8 +162,8 @@ TEST(TestPipeDeviceHandler, OutDataReachesRead) {
 }
 
 TEST(TestPipeDeviceHandler, ReadPreservesGlobalRequestOrderAcrossEndpoints) {
-    // 跨端点按主机请求的全局到达顺序返回（seqnum 序），不是按端点号：
-    // 发 ep2(seq 1) → ep4(seq 2) → ep2(seq 3)，read 必须按 1、2、3 取回
+    // Across endpoints, return in global host-request arrival order (seqnum order), rather than endpoint-number order:
+    // send ep2(seq 1) → ep4(seq 2) → ep2(seq 3); read must retrieve 1, 2, 3 in order
     StringPool string_pool;
     auto fixture = make_pipe_device_two_out(string_pool);
     CaptureResponder stub;
@@ -175,7 +175,7 @@ TEST(TestPipeDeviceHandler, ReadPreservesGlobalRequestOrderAcrossEndpoints) {
     const UsbEndpoint ep_out2 = intf.endpoints[0][1];
     const UsbEndpoint ep_out4 = intf.endpoints[0][2];
 
-    // 业务线程阻塞读 3 条
+    // Application thread blocks reading 3 items
     std::vector<PipeXfer> got;
     std::thread reader([&]() {
         for (int i = 0; i < 3; i++) {
@@ -186,7 +186,7 @@ TEST(TestPipeDeviceHandler, ReadPreservesGlobalRequestOrderAcrossEndpoints) {
         }
     });
 
-    // 交错发：ep 0x02 → ep 0x04 → ep 0x02
+    // Interleaved sends: ep 0x02 → ep 0x04 → ep 0x02
     fixture.pipe->receive_urb(make_cmd_submit(fixture.op, 1, 0x02, UsbIpDirection::Out, 1, {}, {0x01}), ep_out2, intf, ec);
     fixture.pipe->receive_urb(make_cmd_submit(fixture.op, 2, 0x04, UsbIpDirection::Out, 1, {}, {0x02}), ep_out4, intf, ec);
     fixture.pipe->receive_urb(make_cmd_submit(fixture.op, 3, 0x02, UsbIpDirection::Out, 1, {}, {0x03}), ep_out2, intf, ec);
@@ -212,8 +212,8 @@ TEST(TestPipeDeviceHandler, ReadPreservesGlobalRequestOrderAcrossEndpoints) {
 }
 
 TEST(TestPipeDeviceHandler, InWriteServesPendingRequests) {
-    // IN 请求先挂起（FIFO 无数据），write 后按请求长度分片应答：
-    // 两个 8 字节请求各取走 16 字节数据的一半
+    // IN requests initially pending (FIFO has no data); after write, respond in request-length fragments:
+    // two 8-byte requests each retrieve half of the 16-byte data
     StringPool string_pool;
     auto fixture = make_pipe_device(string_pool);
     CaptureResponder stub;
@@ -224,12 +224,12 @@ TEST(TestPipeDeviceHandler, InWriteServesPendingRequests) {
     auto &intf = fixture.device->interfaces[0];
     const UsbEndpoint ep_in = intf.endpoints[0][0];
 
-    // 先挂两个 IN 请求（每个期望 8 字节）
+    // First leave two IN requests pending (each expects 8 bytes)
     fixture.pipe->receive_urb(make_cmd_submit(fixture.op, 1, 0x01, UsbIpDirection::In, 8), ep_in, intf, ec);
     fixture.pipe->receive_urb(make_cmd_submit(fixture.op, 2, 0x01, UsbIpDirection::In, 8), ep_in, intf, ec);
     ASSERT_FALSE(ec);
 
-    // 16 字节数据一次写入，两个挂起请求各取 8 字节
+    // Write 16 bytes in one operation; each pending request retrieves 8 bytes
     const data_type payload = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
     EXPECT_EQ(fixture.pipe->write(PipeXfer{.ep = 0x81, .data = payload}, 2000), payload.size());
 
@@ -248,8 +248,8 @@ TEST(TestPipeDeviceHandler, InWriteServesPendingRequests) {
 }
 
 TEST(TestPipeDeviceHandler, ControlRequestDeliveredToRead) {
-    // 非标准控制请求（Vendor+Interface+IN）：read() 拿到 setup_req 后
-    // write({ep=0}) 应答，handler 回带数据的 RET_SUBMIT
+    // Nonstandard control request (Vendor+Interface+IN): after read() obtains setup_req,
+    // write({ep=0}) responds; handler returns RET_SUBMIT with data
     StringPool string_pool;
     auto fixture = make_pipe_device(string_pool);
     CaptureResponder stub;
@@ -281,11 +281,11 @@ TEST(TestPipeDeviceHandler, ControlRequestDeliveredToRead) {
     EXPECT_EQ(xfer.setup_req->length, 4u);
     EXPECT_TRUE(xfer.data.empty());
 
-    // write({ep=0}) 应答控制请求
+    // write({ep=0}) responds to control request
     const data_type reply = {'o', 'k', 'y', '!'};
     EXPECT_EQ(fixture.pipe->write(PipeXfer{.ep = 0, .data = reply}, 2000), reply.size());
 
-    ASSERT_EQ(stub.submits.size(), 1u); // 控制 IN 纯通知取走不应答，只有 write 的应答
+    ASSERT_EQ(stub.submits.size(), 1u); // Retrieving control IN notification alone does not respond; only write produces response
     EXPECT_EQ(stub.submits[0].header.seqnum, 1u);
     EXPECT_EQ(stub.submits[0].status, 0u);
     EXPECT_EQ(stub.submits[0].actual_length, reply.size());
@@ -295,7 +295,7 @@ TEST(TestPipeDeviceHandler, ControlRequestDeliveredToRead) {
 }
 
 TEST(TestPipeDeviceHandler, DisconnectUnblocksReadWrite) {
-    // 断连（on_disconnection）唤醒阻塞的 read（返回 false）与 write（返回 0）
+    // Disconnection (on_disconnection) awakens blocked read (returns false) and write (returns 0)
     StringPool string_pool;
     auto fixture = make_pipe_device(string_pool);
     CaptureResponder stub;
@@ -303,23 +303,23 @@ TEST(TestPipeDeviceHandler, DisconnectUnblocksReadWrite) {
     fixture.pipe->on_new_connection(stub, ec);
     ASSERT_FALSE(ec);
 
-    // read 无限等待；断连时 handler 清理并唤醒
+    // read waits indefinitely; handler cleans up and awakens on disconnection
     PipeXfer xfer;
     std::thread reader([&]() { ASSERT_FALSE(fixture.pipe->read(xfer, 0)); });
-    std::this_thread::sleep_for(std::chrono::milliseconds(100)); // 确保已阻塞
+    std::this_thread::sleep_for(std::chrono::milliseconds(100)); // Ensure blocked
     fixture.pipe->on_disconnection(ec);
     reader.join();
 
-    // 断连后 write 立即返回 0（不再等待 FIFO 空间）
+    // After disconnection, write immediately returns 0 (no longer awaiting FIFO space)
     EXPECT_EQ(fixture.pipe->write(PipeXfer{.ep = 0x81, .data = {1, 2, 3}}, 0), 0u);
 }
 
 TEST(TestPipeDeviceHandler, FifoFullBlocksWriteUntilHostConsumes) {
-    // FIFO 满时 write 阻塞（对齐内核 FIFO 语义），宿主 IN 请求取走数据后
-    // 继续写完剩余部分；分两次取走的字节拼接后与原始数据一致
+    // write blocks when FIFO full (matching kernel FIFO semantics); after host IN request retrieves data,
+    // continue writing remainder; bytes retrieved in two operations concatenate to original data
     StringPool string_pool;
     auto fixture = make_pipe_device(string_pool);
-    fixture.pipe->set_in_fifo_capacity(16); // 连接前设置，FIFO 只装得下 16 字节
+    fixture.pipe->set_in_fifo_capacity(16); // Set before connection; FIFO holds only 16 bytes
     CaptureResponder stub;
     usbipdcpp::error_code ec;
     fixture.pipe->on_new_connection(stub, ec);
@@ -338,9 +338,9 @@ TEST(TestPipeDeviceHandler, FifoFullBlocksWriteUntilHostConsumes) {
 
     std::size_t written = 0;
     std::thread writer([&]() { written = fixture.pipe->write(PipeXfer{.ep = 0x81, .data = payload}, 0); });
-    std::this_thread::sleep_for(std::chrono::milliseconds(100)); // 确保 write 已阻塞在 FIFO 满
+    std::this_thread::sleep_for(std::chrono::milliseconds(100)); // Ensure write blocked on full FIFO
 
-    // 宿主取走前 16 字节：write 腾出空间后写完剩余
+    // Host retrieves first 16 bytes: write finishes remainder after space freed
     fixture.pipe->receive_urb(make_cmd_submit(fixture.op, 1, 0x01, UsbIpDirection::In, 16), ep_in, intf, ec);
     ASSERT_FALSE(ec);
 
@@ -352,7 +352,7 @@ TEST(TestPipeDeviceHandler, FifoFullBlocksWriteUntilHostConsumes) {
     writer.join();
     EXPECT_EQ(written, payload.size());
 
-    // 再取走剩余 16 字节
+    // Retrieve remaining 16 bytes
     fixture.pipe->receive_urb(make_cmd_submit(fixture.op, 2, 0x01, UsbIpDirection::In, 16), ep_in, intf, ec);
     ASSERT_FALSE(ec);
     ASSERT_EQ(stub.submits.size(), 2u);
@@ -364,11 +364,11 @@ TEST(TestPipeDeviceHandler, FifoFullBlocksWriteUntilHostConsumes) {
 }
 
 TEST(TestPipeDeviceHandler, CustomDescriptorServedToHost) {
-    // set_custom_descriptor 设置的报告描述符经 GET_DESCRIPTOR(0x22) 返回
-    // （标准请求 recipient=接口）：HID 设备用此 API 提供报告描述符
+    // Report descriptor set by set_custom_descriptor returned through GET_DESCRIPTOR(0x22)
+    // (standard request recipient=interface): HID devices use this API to provide report descriptors
     StringPool string_pool;
     auto fixture = make_pipe_device(string_pool);
-    // 简版键盘报告描述符（验证机制，内容不限）
+    // Simplified keyboard report descriptor (verifying mechanism; content unrestricted)
     const data_type report_desc = {0x05, 0x01, 0x09, 0x06, 0xA1, 0x01, 0xC0};
     fixture.pipe->set_custom_descriptor(0x22, report_desc);
     CaptureResponder stub;
@@ -376,7 +376,7 @@ TEST(TestPipeDeviceHandler, CustomDescriptorServedToHost) {
     fixture.pipe->on_new_connection(stub, ec);
     ASSERT_FALSE(ec);
 
-    // GET_DESCRIPTOR(Report)：IN | Standard | Interface，wValue 高字节=0x22
+    // GET_DESCRIPTOR(Report): IN | Standard | Interface, wValue high byte=0x22
     const SetupPacket setup{
             .request_type = 0x81,
             .request = 0x06, // GET_DESCRIPTOR
@@ -398,7 +398,7 @@ TEST(TestPipeDeviceHandler, CustomDescriptorServedToHost) {
 }
 
 TEST(TestPipeDeviceHandler, ControlOutRequestDeliveredToRead) {
-    // 控制请求 OUT 方向：read() 同时拿到 setup_req 与数据阶段
+    // OUT-direction control request: read() obtains both setup_req and data phase
     StringPool string_pool;
     auto fixture = make_pipe_device(string_pool);
     CaptureResponder stub;
@@ -406,7 +406,7 @@ TEST(TestPipeDeviceHandler, ControlOutRequestDeliveredToRead) {
     fixture.pipe->on_new_connection(stub, ec);
     ASSERT_FALSE(ec);
 
-    // Vendor+Interface+OUT 控制请求，携带 3 字节数据（如 HID SET_REPORT）
+    // Vendor+Interface+OUT control request, carrying 3 data bytes (e.g. HID SET_REPORT)
     const SetupPacket setup{
             .request_type = 0x41, // Vendor(0x40) | Interface(0x01) | OUT(0x00)
             .request = 0x09,
@@ -430,7 +430,7 @@ TEST(TestPipeDeviceHandler, ControlOutRequestDeliveredToRead) {
     EXPECT_EQ(xfer.setup_req->length, 3u);
     EXPECT_EQ(xfer.data, payload);
 
-    // handler 已回 OK（OUT 无数据阶段）
+    // handler already returned OK (OUT has no data phase)
     ASSERT_EQ(stub.submits.size(), 1u);
     EXPECT_EQ(stub.submits[0].header.seqnum, 1u);
     EXPECT_EQ(stub.submits[0].status, 0u);
@@ -440,32 +440,32 @@ TEST(TestPipeDeviceHandler, ControlOutRequestDeliveredToRead) {
 }
 
 TEST(TestPipeDeviceHandler, ReadWriteTimeout) {
-    // read/write 超时语义：无数据/无空间时按 timeout_ms 返回（不无限阻塞）
+    // read/write timeout semantics: without data/space, return according to timeout_ms (no indefinite blocking)
     StringPool string_pool;
     auto fixture = make_pipe_device(string_pool);
-    fixture.pipe->set_in_fifo_capacity(8); // 小 FIFO 让 write 快速填满
+    fixture.pipe->set_in_fifo_capacity(8); // Small FIFO lets write fill it quickly
     CaptureResponder stub;
     usbipdcpp::error_code ec;
     fixture.pipe->on_new_connection(stub, ec);
     ASSERT_FALSE(ec);
 
-    // read 超时：无数据时 100ms 后返回 false
+    // read timeout: returns false after 100ms without data
     PipeXfer xfer;
     auto start = std::chrono::steady_clock::now();
     EXPECT_FALSE(fixture.pipe->read(xfer, 100));
     EXPECT_GE(std::chrono::steady_clock::now() - start, std::chrono::milliseconds(100));
 
-    // write 超时：FIFO 满且无 IN 请求时只写入 FIFO 容量部分
+    // write timeout: with FIFO full and no IN requests, writes only FIFO-capacity portion
     const data_type payload(16, 0xAB);
     auto written = fixture.pipe->write(PipeXfer{.ep = 0x81, .data = payload}, 100);
-    EXPECT_EQ(written, 8u); // 容量 8，写满即停
+    EXPECT_EQ(written, 8u); // Capacity 8; stop once full
 
     fixture.pipe->on_disconnection(ec);
 }
 
 TEST(TestPipeDeviceHandler, UnlinkPendingRequest) {
-    // 挂起的 IN 请求被 UNLINK 取消：回 RET_UNLINK 且状态为 -ECONNRESET
-    // （对齐内核 stub_tx.c 对取消 URB 的处理）
+    // UNLINK cancels pending IN request: return RET_UNLINK with status -ECONNRESET
+    // (matching kernel stub_tx.c handling of canceled URBs)
     StringPool string_pool;
     auto fixture = make_pipe_device(string_pool);
     CaptureResponder stub;
@@ -476,23 +476,23 @@ TEST(TestPipeDeviceHandler, UnlinkPendingRequest) {
     auto &intf = fixture.device->interfaces[0];
     const UsbEndpoint ep_in = intf.endpoints[0][0];
 
-    // IN 请求挂起（FIFO 无数据）
+    // IN request pending (FIFO has no data)
     fixture.pipe->receive_urb(make_cmd_submit(fixture.op, 1, 0x01, UsbIpDirection::In, 8), ep_in, intf, ec);
     ASSERT_FALSE(ec);
-    // 取消该请求
+    // Cancel that request
     fixture.pipe->handle_unlink_seqnum(1, 2);
 
     ASSERT_EQ(stub.unlinks.size(), 1u);
-    EXPECT_EQ(stub.unlinks[0].header.seqnum, 2u); // RET_UNLINK 回的是 unlink 命令自身的 seqnum
+    EXPECT_EQ(stub.unlinks[0].header.seqnum, 2u); // RET_UNLINK returns the unlink command's own seqnum
     EXPECT_EQ(stub.unlinks[0].status, static_cast<std::uint32_t>(UrbStatusType::StatusECONNRESET));
-    EXPECT_TRUE(stub.submits.empty()); // 已取消的请求不再发 RET_SUBMIT
+    EXPECT_TRUE(stub.submits.empty()); // Canceled request sends no further RET_SUBMIT
 
     fixture.pipe->on_disconnection(ec);
 }
 
 TEST(TestPipeDeviceHandler, UnlinkCompletedRequestReportsSuccess) {
-    // UNLINK 目标已正常完成（RET_SUBMIT 已发出）：请求不在挂起队列里，
-    // RET_UNLINK 回 0（URB 已完成，对齐 stub_tx.c：找不到目标回 0）
+    // UNLINK target already completed normally (RET_SUBMIT sent): request no longer in pending queue,
+    // RET_UNLINK returns 0 (URB complete; matching stub_tx.c: target not found returns 0)
     StringPool string_pool;
     auto fixture = make_pipe_device(string_pool);
     CaptureResponder stub;
@@ -503,14 +503,14 @@ TEST(TestPipeDeviceHandler, UnlinkCompletedRequestReportsSuccess) {
     auto &intf = fixture.device->interfaces[0];
     const UsbEndpoint ep_in = intf.endpoints[0][0];
 
-    // IN 请求挂起后 write 应答（传输已完成）
+    // IN request pending, then write responds (transfer completed)
     fixture.pipe->receive_urb(make_cmd_submit(fixture.op, 1, 0x01, UsbIpDirection::In, 8), ep_in, intf, ec);
     ASSERT_FALSE(ec);
     const data_type payload = {1, 2, 3, 4};
     EXPECT_EQ(fixture.pipe->write(PipeXfer{.ep = 0x81, .data = payload}, 2000), payload.size());
-    ASSERT_EQ(stub.submits.size(), 1u); // RET_SUBMIT 已发出
+    ASSERT_EQ(stub.submits.size(), 1u); // RET_SUBMIT sent
 
-    // 取消已完成的目标：回 0
+    // Cancel completed target: return 0
     fixture.pipe->handle_unlink_seqnum(1, 2);
     ASSERT_EQ(stub.unlinks.size(), 1u);
     EXPECT_EQ(stub.unlinks[0].header.seqnum, 2u);
@@ -520,8 +520,8 @@ TEST(TestPipeDeviceHandler, UnlinkCompletedRequestReportsSuccess) {
 }
 
 TEST(TestPipeDeviceHandler, TriggerSessionStopNotifiesResponder) {
-    // 设备拔出/异常时 trigger_session_stop → responder->stop_transfer()
-    // （通知 Session 立即停止，接口解耦的停止链路）
+    // On device unplug/error, trigger_session_stop → responder->stop_transfer()
+    // (notify Session to stop immediately; interface-decoupled stop chain)
     StringPool string_pool;
     auto fixture = make_pipe_device(string_pool);
     CaptureResponder stub;

@@ -8,9 +8,9 @@
 #include <string>
 
 #if defined(_WIN32)
-// 控制台事件处理需要 windows.h；WIN32_LEAN_AND_MEAN 排除 winsock.h（否则与
-// asio 的 winsock2.h 冲突），NOMINMAX 防止 min/max 宏破坏 std::min/std::max。
-// 两个宏加保护：asio 的 config.hpp 会先定义 NOMINMAX（值为 1），重复定义会告警
+// Console event handling requires windows.h; WIN32_LEAN_AND_MEAN excludes winsock.h (which otherwise conflicts with
+// asio's winsock2.h); NOMINMAX prevents min/max macros from breaking std::min/std::max.
+// Guard both macros: asio's config.hpp defines NOMINMAX first (as 1); redefining it produces a warning.
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -20,7 +20,7 @@
 #include <windows.h>
 #endif
 
-/// 创建带通用参数的 cxxopts::Options（--port, --busid, --help）。
+/// Create cxxopts::Options with common parameters (--port, --busid, --help).
 inline cxxopts::Options make_example_options(const std::string &name, const std::string &desc) {
     cxxopts::Options opts(name, desc);
     opts.add_options()
@@ -30,7 +30,7 @@ inline cxxopts::Options make_example_options(const std::string &name, const std:
     return opts;
 }
 
-/// 标准解析 + 错误/帮助打印，成功返回 ParseResult。
+/// Standard parsing + error / help printing, ParseResult is returned successfully.
 inline cxxopts::ParseResult parse_example_args(cxxopts::Options &opts, int argc, char **argv) {
     try {
         auto result = opts.parse(argc, argv);
@@ -48,22 +48,22 @@ inline cxxopts::ParseResult parse_example_args(cxxopts::Options &opts, int argc,
 
 namespace {
 
-// 退出信号量：handler 置位，wait_for_exit 阻塞等待。
-// 头文件工具函数用匿名命名空间：每个 TU 一份（只在本 TU 使用，无跨 TU 共享）。
-// POSIX 信号 handler 中调用 release()：libstdc++/libc++ 实现为原子 + futex，
-// 无锁无分配，实践中 async-signal 安全（sem_t 的 sem_post 是标准保证的
-// 等价物）；Windows 控制台 handler 在普通线程上下文执行，无此约束
+// Exit semaphore: the handler signals it, and wait_for_exit blocks waiting for it.
+// header file tool function uses anonymous namespace: one copy for each TU (only used in this TU, no cross-TU sharing).
+// POSIX signal handler calls release(): libstdc++/libc++ implement it with atomics + futex,
+// with no locks or allocations; in practice it is async-signal-safe (sem_post of sem_t is guaranteed by the standard
+// equivalent); Windows console handler executes in a normal thread context and does not have this constraint
 std::binary_semaphore g_wait_exit_sem(0);
 
 #if defined(_WIN32)
-/// Windows 控制台事件处理器（Ctrl+C / Ctrl+Break / 关窗口 / 注销 / 关机）。
-/// 返回 TRUE 表示已处理：进程不会按默认动作终止，主线程由信号量唤醒后清理退出
+/// Windows console event handler (Ctrl+C / Ctrl+Break / close window / log off / shutdown).
+/// Return TRUE to indicate that it has been processed: the process will not terminate according to the default action, and the main thread will clean up and exit after being awakened by the semaphore.
 BOOL WINAPI console_ctrl_handler(DWORD) {
     g_wait_exit_sem.release();
     return TRUE;
 }
 #else
-/// POSIX 信号处理器（SIGINT / SIGTERM）
+/// POSIX signal processor (SIGINT / SIGTERM)
 void exit_signal_handler(int) {
     g_wait_exit_sem.release();
 }
@@ -71,13 +71,13 @@ void exit_signal_handler(int) {
 
 } // namespace
 
-/// 阻塞等待退出信号，返回后调用方清理退出（server.stop 等）。
-/// POSIX：Ctrl+C（SIGINT）/ kill -TERM（SIGTERM）——后台部署直接
-/// `./mock_xxx &`，退出 `kill -TERM <pid>`，服务器走正常清理路径；
-/// Windows：控制台事件（Ctrl+C / Ctrl+Break / 关窗口等），同样优雅清理。
-/// 用 handler + 信号量而非 sigwait：sigwait 要求调用线程先阻塞信号，而服务器
-/// 连接线程未阻塞，进程信号会被它们按默认动作（直接终止进程）吃掉，清理
-/// 代码跑不到；handler 对全进程生效则无此问题
+/// Blocks and waits for the exit signal. After returning, the caller cleans up and exits (server.stop, etc.).
+/// POSIX: Ctrl+C (SIGINT)/kill -TERM (SIGTERM) - background deployment directly
+/// `./mock_xxx &`, exit `kill -TERM <pid>`, the server takes the normal cleanup path;
+/// Windows: Console events (Ctrl+C / Ctrl+Break / close window, etc.) are also cleaned up gracefully.
+/// Use handler + semaphore instead of sigwait: sigwait requires calling thread to block the signal first, and the server
+/// connection threads do not block signals, so process signals would be handled there by the default action (immediate process termination), preventing cleanup
+/// code from running; a process-wide handler avoids this problem
 inline void wait_for_exit() {
 #if defined(_WIN32)
     SetConsoleCtrlHandler(console_ctrl_handler, TRUE);

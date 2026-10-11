@@ -25,123 +25,123 @@ namespace usbipdcpp {
 class Session;
 
 /**
- * @brief 线程用途标识，用于线程创建前回调
+ * @brief thread purpose identifier, used for callback before thread creation
  */
 enum class ThreadPurpose {
-    NetworkIO,      // Server的网络IO线程
-    SessionMain,    // Session主线程
-    SessionSender   // Session发送线程
+    NetworkIO,      // Server network I/O thread
+    SessionMain,    // Session main thread
+    SessionSender   // Session sender thread
 };
 
 /**
- * @brief 服务器网络配置
+ * @brief server network configuration
  */
 struct ServerNetworkConfig {
-    /// socket 接收缓冲区大小（字节），0 表示使用系统默认值
+    /// socket receive buffer size (bytes), 0 means using the system default value
     std::size_t socket_recv_buffer_size = 128 * 1024;
-    /// socket 发送缓冲区大小（字节），0 表示使用系统默认值
+    /// socket send buffer size (bytes), 0 means using the system default value
     std::size_t socket_send_buffer_size = 128 * 1024;
-    /// 是否禁用 Nagle 算法（减少小包延迟）
+    /// Whether to disable Nagle algorithm (reduce small packet delay)
     bool tcp_no_delay = true;
 };
 
 /**
- * @brief Server::add_device 的结果
+ * @brief Server::add_device results
  */
 enum class AddDeviceStatus {
-    Added,        ///< 添加成功
-    AlreadyBound, ///< busid 已在可用列表（已绑定、未被占用）
-    InUse         ///< busid 正被某个会话占用
+    Added,        ///< added successfully
+    AlreadyBound, ///< busid is already in the available list (bound, not occupied)
+    InUse         ///< busid is occupied by a session
 };
 
 /**
- * @brief 设备被释放的原因（ServerObserver::on_device_released 的入参）
+ * @brief The reason why the device was released (input parameter of ServerObserver::on_device_released)
  */
 enum class DeviceReleaseReason {
-    ClientDisconnected, ///< 客户端断开连接
-    DeviceRemoved,      ///< 设备从服务器消失（后端检测到物理拔出，或后端主动解绑）
-    ServerStopped       ///< 服务器被停止
+    ClientDisconnected, ///< Client disconnected
+    DeviceRemoved,      ///< The device disappears from the server (the backend detects physical unplugging, or the backend actively unbinds it)
+    ServerStopped       ///< The server is stopped
 };
 
 /**
- * @brief 服务器状态观察者：继承并按需覆盖关心的事件（不关心的用默认空实现）
+ * @brief Server state observer: inherit and override events of interest as needed (default no-op implementations for other events)
  *
- * @attention 观察者必须比 Server 活得久，或提前调用 remove_observer() 注销
+ * @attention The observer must outlive Server, or unregister earlier by calling remove_observer()
  *
- * 通知语义（所有事件相同）：
- *  - 在触发事件的线程上同步调用：会话事件在会话收尾线程；设备事件在触发该
- *    变化的线程（客户端导入/断开时是会话线程，后端绑定/拔出时是后端线程，
- *    使用者直接调 add_device / detach_available_device 时是调用者线程）
- *  - 设备事件的配对：设备进入可用列表发 on_device_added，被客户端导入发
- *    on_device_attached，离开则必发一次 on_device_released——客户端断开
- *    （ClientDisconnected）、服务器停止（ServerStopped）、物理拔出与后端
- *    解绑（DeviceRemoved）都归入 on_device_released，按 reason 区分
- *  - 通知在锁外发出：回调里可以安全调用 Server 的查询接口，也可以
+ * notification semantics (same for all events):
+ *  - Called synchronously on the thread triggering the event: session events on the session teardown thread; device events on the thread triggering
+ *    the change (the session thread for client import/disconnection, the backend thread for backend binding/unplugging,
+ *    and the caller's thread when directly calling add_device / detach_available_device)
+ *  - Device event pairing: entering the available list emits on_device_added; client import emits
+ *    on_device_attached; leaving always emits on_device_released once: client disconnection
+ *    (ClientDisconnected), server stopped (ServerStopped), physical removal and backend
+ *    unbinding (DeviceRemoved) all use on_device_released, distinguished by reason
+ *  - The notification is issued outside the lock: the server's query interface can be safely called in the callback, or
  *    add_observer / remove_observer
- *  - 通知与状态变更之间有窗口：如 on_session_ended 在会话已从连接表移除
- *    （get_session_count 归零）之后才发出。判断某事件是否已发生请以收到
- *    通知为准，不要用 Server 的状态查询去推断（会读到"已变更但通知未到"
- *    的中间态）
- *  - 回调抛出的异常由库捕获并记日志，不会波及服务器线程与其他观察者
- *  - 回调处在收尾关键路径上，应快速返回（重活请转交自己的线程）
+ *  - A window exists between notification and state change: for example, on_session_ended is emitted only after the session has been removed from the connection table
+ *    (get_session_count reaches zero). Determine whether an event has occurred from receipt of
+ *    the notification, rather than inferring it from Server state queries (which can observe the intermediate state where "state has changed but notification has not arrived"
+ *    ).
+ *  - The exception thrown by the callback is captured and logged by the library, and will not affect the server thread and other observers
+ *  - The callback is on the closing critical path and should be returned quickly (please transfer heavy work to your own thread)
  */
 class USBIPDCPP_API ServerObserver {
 public:
     virtual ~ServerObserver() = default;
 
     /**
-     * @brief 新客户端连接已建立（会话已注册）
-     * @param session_id 会话 id
-     * @param peer 对端地址，形如 "ip:port"
+     * @brief New client connection established (session registered)
+     * @param session_id session id
+     * @param peer peer address, in the form of "ip:port"
      */
     virtual void on_session_started(std::uint64_t session_id, const std::string &peer) {
     }
 
     /**
-     * @brief 会话结束（客户端断开或服务器停止）
-     * @param session_id 会话 id
+     * @brief The session ends (the client disconnects or the server stops)
+     * @param session_id session id
      */
     virtual void on_session_ended(std::uint64_t session_id) {
     }
 
     /**
-     * @brief 设备进入可用列表（后端绑定成功：热插拔插入、启动时绑定、用户添加）
-     * @param busid 设备 busid
+     * @brief The device enters the available list (backend binding successful: hotplug insertion, binding at startup, user addition)
+     * @param busid device busid
      *
-     * @note 设备从"被占用"回到可用（客户端断开等原因）不触发本事件——
-     * 那种变化由 on_device_released 表示
+     * @note This event will not be triggered when the device returns from "occupied" to available (for reasons such as client disconnection)——
+     * That change is represented by on_device_released
      */
     virtual void on_device_added(const std::string &busid) {
     }
 
     /**
-     * @brief 设备被导入占用（客户端成功拿到设备）
-     * @param busid 设备 busid
+     * @brief The device is imported and occupied (the client successfully obtains the device)
+     * @param busid device busid
      */
     virtual void on_device_attached(const std::string &busid) {
     }
 
     /**
-     * @brief 设备被释放：回到可用列表（客户端断开/服务器停止），或被丢弃
-     * （物理拔出/后端解绑）
-     * @param busid 设备 busid
-     * @param reason 释放原因
+     * @brief Device released: back to available list (client disconnected/server stopped), or discarded
+     * (physical unplug/backend unbinding)
+     * @param busid device busid
+     * @param reason release reason
      */
     virtual void on_device_released(const std::string &busid, DeviceReleaseReason reason) {
     }
 };
 
 /**
- * @brief USB/IP 服务器
+ * @brief USB/IP Server
  *
- * @attention 线程安全摘要：
- *   - 构造 / start / stop / ~Server：生命周期方法，必须在同一线程串行调用
+ * @attention Thread safety summary:
+ *   - Construction / start / stop / ~Server: life cycle method, must be called serially in the same thread
  *   - add_device / detach_available_device / has_bound_device / get_session_count /
- *     print_bound_devices / add_observer / remove_observer：内部加锁，任意线程安全
- *   - get_available_devices / get_using_devices：不锁，调用方必须自行持有 get_devices_mutex()
- *   - get_devices_mutex：始终安全，仅返回 mutex 引用
- *   - set_before_thread_create_callback / set_after_thread_create_callback / set_connection_filter：
- *     必须在 start() 之前调用
+ *     print_bound_devices / add_observer / remove_observer: internally locked, safe from any thread
+ *   - get_available_devices / get_using_devices: No lock, the caller must hold get_devices_mutex()
+ *   - get_devices_mutex: always safe, only returns mutex references
+ *   - set_before_thread_create_callback / set_after_thread_create_callback / set_connection_filter:
+ *     must be called before start()
  */
 class USBIPDCPP_API Server final {
 public:
@@ -153,210 +153,210 @@ public:
     Server(const Server &) = delete;
     Server(Server &&) = delete;
     /**
-     * @brief 不阻塞地启动一个服务器（幂等：已运行时直接返回成功），内部
-     * 启动网络线程运行协程式 accept 循环（async_accept）。在start前后调用
-     * add_device都可以。
-     * @param ep 监听地址。若端口为 0（由系统分配），start 返回后用
-     * endpoint() 查询实际监听端点（含系统分配的端口）。
-     * @return 启动失败时返回错误（如端口被占），成功时无错误。不抛异常，
-     * 便于无异常环境的嵌入式平台使用
+     * @brief Start a server without blocking (idempotent: return success directly when running), internal
+     * starts the network thread to run the coroutine accept loop (async_accept). Called before and after start
+     * add_device can be used.
+     * @param ep listening address. If the port is 0 (assigned by the system), use it after start returns
+     * endpoint() queries the actual listening endpoint (including the port allocated by the system).
+     * @return An error is returned when the startup fails (such as the port is occupied), and there is no error when the startup is successful. No exception is thrown,
+     * making this usable on embedded platforms with exception-free environments
      *
-     * @attention 幂等仅作防御，正常用法应避免 start 后未 stop 就再次 start
-     * （已在运行时直接返回，不会重新监听）。
-     * @thread_safety 不可并发调用。stop() 之后可再次调用以重启。
+     * @attention Idempotence is only for defense. Normal usage should avoid starting again without stopping after start.
+     * (already running returns immediately without listening again).
+     * @thread_safety cannot be called concurrently. stop() can then be called again to restart.
      */
     usbipdcpp::error_code start(const asio::ip::tcp::endpoint &ep);
     /**
-     * @brief 当前实际监听端点。start() 用端口 0（由系统分配）启动后，
-     *        用这个函数查询实际端点（含地址和端口）；未 start 时返回空端点。
+     * @brief The current actual listening endpoint. After start() starts with port 0 (assigned by the system),
+     *        Use this function to query the actual endpoint (including address and port); if it is not started, an empty endpoint is returned.
      *
-     * @thread_safety 内部无锁，仅应在 start() 返回后、stop() 前读取。
+     * @thread_safety has no internal lock and should only be read after start() returns and before stop().
      */
     asio::ip::tcp::endpoint endpoint() const;
 
     /**
-     * @brief 关闭监听并等待所有会话自析构完成，调用后所有 Session 均已停止
-     *        并已析构，可安全再次 start() 或销毁 Server。
-     *        顺序：置停止标志 → 锁下 cancel 挂起的异步 accept（io_context.stop()
-     *        兜底）→ join 网络线程 → 关闭 acceptor 释放端口 → restart+poll
-     *        清残留接受协程 → 对所有 session 发停止请求（shutdown+cancel 打断
-     *        阻塞读）→ 释放快照引用，等待活跃会话计数归零（所有会话析构体
-     *        执行完）→ 清空会话列表。析构前必须调用本函数（析构不自动 stop，
-     *        见类注释契约）。
+     * @brief Close the listener and wait for all sessions to finish self-destruction; after the call all Sessions have stopped
+     *        has been destructed and it is safe to start() again or destroy the Server.
+     *        Order: set the stop flag → cancel pending asynchronous accept under the lock (io_context.stop()
+     *        as a fallback) → join the network thread → close acceptor to release the port → restart+poll
+     *        to clear remaining accept coroutines → request stop for every session (shutdown+cancel interrupt
+     *        blocking read) → release the snapshot reference and wait for the active session count to return to zero (all session destructors
+     *        execution completed) → Clear the session list. This function must be called before destruction (destruction does not stop automatically,
+     *        see class annotation contract).
      *
-     * @attention 幂等仅作防御（未运行时只清理残留线程后返回），正常用法应
-     * 避免 stop 后未 start 就再次 stop。
-     * @thread_safety 不可并发调用。每次 start() 之后调用一次；支持 start→stop→start 循环。
+     * @attention Idempotent is only for defense (only cleans the remaining threads and returns when not running), normal usage should
+     * Avoid stopping again without starting after stopping.
+     * @thread_safety cannot be called concurrently. Called once after each start(); supports start→stop→start loop.
      */
     void stop();
 
     /**
-     * @brief 添加一个设备（busid 查重），线程安全。不管 server 是否启动都可以调用
-     * @param device 待添加的设备（按值传递：内部 move 进设备列表，调用方
-     *               自行决定传左值拷贝还是 move 转移）
-     * @return Added 添加成功；AlreadyBound 该 busid 已在可用列表；
-     *         InUse 该 busid 正被某个会话占用（两种冲突都不添加）
+     * @brief Add a device (checking for duplicate busid), thread-safe. May be called whether or not server has started
+     * @param device The device to be added (passed by value: internal move into the device list, the caller
+     *               decides by itself whether to pass lvalue copy or move transfer)
+     * @return Added Added successfully; AlreadyBound The busid is already in the available list;
+     *         InUse The busid is being occupied by a session (neither conflict is added)
      *
-     * 查重与添加在同一把锁内原子完成（防止并发下两个线程同时查到"空闲"
-     * 然后都添加），成功后在锁外发出 on_device_added。busid 唯一是 Server
-     * 内部依赖的不变量（导入按 busid 匹配、拔出按 busid 移除，重复项会让
-     * 行为不确定），因此不存在"无条件添加"的入口。
+     * Duplicate checking and insertion complete atomically under the same lock (preventing two concurrent threads from both finding "available"
+     * and both inserting); after success, emit on_device_added outside the lock. busid uniqueness is an invariant relied upon
+     * internally by Server (import matches by busid, unplugging removes by busid; duplicates make
+     * behavior indeterminate), so no "unconditional insertion" entry point exists.
      *
-     * @thread_safety 内部加锁，任意线程安全。
+     * @thread_safety Internally locked, safe from any thread.
      */
     AddDeviceStatus add_device(std::shared_ptr<UsbDevice> device);
 
     /**
-     * @brief 判断 busid 是否已被占用（available 或用中任一存在）。内部不持锁，
-     *        供已持有 get_devices_mutex() 的调用方查重，避免反复进出锁
+     * @brief Check whether busid is already occupied (present in either available or in-use). Does not hold a lock internally;
+     *        is for the caller who already holds get_devices_mutex() to check for duplicates to avoid repeated entry and exit of the lock.
      *
-     * 新代码添加设备请直接用 add_device()：它在同一把锁内完成查重与添加，
-     * 并在锁外负责发通知。本函数只用于调用方本就需要持锁遍历设备列表、
-     * 顺带判断占用的场景（可用读锁）。
+     * New code adding devices should use add_device() directly: it checks for duplicates and inserts under the same lock,
+     * and is responsible for sending notifications outside the lock. This function is only used by the caller who needs to hold the lock to traverse the device list.
+     * and also checks occupancy (a read lock suffices).
      *
-     * 注意持锁期间不能调用 add_device() / detach_available_device() 等会
-     * 自行加锁的接口（shared_mutex 非递归，会死锁）。
+     * While holding the lock, do not call add_device() / detach_available_device() or other interfaces that
+     * acquire their own locks (shared_mutex is nonrecursive and will deadlock).
      *
-     * @param busid 待查询的 busid
-     * @return true 已被占用
+     * @param busid busid to be queried
+     * @return true Already occupied
      *
-     * @thread_safety 调用方必须持有 get_devices_mutex() 的读锁或写锁。
+     * @thread_safety The caller must hold the read lock or write lock of get_devices_mutex().
      */
     bool has_bound_device_locked(const std::string &busid) const;
 
     /**
-     * @brief 判断 busid 是否已被占用（available 或用中任一存在）
-     * @param busid 待查询的 busid
-     * @return true 已被占用
+     * @brief Check whether busid is already occupied (present in either available or in-use)
+     * @param busid busid to be queried
+     * @return true Already occupied
      *
-     * @thread_safety 内部加锁，任意线程安全。若调用方已持有
-     *                 get_devices_mutex()，改用 has_bound_device_locked
-     *                 （本函数会再次加锁，持锁时调用会死锁）。
+     * @thread_safety Internally locked, safe from any thread. If the caller already holds
+     *                 get_devices_mutex(), use has_bound_device_locked instead
+     *                 (This function will lock again, and calling it while holding the lock will cause a deadlock).
      */
     bool has_bound_device(const std::string &busid);
 
     /**
-     * @thread_safety 内部加锁，任意线程安全。
+     * @thread_safety Internally locked, safe from any thread.
      */
     size_t get_session_count();
 
     /**
-     * @thread_safety 内部加锁，任意线程安全。
+     * @thread_safety Internally locked, safe from any thread.
      */
     void print_bound_devices();
 
     /**
-     * @brief 毫无线程安全性，请自行调用get_devices_mutex来获取锁
+     * @brief Provides no thread safety; call get_devices_mutex yourself to acquire the lock
      * @return
      *
-     * @thread_safety 调用方必须持有 get_devices_mutex() 的读锁或写锁。
+     * @thread_safety The caller must hold the read lock or write lock of get_devices_mutex().
      */
     [[nodiscard]] std::vector<std::shared_ptr<UsbDevice>> &get_available_devices() {
         return available_devices;
     }
 
     /**
-     * @brief 毫无线程安全性，请自行调用get_devices_mutex来获取锁
+     * @brief Provides no thread safety; call get_devices_mutex yourself to acquire the lock
      * @return
      *
-     * @thread_safety 调用方必须持有 get_devices_mutex() 的读锁或写锁。
+     * @thread_safety The caller must hold the read lock or write lock of get_devices_mutex().
      */
     [[nodiscard]] std::map<std::string, std::shared_ptr<UsbDevice>> &get_using_devices() {
         return using_devices;
     }
 
     /**
-     * @brief 操作设备数据请调用这个函数获取锁后使用
+     * @brief To operate device data, please call this function to obtain the lock and use it.
      * @return
      *
-     * @thread_safety 始终安全（仅返回引用）。
+     * @thread_safety is always safe (only a reference is returned).
      */
     [[nodiscard]] std::shared_mutex &get_devices_mutex() const {
         return devices_mutex;
     }
 
     /**
-     * @brief 注册状态观察者（幂等：同一指针重复注册只保留一个）
-     * @param observer 观察者指针；库不接管所有权，生命周期必须覆盖 Server
-     *                 （需要提前注销时调用 remove_observer）
+     * @brief Register status observer (idempotent: only one is retained for repeated registration of the same pointer)
+     * @param observer observer pointer; the library does not take over ownership, and the life cycle must cover Server
+     *                 (call remove_observer to unregister earlier)
      *
-     * @thread_safety 内部加锁，任意线程安全。
+     * @thread_safety Internally locked, safe from any thread.
      */
     void add_observer(ServerObserver *observer);
 
     /**
-     * @brief 注销状态观察者（幂等：未注册过的指针调用无害）
-     * @param observer 观察者指针
+     * @brief Unregister status observer (idempotent: unregistered pointer calls are harmless)
+     * @param observer observer pointer
      *
-     * @thread_safety 内部加锁，任意线程安全。
+     * @thread_safety Internally locked, safe from any thread.
      */
     void remove_observer(ServerObserver *observer);
 
     /**
-     * @brief 设置线程创建前回调，用于嵌入式平台设置线程核心亲和性等
-     * @param callback 回调函数，接收线程用途标识
-     * （按值传递：内部 move 进成员，调用方传左值/右值皆可）
+     * @brief Sets the callback before thread creation, which is used for embedded platforms to set thread core affinity, etc.
+     * @param callback callback function, receives thread purpose identification
+     * (pass by value: internal move into member, caller can pass lvalue/rvalue)
      *
-     * @thread_safety 必须在 start() 之前调用。
+     * @thread_safety must be called before start().
      */
     void set_before_thread_create_callback(std::function<void(ThreadPurpose)> callback) {
         before_thread_create_callback = std::move(callback);
     }
 
     /**
-     * @brief 设置线程创建后回调，用于设置线程名称等
-     * @param callback 回调函数，接收线程用途标识和线程指针。指针为 nullptr
-     * 表示线程创建失败（before 回调已执行但线程未创建成功），非空时可用于
-     * 设置线程名称等（指针在线程生命周期内有效）
-     * （按值传递：内部 move 进成员，调用方传左值/右值皆可）
+     * @brief Set the callback after thread creation, used to set the thread name, etc.
+     * @param callback callback function, receives thread purpose identifier and thread pointer. pointer is nullptr
+     * indicates that the thread creation failed (the before callback has been executed but the thread was not created successfully). It can be used when it is not empty.
+     * Set the thread name, etc. (the pointer is valid within the thread life cycle)
+     * (pass by value: internal move into member, caller can pass lvalue/rvalue)
      *
-     * @thread_safety 必须在 start() 之前调用。
+     * @thread_safety must be called before start().
      */
     void set_after_thread_create_callback(std::function<void(ThreadPurpose, std::thread*)> callback) {
         after_thread_create_callback = std::move(callback);
     }
 
     /**
-     * @brief 设置连接过滤器（来源准入控制）：客户端连接被 accept 后、会话注册
-     * 前调用，返回 false 则拒绝该连接（关闭 socket，不发送任何数据，不产生会话、
-     * 不发出 on_session_started 通知，拒绝时记一条含对端地址的 WARN 日志）
-     * @param filter 过滤器，接收对端地址（含 IP 与源端口）；返回 true 放行、
-     * false 拒绝。传空的 std::function 可清除过滤器（恢复全部放行）
-     * （按值传递：内部 move 进成员，调用方传左值/右值皆可）
+     * @brief Set a connection filter (source admission control): called after accepting the client connection and before registering
+     * the session; returning false rejects the connection (close socket, send no data, create no session,
+     * does not send on_session_started notification, and when rejected, a WARN log containing the peer address is recorded)
+     * @param filter Filter receiving the peer address (IP and source port); return true to allow,
+     * false to reject. Passing an empty std::function clears the filter (allow all connections again)
+     * (pass by value: internal move into member, caller can pass lvalue/rvalue)
      *
-     * 典型用途：只允许特定来源的客户端接入（如本机回环场景下按源端口授权、
-     * 嵌入式设备限制允许的客户端 IP）。未设置过滤器时全部放行，默认行为不变。
+     * Typical use: Only allow clients from specific sources to access (such as authorization by source port in local loopback scenarios,
+     * Embedded device limits allowed client IPs). When no filter is set, all are allowed and the default behavior remains unchanged.
      *
-     * @attention 回调在网络线程上**串行**调用（accept_loop 是唯一调用点，
-     * 同一时刻至多一个回调在执行，无需自行加锁），且处在 accept 路径上——
-     * 应快速返回，重活请转交自己的线程。被拒连接在回调返回前已 accept 完毕，
-     * 拒绝即关闭。
-     * @attention 回调抛出的异常按"拒绝"处理并记 ERROR：设置了过滤器即代表
-     * 需要准入控制，异常时放行会让检查静默失效（与 ServerObserver 的
-     * "异常只记日志、不影响主流程"语义不同，两者刻意区分）
-     * @attention 必须在 start() 之前调用（与线程创建回调同一纪律），
-     * 运行期更换不受支持
+     * @attention The callback is called **serially** on the network thread (accept_loop is the only call site,
+     * At most one callback is executing at the same time, no need to lock it yourself), and it is on the accept path——
+     * should return quickly, please transfer heavy work to your own thread. The rejected connection has been accepted before the callback returns.
+     * closes if rejected.
+     * @attention The exception thrown by the callback is handled as "reject" and recorded as ERROR: if the filter is set, it means
+     * admission control is required; allowing connections on exceptions would silently disable the check (deliberately different from ServerObserver's
+     * "only log exceptions without affecting the main flow" semantics)
+     * @attention must be called before start() (same discipline as thread creation callback),
+     * Runtime replacement is not supported
      */
     void set_connection_filter(std::function<bool(const asio::ip::tcp::endpoint &)> filter);
 
     /**
-     * @brief 移除指定的 session 并通知 on_session_ended
-     * @param id 要移除的 session 的 id
+     * @brief removes the specified session and notifies on_session_ended
+     * @param id The id of the session to be removed
      *
-     * @thread_safety 内部加锁，但仅应在 Session 退出路径中调用。
+     * @thread_safety is internally locked, but should only be called in the Session exit path.
      */
     void remove_session(std::uint64_t id);
 
     /**
-     * @brief 从可用列表摘除设备并通知其消失：摘除在锁内完成，随后在锁外
-     * 发出 on_device_released(busid, DeviceRemoved)
-     * @param busid 设备 busid
-     * @return 被摘除的设备；可用列表中没有该 busid 时返回 nullptr
+     * @brief Remove a device from the available list and notify its disappearance: remove under the lock, then outside the lock
+     * issues on_device_released(busid, DeviceRemoved)
+     * @param busid device busid
+     * @return The removed device; when the busid is not in the available list, nullptr is returned
      *
-     * 供后端处理物理拔出/解绑：拿到返回值后自行做后端清理（如 libusb 的
-     * close/unref），设备已被摘除，清理时不必持锁。设备此刻仍被占用
-     * （在 using 列表）时返回 nullptr 且不发通知——那条路径由会话收尾时的
-     * release_device 发通知。
+     * is used by the backend to handle physical unplugging/unbinding: after getting the return value, do the backend cleanup by yourself (such as libusb's
+     * close/unref), the device has been removed, and there is no need to hold the lock during cleaning. The device is still occupied at the moment
+     * (in the using list), return nullptr without notification: that path emits a notification via
+     * release_device during session teardown.
      */
     std::shared_ptr<UsbDevice> detach_available_device(const std::string &busid);
 
@@ -364,42 +364,42 @@ public:
 
 protected:
     /**
-     * @brief 协程式接受循环：在网络线程的 io_context 上调度（co_spawn），
-     * 每轮创建一个会话并异步接受连接，stop() 用 acceptor_.cancel() 取消
-     * （cancel 是 asio 官方的异步取消接口），io_context_.stop() 兜底。
-     * 瞬态错误（对端在 accept 前重置/中止连接）继续循环，致命错误（acceptor
-     * 被取消/关闭）由 stop() 的 running 标志接管退出。
+     * @brief Coroutine accept loop: scheduled on the network thread's io_context (co_spawn),
+     * creates a session in each round and accepts connections asynchronously. Use stop() to cancel it with acceptor_.cancel()
+     * (cancel is asio's official asynchronous cancellation interface), with io_context_.stop() as a fallback.
+     * Transient error (the peer resets/aborts the connection before accept) continues to loop, fatal error (acceptor
+     * was canceled/closed) exit is taken over by the running flag of stop().
      */
     asio::awaitable<void> accept_loop();
 
     /**
-     * @brief 判断设备是否正在被使用（在 using_devices 中）
-     * @param busid 设备 busid
-     * @return true 正在使用中（已被某个会话导入）
+     * @brief Determine whether the device is being used (in using_devices)
+     * @param busid device busid
+     * @return true is in use (has been imported by a session)
      *
-     * @thread_safety 内部加锁，任意线程安全。
+     * @thread_safety Internally locked, safe from any thread.
      */
     bool is_device_using(const std::string &busid);
 
     /**
-     * @brief 释放设备：把设备从 using_devices 移回 available_devices
+     * @brief Release the device: Move the device from using_devices back to available_devices
      *
-     * 已被后端物理移除（is_device_removed()）的设备直接丢弃、不放回可用列表：
-     * 后端只在设备消失那一刻清理它当场扫到的列表状态，此后不会有事件再扫到
-     * 残留，放回去就是清不掉的僵尸。
+     * Devices that have been physically removed by the backend (is_device_removed()) are directly discarded and are not put back into the available list:
+     * The backend cleans up only the list state it finds at the moment the device disappears; no later event will scan for
+     * remnants, so returning it would leave an unremovable zombie.
      *
-     * @param busid 待释放设备的 busid
+     * @param busid busid of the device to be released
      *
-     * @thread_safety 内部加锁，任意线程安全。
+     * @thread_safety Internally locked, safe from any thread.
      */
     void release_device(const std::string &busid);
 
     /**
-     * @brief 占用设备：把设备从 available_devices 移入 using_devices 并返回
-     * @param busid 设备 busid
-     * @return 设备；可用列表中没有该设备时返回 nullptr
+     * @brief Occupying the device: Move the device from available_devices to using_devices and return
+     * @param busid device busid
+     * @return device; returns nullptr when the device is not in the available list
      *
-     * @thread_safety 内部加锁，任意线程安全。
+     * @thread_safety Internally locked, safe from any thread.
      */
     std::shared_ptr<UsbDevice> try_moving_device_to_using(const std::string &busid);
 
@@ -407,81 +407,81 @@ protected:
 
     ServerNetworkConfig network_config;
 
-    // 线程创建前回调
+    // callback before thread creation
     std::function<void(ThreadPurpose)> before_thread_create_callback;
-    // 线程创建后回调；参数为线程指针，nullptr 表示线程创建失败
+    // Callback after thread creation; argument is a thread pointer, nullptr means thread creation failed
     std::function<void(ThreadPurpose, std::thread*)> after_thread_create_callback;
 
-    // 连接过滤器：accept 后、会话注册前调用，返回 false 拒绝连接。
-    // 要求 start() 之前设置（见 set_connection_filter 注释），accept_loop
-    // 读取时不再加锁
+    // connection filter: called after accept and before session registration, returns false to reject the connection.
+    // requires setting before start() (see set_connection_filter comment), accept_loop
+    // no longer locks when reading
     std::function<bool(const asio::ip::tcp::endpoint &)> connection_filter;
 
-    // 会话连接表：Server 仅持 weak_ptr 观察，Session 生命周期由自身管理
-    // （session 线程作为主线程，return 时最后一个引用释放即自析构）。
-    // weak_ptr 供 stop() 锁定存活会话以停止，以及查询活跃数。
-    // id 由 next_session_id 原子分配：单调递增、跨 start/stop 永不重置，
-    // 保证不会出现两个客户端拿到相同 id
+    // Session connection table: Server observes through weak_ptr only; each Session manages its own lifetime
+    // (the session thread serves as the main thread, and the last reference is released when returning and is self-destructed).
+    // weak_ptr allows stop() to lock surviving sessions to stop them, and to query their active count.
+    // id is assigned atomically by next_session_id: monotonically increasing, never reset across start/stop,
+    // ensures that no two clients will get the same ID.
     std::unordered_map<std::uint64_t, std::weak_ptr<Session>> sessions;
     std::atomic<std::uint64_t> next_session_id{1};
-    // 存活会话计数（原子，无需锁）：accept_loop 创建会话后立即 +1，
-    // 会话析构体末尾的析构通知回调 -1。stop() 等待它归零，语义是
-    // "所有曾创建的会话都已析构完成"——与 sessions 快照解耦：
-    // 会话在 remove_session 与析构完成之间的窗口（已从表移除但析构未完）
-    // 不会被快照漏掉，也不会被其他会话的析构提前满足等待条件。
-    // 不能用 weak_ptr::expired() 判断——expired 在析构体开始时就为 true，
-    // 此时析构体仍在执行，stop() 提前返回并析构 Server 会撞上仍在执行的
-    // 析构回调（其访问 Server 成员，use-after-free）。
+    // Live session count (atomic, no lock required): accept_loop +1 immediately after session creation,
+    // The destruction notification callback at the end of the session destructor decrements it by 1. stop() waits for zero, meaning
+    // "All sessions that have been created have been destroyed" - Decoupled from sessions snapshot:
+    // Session window between remove_session and destruction completion (removed from the table but destruction is not complete)
+    // will not be missed by the snapshot, nor will the wait condition be satisfied in advance by the destruction of other sessions.
+    // cannot be judged by weak_ptr::expired() - expired is true at the beginning of the destructor.
+    // At this time, the destructor is still executing. If stop() returns early and destructs the server, it will hit the still executing
+    // destruction callback (it accesses the Server member, use-after-free).
     std::condition_variable reap_cv;
     std::atomic<std::size_t> active_sessions{0};
     mutable std::mutex session_list_mutex;
 
-    // 网络栈采用长命 io_context + acceptor：
-    // start() 重新 open/bind/listen 初始化 acceptor，stop() 在 join 网络线程后
-    // close 释放端口。网络线程跑协程式 accept_loop（co_spawn 到本 io_context
-    // 并 run()），Session 的 socket 自持各自的 io_context（见 Session.h），
-    // 不存在跨 io_context 的转移。
-    // （曾用"整代重建"——每次 start() 重建 io_context + acceptor——来处理停止
-    // 残留问题，并配合 Session 各自持有 io_context，在 macOS 上触发跨
-    // io_context accept 失败 EINVAL，故改为长命 io_context + 协程。）
+    // network stack adopts long-lived io_context + acceptor:
+    // start() initializes acceptor by reopening/binding/listening; stop(), after joining the network thread,
+    // closes it to release the port. The network thread runs the coroutine accept_loop (co_spawn on this io_context
+    // and run()), the Session's socket holds its own io_context (see Session.h),
+    // There is no transfer between io_context instances.
+    // (used to use "whole generation rebuild" - rebuild io_context + acceptor each time start() - to handle the stop
+    // leftover-state issues, combined with each Session owning its own io_context; on macOS this triggered cross-
+    // io_context accept failures with EINVAL, so it was replaced with a long-lived io_context + coroutine.)
     asio::io_context asio_io_context;
-    //监听 acceptor 作为成员保存，stop() 时关闭以释放端口，保证可以再次 start()。
-    //访问纪律（acceptor 是 asio 共享对象，一切操作必须单线程）：
-    // - open/bind/listen：start() 主线程（网络线程尚未启动，无并发）
-    // - async_accept：网络线程协程，唯一操作者
-    // - cancel（stop()）：主线程，在 acceptor_mutex_ 下调用（async_accept 是
-    //   asio 支持跨线程取消的异步操作，cancel() 是其官方取消接口）
-    // - close：stop() 主线程（join 之后）与 accept_loop 错误分支（EMFILE 等
-    //   致命错误）都在 acceptor_mutex_ 下调用——错误分支的 close 与 stop()
-    //   的 cancel 可能并发，同一把锁互斥
+    //listening acceptor is saved as a member and closed when stop() is executed to release the port, ensuring that it can be started() again.
+    //access discipline (acceptor is an asio shared object, all operations must be in a single thread):
+    // - open/bind/listen: start() main thread (the network thread has not been started yet, no concurrency)
+    // - async_accept: network thread coroutine, the only operator
+    // - cancel(stop()): main thread, called under acceptor_mutex_ (async_accept is
+    //   an asynchronous operation supporting cross-thread cancellation; cancel() is its official cancellation interface)
+    // - close: called under acceptor_mutex_ both on the stop() main thread (after join) and in accept_loop error branches (EMFILE and other
+    //   fatal errors): close in the error branch and cancel in stop()
+    //   may run concurrently, so the same lock provides mutual exclusion
     asio::ip::tcp::acceptor acceptor{asio_io_context};
-    // 保护 acceptor 的取消操作（stop() 在锁内 cancel 挂起的异步 accept）。
-    // 协程的注册发生在 co_await 求值（await_suspend）时，无法持锁，
-    // 取消的可靠性由 stop() 的 io_context_.stop() 兜底（run() 立即返回）。
-    // running 为原子变量，start/stop/accept_loop 各自独立读写，无需锁。
+    // protects the cancellation operation of the acceptor (stop() cancels the pending asynchronous accept within the lock).
+    // The registration of  coroutine occurs when co_await is evaluated (await_suspend), and the lock cannot be held.
+    // The reliability of  cancellation is guaranteed by stop() of io_context_.stop() (run() returns immediately).
+    // running is an atomic variable, start/stop/accept_loop can be read and written independently without locking.
     mutable std::mutex acceptor_mutex;
-    // 停止标志：stop() 置 false 后，被取消/唤醒的 accept_loop 检查到即退出。
-    // 生命周期方法要求串行调用，原子读写足够，无需额外互斥
+    // stop flag: After stop() is set to false, the canceled/awakened accept_loop will exit after detection.
+    // life cycle method requires serial calls, atomic reading and writing are enough, no additional mutual exclusion is needed
     std::atomic_bool running = false;
-    // start() 时记录实际监听端点（端口 0 时由系统分配），endpoint() 直接读。
-    // stop() 后置空（未监听语义）
+    // start() records the actual listening endpoint (system-assigned for port 0); endpoint() reads it directly.
+    // Cleared after stop() (meaning not listening)
     asio::ip::tcp::endpoint actual_endpoint;
-    //所有网络通信请运行在下面这个线程，网络通信不可运行在其他线程中
+    //Please run all network communications in the following thread. Network communications cannot be run in other threads.
     std::thread network_io_thread;
 
 private:
-    /// 观察者数量上限：固定容量数组，通知路径（收尾关键路径）零堆分配，
-    /// 超过上限的注册被忽略并记日志
+    /// Maximum number of observers: fixed capacity array, notification path (ending critical path) zero heap allocation,
+    /// Registrations exceeding the upper limit are ignored and logged
     static constexpr std::size_t MAX_OBSERVERS = 8;
 
-    // 观察者列表：裸指针（生命周期由使用者保证，见 ServerObserver 注释）。
-    // 通知流程统一为"锁内拷贝到栈快照 → 锁外依次调用"：回调里可以安全调用
-    // Server 的查询接口，也可以 add/remove_observer 自己而不死锁
+    // Observer list: raw pointer (lifetime is guaranteed by the user, see ServerObserver annotation).
+    // The notification flow is consistently "copy to a stack snapshot under the lock → call sequentially outside the lock": callbacks can safely call
+    // Server query interfaces, and can also add/remove_observer themselves without deadlock
     std::array<ServerObserver *, MAX_OBSERVERS> observers{};
     std::size_t observer_count = 0;
     mutable std::mutex observers_mutex;
 
-    /// 把观察者拷贝进 out（锁内）并返回个数；通知路径零堆分配
+    /// Copy the observer into out (inside the lock) and return the number; notify the path of zero heap allocation
     std::size_t observer_snapshot(std::array<ServerObserver *, MAX_OBSERVERS> &out);
 
     void notify_session_started(std::uint64_t session_id, const std::string &peer);
@@ -489,33 +489,33 @@ private:
     void notify_device_attached(const std::string &busid);
     void notify_device_released(const std::string &busid, DeviceReleaseReason reason);
 
-    /// 设备进入可用列表（由 add_device 在锁外发出）
+    /// Device enters available list (issued by add_device outside the lock)
     void notify_device_added(const std::string &busid);
-    /// 设备离开可用列表（由 detach_available_device 在锁外发出）
+    /// Device leaves available list (issued outside lock by detach_available_device)
     void notify_device_gone(const std::string &busid);
 
-    // Session 析构体末尾调用（Session 是 friend）：递减存活计数并唤醒
-    // stop() 的等待（计数语义见 active_sessions 的注释）。递减必须在
-    // session_list_mutex 下进行：stop() 的谓词检查与进入等待以同一把锁同步，
-    // 若此处不持锁，递减+通知可能落在"谓词检查与 wait 之间"的窗口而被丢弃
-    // （lost wakeup），stop() 误超时
+    // Called at the end of the Session destructor (Session is a friend): decrement the live count and wake
+    // stop()'s wait (see active_sessions comments for count semantics). The decrement must occur under
+    // session_list_mutex: stop()'s predicate check and entering the wait are synchronized by the same lock;
+    // If no lock is held here, the decrement + notification may fall in the window "between predicate check and wait" and be discarded
+    // (lost wakeup), stop() incorrectly times out
     void notify_session_destroyed() {
         {
             std::lock_guard lock(session_list_mutex);
             active_sessions.fetch_sub(1);
-            // notify 必须在锁内完成：锁释放后 stop() 可能立即返回并析构
-            // Server（销毁 reap_cv），锁外的 notify 会与 condvar 销毁并发
-            // （未定义行为，TSan 实测命中）。锁释放/获取建立 happens-before，
-            // 保证通知先于 stop() 唤醒后的任何 Server 析构
+            // notify must be completed within the lock: stop() may return and be destroyed immediately after the lock is released
+            // Server (destroying reap_cv); notification outside the lock would run concurrently with condvar destruction
+            // (Undefined behavior, TSan measured hit). Lock release/acquisition happens-before,
+            // guarantees notification before any Server destruction after stop() wake-up
             reap_cv.notify_all();
         }
     }
 
-    //可供导入的设备
+    //Devices available for import
     std::vector<std::shared_ptr<UsbDevice>> available_devices;
-    //正在使用的设备，busid做索引只供索引使用，与usbip协议无关
+    //The device in use, busid is used for indexing only and has nothing to do with the usbip protocol.
     std::map<std::string, std::shared_ptr<UsbDevice>> using_devices;
-    //锁available_devices和using_devices两个变量
+    //locks two variables available_devices and using_devices
     mutable std::shared_mutex devices_mutex;
 };
 }

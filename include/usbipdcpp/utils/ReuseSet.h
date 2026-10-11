@@ -22,7 +22,7 @@ public:
     size_t size() const { return size_; }
     bool empty() const { return size_ == 0; }
 
-    /// 插入。返回 true 成功，false 已存在。
+    /// Insert. Returns true if successful, false if it exists.
     bool insert(const Key &key) {
         for (auto &slot : slots_) {
             if (slot.occupied && slot.key == key) return false;

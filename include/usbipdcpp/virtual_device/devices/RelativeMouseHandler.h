@@ -11,16 +11,16 @@
 namespace usbipdcpp {
 
 /**
- * @brief 相对坐标鼠标虚拟设备处理器
+ * @brief Relative-coordinate mouse virtual device handler
  *
- * 提供基于相对偏移的鼠标操作 API。移动量累积到主机读取为止，
- * 多次 move() 调用会自动叠加，报告发送后归零。
+ * Provides mouse operation APIs based on relative offsets. Movement accumulates until the host reads;
+ * multiple move() calls automatically accumulate, resetting to zero after report transmission.
  *
- * HID 报告格式（6 字节）：
- *   [0]    按钮 (bit0:左, bit1:右, bit2:中, bit3:侧, bit4:额外) + 3位填充
- *   [1-2]  X 轴相对移动 (-32767~32767，小端)
- *   [3-4]  Y 轴相对移动 (-32767~32767，小端)
- *   [5]    滚轮 (-127~127)
+ * HID report format (6 bytes):
+ *   [0]    Buttons (bit0:left, bit1:right, bit2:middle, bit3:side, bit4:extra) + 3 padding bits
+ *   [1-2]  X-axis relative movement (-32767~32767, little-endian)
+ *   [3-4]  Y-axis relative movement (-32767~32767, little-endian)
+ *   [5]    Wheel (-127~127)
  */
 class USBIPDCPP_API RelativeMouseHandler : public HidVirtualInterfaceHandler {
 public:
@@ -28,11 +28,11 @@ public:
     ~RelativeMouseHandler() override = default;
 
     /**
-     * @brief 创建标准的 HID 相对鼠标接口（描述符模板，未绑定 handler）
+     * @brief Create a standard HID relative mouse interface (descriptor template, no handler bound)
      *
-     * 接口定义：HID 类（03/00/00），一个中断 IN 端点。
-     * @param in_ep 中断 IN 端点地址（设备→主机，鼠标报告）
-     * @return 未绑定 handler 的 UsbInterface
+     * Interface definition: HID class (03/00/00), one interrupt IN endpoint.
+     * @param in_ep Interrupt IN endpoint address (device→host, mouse reports)
+     * @return UsbInterface with unbound handler
      */
     static UsbInterface make_interface(std::uint8_t in_ep) {
         UsbInterface i{
@@ -41,7 +41,7 @@ public:
                 .interface_protocol = 0x00,
                 .endpoints = {{UsbEndpoint{.address = in_ep,
                                            .attributes = static_cast<std::uint8_t>(EndpointAttributes::Interrupt),
-                                           .max_packet_size = 8, // 6 字节报告 + 对齐余量
+                                           .max_packet_size = 8, // 6-byte report + alignment margin
                                            .interval = 10}}},
         };
         return i;
@@ -53,9 +53,9 @@ public:
     std::uint16_t get_report_descriptor_size() override;
     data_type get_report_descriptor() override;
 
-    /// 累积相对移动偏移量，clamp 到 [-32767, 32767]，主机取走前持续累积
+    /// Accumulate relative movement offsets, clamp to [-32767, 32767], continuing to accumulate until the host retrieves them
     void move(std::int16_t dx, std::int16_t dy);
-    /// 累积滚轮偏移量，clamp 到 [-127, 127]
+    /// Accumulate wheel offset, clamp to [-127, 127]
     void set_wheel(std::int8_t delta);
 
     void set_left_button(bool pressed);
@@ -64,7 +64,7 @@ public:
     void set_side_button(bool pressed);
     void set_extra_button(bool pressed);
 
-    /// 按下 → 延迟 → 释放
+    /// Press → delay → release
     void left_click(int delay_ms = 50);
     void right_click(int delay_ms = 50);
     void middle_click(int delay_ms = 50);
@@ -100,7 +100,7 @@ public:
     };
     RelativeDataState get_relative_data_state() const;
 
-    /// 等待客户端连接
+    /// Wait for a client connection
     bool wait_for_client(int timeout_ms = -1);
 
 private:
@@ -120,7 +120,7 @@ private:
     };
 
     void notify();
-    // 不会更改按钮状态，纯发送
+    // Send only, without changing button state
     void send_report();
 
     data_type report_descriptor;

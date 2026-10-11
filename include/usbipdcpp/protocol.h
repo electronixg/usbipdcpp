@@ -1,4 +1,4 @@
-// 具体定义可查看 https://www.kernel.org/doc/html/latest/usb/usbip_protocol.html
+// See https://www.kernel.org/doc/html/latest/usb/usbip_protocol.html for the detailed definitions
 
 #pragma once
 
@@ -14,13 +14,13 @@
 #include "usbipdcpp/Device.h"
 #include "usbipdcpp/network.h"
 
-// 最大传输缓冲区大小（用于防止恶意大内存分配）
+// Maximum transfer buffer size (to prevent maliciously large memory allocations)
 #ifndef USBIPDCPP_MAX_TRANSFER_BUFFER_SIZE
 #define USBIPDCPP_MAX_TRANSFER_BUFFER_SIZE (16 * 1024 * 1024) // 16MB
 #endif
 
-// 最大等时传输包数量（用于防止恶意大内存分配）
-// 现实设备的单个 URB 等时包数量最多几十到几百，1024 上限足够宽裕
+// Maximum number of isochronous transfer packets (to prevent maliciously large memory allocations)
+// Real devices use at most tens to hundreds of isochronous packets per URB; the 1024 limit leaves ample headroom
 #ifndef USBIPDCPP_MAX_ISO_PACKETS
 #define USBIPDCPP_MAX_ISO_PACKETS 1024
 #endif
@@ -29,8 +29,8 @@ namespace usbipdcpp {
 constexpr std::uint16_t USBIP_VERSION = 0x0111;
 
 
-class AbstDeviceHandler; // 前向声明
-class TransferOperator; // 前向声明
+class AbstDeviceHandler; // Forward declaration
+class TransferOperator; // Forward declaration
 
 
 constexpr std::uint16_t OP_REQ_DEVLIST = 0x8005;
@@ -102,17 +102,17 @@ USBIPDCPP_API std::error_code make_error_code(ErrorType e);
 
 struct USBIPDCPP_API UsbIpHeaderBasic {
     /**
-     * 这个字段并不需要从socket里面读，由子命令设置。
-     * 根据先读的字段判断应该创建哪个包
+     * This field does not need to be read from the socket; it is set by the subcommand.
+     * Determine which packet to create from the fields read first
      */
     std::uint32_t command;
     std::uint32_t seqnum;
     std::uint32_t devid;
     std::uint32_t direction;
-    /// USB/IP 线格式端点号，不带方向位：方向由 direction 字段给出，
-    /// 发送端（Linux vhci / usbip-win2）均用 usb_endpoint_num（低 4 位）。
-    /// 服务端还原真实端点地址时按 direction 补方向位（In 时 |0x80）。
-    /// 解析时校验 ep <= 0x7F，超范围按协议错误拒绝（见 UsbIpCmdSubmit::from_socket）
+    /// USB/IP wire-format endpoint number, without the direction bit: direction is specified by the direction field;
+    /// both senders (Linux vhci / usbip-win2) use usb_endpoint_num (the low 4 bits).
+    /// The server reconstructs the actual endpoint address by adding the direction bit according to direction (|0x80 for In).
+    /// Parsing checks ep <= 0x7F and rejects out-of-range values as protocol errors (see UsbIpCmdSubmit::from_socket)
     std::uint32_t ep;
 
     [[nodiscard]] array_data_type<calculate_total_size_with_array<decltype(command), decltype(seqnum), decltype(devid),
@@ -135,10 +135,10 @@ static_assert(Serializable<UsbIpHeaderBasic>);
 
 
 struct USBIPDCPP_API UsbIpIsoPacketDescriptor {
-    std::uint32_t offset; ///< 本包数据在 USB 请求 buffer 中的起始位置（按 length 步进，非线上紧凑偏移）
-    std::uint32_t length; ///< 本包在 buffer 中分配的槽位大小（由客户端决定，可大于 actual_length，包间可有间隙）
-    std::uint32_t actual_length; ///< 包内有效数据的字节数（≤ length），线路上只传这部分的紧凑数据
-    std::uint32_t status; ///< 本包的传输状态（URB 状态码）
+    std::uint32_t offset; ///< Starting position of this packet's data in the USB request buffer (advances by length; not the packed wire offset)
+    std::uint32_t length; ///< Size of the slot allocated for this packet in buffer (determined by the client; may exceed actual_length, with gaps between packets)
+    std::uint32_t actual_length; ///< Number of valid data bytes in the packet (≤ length); only this data is transmitted, packed contiguously, on the wire
+    std::uint32_t status; ///< Transfer status of this packet (URB status code)
 
     [[nodiscard]] array_data_type<calculate_total_size_with_array<decltype(offset), decltype(length),
                                                                   decltype(actual_length), decltype(status)>()>
@@ -149,29 +149,29 @@ struct USBIPDCPP_API UsbIpIsoPacketDescriptor {
 static_assert(Serializable<UsbIpIsoPacketDescriptor>);
 
 /**
- * @brief 传输对象类型约束：能把 handle 指针取回为 TransferType*
+ * @brief Transfer object type constraint: the handle pointer can be retrieved as TransferType*
  *
- * @tparam TransferType 传输对象类型（TransferHandle 持有的具体类型，
- *          如 GenericTransfer、StorageIoTransfer）
- * @tparam FromHandleProvider 提供静态 from_handle(void *) 返回 TransferType*
- *          的类型。通常与 TransferType 相同（类型自身提供 from_handle），
- *          但也可分离：如第三方 C 类型（libusb_transfer）不能添加成员函数，
- *          from_handle 由包装类型提供。项目约定：所有自定义 transfer 类型
- *          定义后 static_assert 此约束，防止依赖 handle 具体类型的代码
- *          强转取回时 UB
+ * @tparam TransferType Transfer object type (the concrete type held by TransferHandle,
+ *          such as GenericTransfer or StorageIoTransfer)
+ * @tparam FromHandleProvider Type providing a static from_handle(void *) that returns TransferType*
+ *          Usually the same as TransferType (the type itself provides from_handle),
+ *          but may be separate: for example, member functions cannot be added to a third-party C type (libusb_transfer),
+ *          so from_handle is provided by a wrapper type. Project convention: after defining any custom transfer type,
+ *          static_assert this constraint to prevent code that depends on the concrete handle type from
+ *          invoking UB when retrieving it through a cast
  */
 template <typename TransferType, typename FromHandleProvider>
 concept FromHandleTransfer = requires(void *ptr) {
     { FromHandleProvider::from_handle(ptr) } -> std::same_as<TransferType *>;
 };
 
-// 通用传输结构，虚拟设备使用
+// Generic transfer structure used by virtual devices
 struct GenericTransfer {
     std::vector<std::uint8_t> data;
     std::vector<UsbIpIsoPacketDescriptor> iso_descriptors;
     std::size_t actual_length = 0;
     std::size_t data_offset = 0;
-    // 传输方向（CMD_SUBMIT 的 direction，alloc 时确定）：true=IN，数据需要回发
+    // Transfer direction (CMD_SUBMIT's direction, determined during alloc): true=IN, data must be returned
     bool is_in = true;
 
     static GenericTransfer *from_handle(void *ptr) {
@@ -179,27 +179,27 @@ struct GenericTransfer {
     }
 };
 
-// 自定义 transfer 类型定义后按项目约定 static_assert（见 FromHandleTransfer 注释）
+// After defining a custom transfer type, static_assert it according to the project convention (see the FromHandleTransfer comment)
 static_assert(FromHandleTransfer<GenericTransfer, GenericTransfer>);
 
 /**
- * @brief RAII 包装类，管理 transfer_handle 的生命周期
+ * @brief RAII wrapper managing the lifetime of transfer_handle
  *
- * 持有 handle 指针及其所属 TransferOperator，析构时自动调用
- * op_->free_transfer_handle(handle_) 释放资源。可移动不可拷贝。
+ * Holds the handle pointer and its TransferOperator; destruction automatically calls
+ * op_->free_transfer_handle(handle_) to release resources. Movable, but not copyable.
  *
- * 使用规则：
- * - 构造时接管所有权：TransferHandle handle(ptr, op);
- * - 析构时自动释放，无需手动管理
- * - 可以通过 std::move() 转移所有权给另一个 TransferHandle
- * - 调用 release() 会放弃所有权，调用者必须手动释放
+ * Usage rules:
+ * - Takes ownership on construction: TransferHandle handle(ptr, op);
+ * - Automatically releases on destruction; no manual management required
+ * - Can transfer ownership to another TransferHandle using std::move()
+ * - Calling release() relinquishes ownership; the caller must release the resource manually
  *
- * 典型用法：
+ * Typical usage:
  * @code
  *   void* ptr = op->alloc_transfer_handle(1024, 0, header, setup);
- *   TransferHandle handle(ptr, op);  // 接管所有权
- *   // 数据读写通过 op->send_transfer_data / op->recv_transfer_data
- *   // 函数结束时 handle 析构，自动调用 op->free_transfer_handle(ptr)
+ *   TransferHandle handle(ptr, op);  // Take ownership
+ *   / / Read/write data through op->send_transfer_data / op->recv_transfer_data
+ *   / / At function exit, handle is destroyed, automatically calling op->free_transfer_handle(ptr)
  * @endcode
  */
 class USBIPDCPP_API TransferHandle {
@@ -210,81 +210,81 @@ public:
     TransferHandle() = default;
 
     /**
-     * @brief 构造并接管所有权
-     * @param handle 由 op->alloc_transfer_handle() 返回的指针
-     * @param op     创建此 handle 的 TransferOperator，用于释放及后续 I/O
+     * @brief Construct and take ownership
+     * @param handle Pointer returned by op->alloc_transfer_handle()
+     * @param op     TransferOperator that created this handle, used for release and subsequent I/O
      */
     TransferHandle(void *handle, TransferOperator *op);
 
-    // 禁止拷贝（所有权唯一）
+    // Copying is prohibited (exclusive ownership)
     TransferHandle(const TransferHandle &) = delete;
     TransferHandle &operator=(const TransferHandle &) = delete;
 
     /**
-     * @brief 移动构造，转移所有权
-     * @param other 源对象，移动后变为空状态
+     * @brief Move construction, transferring ownership
+     * @param other Source object, left empty after the move
      */
     TransferHandle(TransferHandle &&other) noexcept;
     TransferHandle &operator=(TransferHandle &&other) noexcept;
 
     /**
-     * @brief 析构时自动释放 handle
+     * @brief Automatically release handle on destruction
      *
-     * 如果 handle_ 和 op_ 都非空，调用 op_->free_transfer_handle(handle_)
+     * If handle_ and op_ are both non-null, call op_->free_transfer_handle(handle_)
      */
     ~TransferHandle();
 
     /**
-     * @brief 释放当前持有的 handle 并置空
+     * @brief Release the currently owned handle and clear it
      *
-     * 调用 op_->free_transfer_handle(handle_)，然后将 handle_ 和 op_ 置空。
-     * 对空对象调用此函数是安全的（无操作）。
+     * Calls op_->free_transfer_handle(handle_), then sets handle_ and op_ to null.
+     * Calling this function on an empty object is safe (a no-op).
      */
     void reset();
 
     /**
-     * @brief 获取原始指针（不转移所有权）
-     * @return 原始指针，可能为 nullptr
+     * @brief Get the raw pointer (without transferring ownership)
+     * @return Raw pointer, possibly nullptr
      *
-     * 注意：返回的指针生命周期由 TransferHandle 管理，不要在外部释放。
+     * Note: TransferHandle manages the returned pointer's lifetime; do not release it externally.
      */
     [[nodiscard]] void *get() const {
         return handle_;
     }
 
     /**
-     * @brief 获取创建此 handle 的 TransferOperator
-     * @return TransferOperator 指针，用于 send / recv 等 I/O 操作
+     * @brief Get the TransferOperator that created this handle
+     * @return TransferOperator pointer for I/O operations such as send / recv
      *
-     * for_socket 中完成 alloc 后 op 指向最终的 leaf operator（如 StorageTransferOperator），
-     * 后续 I/O 操作通过此 op 直接调用，不再经过 VirtualDeviceTransferOperator 的 map 查找。
+     * After alloc completes in for_socket, op points to the final leaf operator (such as StorageTransferOperator);
+     * subsequent I/O operations use this op directly, without VirtualDeviceTransferOperator's map lookups.
      */
     [[nodiscard]] TransferOperator *get_operator() const {
         return op_;
     }
 
     /**
-     * @brief 检查是否持有有效 handle
-     * @return true 表示持有有效 handle
+     * @brief Check whether a valid handle is owned
+     * @return true if a valid handle is owned
      */
     explicit operator bool() const {
         return handle_ != nullptr;
     }
 
     /**
-     * @brief 设置路由用的 TransferOperator（from_socket 前调用）
+     * @brief Set the routing TransferOperator (called before from_socket)
      *
-     * 在协议反序列化前设置路由层 op（如 VirtualDeviceTransferOperator），
-     * from_socket 内部通过 get_operator_for_ep 拿到 leaf op 后会用 set_handle 覆盖。
+     * Sets the routing-layer op (such as VirtualDeviceTransferOperator) before protocol deserialization;
+     * from_socket obtains the leaf op via get_operator_for_ep, then replaces it using set_handle.
      */
     void set_operator(TransferOperator *op) {
         op_ = op;
     }
 
     /**
-     * @brief 同时设置 handle 及其所属 TransferOperator
+     * @brief Set both handle and its TransferOperator
      *
-     * from_socket 中 alloc 完成后调用，将 op 从路由层替换为最终的 leaf operator。
+     * Called after alloc completes in from_socket, replacing the routing-layer op with the final leaf operator.
      */
     void set_handle(void *handle, TransferOperator *op) {
         handle_ = handle;
@@ -292,17 +292,17 @@ public:
     }
 
     /**
-     * @brief 释放所有权，返回原始指针
-     * @return 原始指针，调用者必须手动释放
+     * @brief Relinquish ownership and return the raw pointer
+     * @return Raw pointer; the caller must release it manually
      *
-     * 警告：调用此函数后，TransferHandle 不再管理该 handle，
-     * 调用者必须确保调用 op->free_transfer_handle() 释放资源，
-     * 否则会导致内存泄漏！
+     * Warning: after this call, TransferHandle no longer manages the handle;
+     * the caller must ensure that op->free_transfer_handle() is called to release resources,
+     * otherwise memory will leak!
      *
      * @code
      *   void* ptr = handle.release();
-     *   // ... 使用 ptr ...
-     *   handle.get_operator()->free_transfer_handle(ptr);  // 必须手动释放！
+     *   / / ... use ptr ...
+     *   handle.get_operator()->free_transfer_handle(ptr);  // Must release manually!
      * @endcode
      */
     void *release();
@@ -336,21 +336,21 @@ namespace UsbIpCommand {
     struct USBIPDCPP_API UsbIpCmdSubmit {
         UsbIpHeaderBasic header;
         std::uint32_t transfer_flags;
-        // 表明了传输数据的最大值
+        // Specifies the maximum amount of transfer data
         std::uint32_t transfer_buffer_length;
         std::uint32_t start_frame;
-        // 等时传输包数量
+        // Number of isochronous transfer packets
         std::uint32_t number_of_packets;
         std::uint32_t interval;
         SetupPacket setup;
-        // IN方向transfer_buffer_length==data.size()，OUT方向IN方向transfer_buffer_length=0
+        // For IN, transfer_buffer_length==data.size(); for OUT, IN-direction transfer_buffer_length=0
 
-        // RAII 包装的 transfer_handle
+        // RAII-wrapped transfer_handle
         mutable TransferHandle transfer;
 
         void to_socket(asio::ip::tcp::socket &sock, error_code &ec) const;
-        // 这个函数只读取部分数值，后面的数据部分不读取，一个对象只能调用一次。
-        // 调用这个函数之前保证transfer已经设置了TransferOperator，不然会空指针
+        // This function reads only some values, not the subsequent data section; it may be called only once per object.
+        // Before calling this function, ensure that transfer has a TransferOperator set; otherwise there will be a null pointer
         void from_socket(asio::ip::tcp::socket &sock);
     };
 
@@ -365,7 +365,7 @@ namespace UsbIpCommand {
                 24>
         to_bytes() const;
         void to_socket(asio::ip::tcp::socket &sock, error_code &ec) const;
-        // 一个对象只能调用一次
+        // May be called only once per object
         void from_socket(asio::ip::tcp::socket &sock);
     };
 
@@ -376,21 +376,21 @@ namespace UsbIpCommand {
 
 
     /**
-     * @brief 该函数只有ec有值则返回值为空，无ec则一定有值，无需二次判断
+     * @brief Returns an empty value only when ec is set; with no error in ec, a value is guaranteed and no second check is needed
      * @param sock
      * @param ec
-     * @return 获取到的命令
+     * @return The received command
      */
     USBIPDCPP_API usbipdcpp::UsbIpCommand::OpCmdVariant get_op_from_socket(asio::ip::tcp::socket &sock,
                                                                            usbipdcpp::error_code &ec);
 
 
     /**
-     * @brief 该函数只有ec有值则返回值为空，无ec则一定有值，无需二次判断
+     * @brief Returns an empty value only when ec is set; with no error in ec, a value is guaranteed and no second check is needed
      * @param sock
-     * @param handler 用于创建 transfer_handle
+     * @param handler Used to create transfer_handle
      * @param ec
-     * @return 获取到的命令
+     * @return The received command
      */
     USBIPDCPP_API usbipdcpp::UsbIpCommand::CmdVariant
     get_cmd_from_socket(asio::ip::tcp::socket &sock, AbstDeviceHandler *handler, usbipdcpp::error_code &ec);
@@ -439,46 +439,46 @@ namespace UsbIpResponse {
         std::uint32_t number_of_packets;
         std::uint32_t error_count;
 
-        // RAII 包装的 transfer_handle
-        // 如果没有数据阶段（actual_length == 0），请勿赋值
+        // RAII-wrapped transfer_handle
+        // Do not assign if there is no data stage (actual_length == 0)
         mutable TransferHandle transfer;
 
         void to_socket(asio::ip::tcp::socket &sock, error_code &ec) const;
         void from_socket(asio::ip::tcp::socket &sock);
 
         /**
-         * @brief 创建 RET_SUBMIT 响应（接管 transfer 所有权）
+         * @brief Create a RET_SUBMIT response (taking ownership of transfer)
          */
         static UsbIpRetSubmit create_ret_submit(std::uint32_t seqnum, std::uint32_t status, std::uint32_t actual_length,
                                                 std::uint32_t start_frame, std::uint32_t number_of_packets,
                                                 TransferHandle transfer);
         /**
-         * @brief 创建成功的 RET_SUBMIT 响应（无数据，不接管 transfer）
+         * @brief Create a successful RET_SUBMIT response (no data; does not take ownership of transfer)
          */
         static UsbIpRetSubmit create_ret_submit_ok_without_data(std::uint32_t seqnum, std::uint32_t actual_length);
 
         /**
-         * @brief 创建带状态的 RET_SUBMIT 响应（无数据，不接管 transfer）
+         * @brief Create a RET_SUBMIT response with status (no data; does not take ownership of transfer)
          */
         static UsbIpRetSubmit create_ret_submit_with_status_and_no_data(std::uint32_t seqnum, std::uint32_t status,
                                                                         std::uint32_t actual_length);
         /**
-         * @brief 创建带状态的 RET_SUBMIT 响应（无等时包，接管 transfer 所有权）
+         * @brief Create a RET_SUBMIT response with status (no isochronous packets; takes ownership of transfer)
          */
         static UsbIpRetSubmit create_ret_submit_with_status_and_no_iso(std::uint32_t seqnum, std::uint32_t status,
                                                                        std::uint32_t actual_length,
                                                                        TransferHandle transfer);
         /**
-         * @brief 创建 EPIPE 状态的 RET_SUBMIT 响应（接管 transfer 所有权）
+         * @brief Create a RET_SUBMIT response with EPIPE status (taking ownership of transfer)
          */
         static UsbIpRetSubmit create_ret_submit_epipe_no_iso(std::uint32_t seqnum, std::uint32_t actual_length,
                                                              TransferHandle transfer);
         /**
-         * @brief 创建 EPIPE 状态的 RET_SUBMIT 响应（无数据，不接管 transfer）
+         * @brief Create a RET_SUBMIT response with EPIPE status (no data; does not take ownership of transfer)
          */
         static UsbIpRetSubmit create_ret_submit_epipe_without_data(std::uint32_t seqnum, std::uint32_t actual_length);
         /**
-         * @brief 创建成功的 RET_SUBMIT 响应（无等时包，接管 transfer 所有权）
+         * @brief Create a successful RET_SUBMIT response (no isochronous packets; takes ownership of transfer)
          */
         static UsbIpRetSubmit create_ret_submit_ok_with_no_iso(std::uint32_t seqnum, std::uint32_t actual_length,
                                                                TransferHandle transfer);

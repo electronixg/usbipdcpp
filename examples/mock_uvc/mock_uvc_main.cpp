@@ -30,7 +30,7 @@ int main(int argc, char **argv) {
 
     // UVC 1.5 Table 3-2/3-13: VC/VS interface protocol must be PC_PROTOCOL_15
     std::vector<UsbInterface> interfaces = {
-            // Interface 0: VideoControl（含中断端点用于状态通知）
+            // Interface 0: VideoControl (including interrupt endpoint for status notification)
             UsbInterface{
                     .interface_class = CC_VIDEO,
                     .interface_subclass = SC_VIDEOCONTROL,
@@ -42,7 +42,7 @@ int main(int argc, char **argv) {
                             .interval = 8,
                     }}},
             },
-            // Interface 1: VideoStreaming（alt 0 空端点，alt 1 ISO IN 端点）
+            // Interface 1: VideoStreaming (alt 0 has no endpoints, alt 1 ISO IN endpoint)
             UsbInterface{
                     .interface_class = CC_VIDEO,
                     .interface_subclass = SC_VIDEOSTREAMING,
@@ -77,12 +77,12 @@ int main(int argc, char **argv) {
             .ep0_out = UsbEndpoint::get_ep0_out(UsbSpeed::High),
     });
 
-    // UvcDeviceHelper 创建 VC/VS handler 并注册 + 设置描述符
+    // UvcDeviceHelper creates VC/VS handler and registers + sets descriptor
     auto source = std::make_unique<ColorBarSource>(width, height, fps);
-    // 接口从 0 连续编号：按下标依次填 interface_number（bInterfaceNumber/IAD 依赖它）
+    // interface is numbered consecutively from 0: fill in interface_number in sequence according to the subscript (bInterfaceNumber/IAD depends on it)
     device->assign_interface_numbers();
     if (auto ec = UvcDeviceHelper::setup(device, 0, string_pool, std::move(source)); ec) {
-        SPDLOG_ERROR("UVC 功能装配失败：{}", ec.message());
+        SPDLOG_ERROR("UVC function assembly failed: {}", ec.message());
         return 1;
     }
 
@@ -92,7 +92,7 @@ int main(int argc, char **argv) {
     asio::ip::tcp::endpoint endpoint{asio::ip::tcp::v4(), port};
 
     if (auto ec = server.start(endpoint); ec) {
-        SPDLOG_ERROR("服务器启动失败：{}", ec.message());
+        SPDLOG_ERROR("Server startup failed: {}", ec.message());
         return 1;
     }
 
