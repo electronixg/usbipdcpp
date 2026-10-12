@@ -653,7 +653,17 @@ void usbipdcpp::Session::sender(usbipdcpp::error_code &ec) {
                 [&](auto &&cmd) {
                     using T = std::remove_cvref_t<decltype(cmd)>;
                     if constexpr (std::is_same_v<UsbIpResponse::UsbIpRetSubmit, T>) {
+                        SPDLOG_INFO("USBIP DIAG RET_SUBMIT sending: seq={} status={} actual_length={} packets={}",
+                                    cmd.header.seqnum, cmd.status, cmd.actual_length, cmd.number_of_packets);
                         cmd.to_socket(socket, sending_ec);
+                        if (sending_ec) {
+                            SPDLOG_ERROR("USBIP DIAG RET_SUBMIT send failed: seq={} error={}",
+                                         cmd.header.seqnum, sending_ec.message());
+                        }
+                        else {
+                            SPDLOG_INFO("USBIP DIAG RET_SUBMIT sent successfully: seq={} actual_length={}",
+                                        cmd.header.seqnum, cmd.actual_length);
+                        }
                         LATENCY_TRACK_END_MSG(latency_tracker, cmd.header.seqnum, "to_socket call completed");
                     }
                     else if constexpr (std::is_same_v<UsbIpResponse::UsbIpRetUnlink, T>) {

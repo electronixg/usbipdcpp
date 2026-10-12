@@ -1,6 +1,9 @@
 #include "usbipdcpp/LibusbHandler/LibusbDeviceHandler.h"
 
 #include <chrono>
+#include <algorithm>
+#include <iomanip>
+#include <sstream>
 #include <spdlog/spdlog.h>
 
 #include "usbipdcpp/Endpoint.h"
@@ -695,6 +698,31 @@ void LIBUSB_CALL usbipdcpp::LibusbDeviceHandler::transfer_callback(libusb_transf
             break;
     }
     SPDLOG_DEBUG("libusb transferred {} bytes", trx->actual_length);
+
+    // Temporary EST4/USB-IP diagnostic logging. This does not alter transfer behavior.
+    // It records control-request completion and the returned bytes so we can determine
+    // whether enumeration stops before or after the response reaches the TCP sender.
+    if (trx->type == LIBUSB_TRANSFER_TYPE_CONTROL) {
+        const auto *setup = libusb_control_transfer_get_setup(trx);
+        SPDLOG_INFO("USBIP DIAG libusb complete: seq={} status={} actual_length={} bmRequestType=0x{:02x} "
+                    "bRequest=0x{:02x} wValue=0x{:04x} wIndex=0x{:04x} wLength={}",
+                    callback_arg.seqnum, static_cast<int>(trx->status), trx->actual_length,
+                    setup->bmRequestType, setup->bRequest, libusb_le16_to_cpu(setup->wValue),
+                    libusb_le16_to_cpu(setup->wIndex), libusb_le16_to_cpu(setup->wLength));
+
+        if (!callback_arg.is_out && trx->actual_length > 0) {
+            const auto *data = libusb_control_transfer_get_data(trx);
+            const int dump_len = std::min(trx->actual_length, 64);
+            std::ostringstream hex;
+            hex << std::hex << std::setfill('0');
+            for (int i = 0; i < dump_len; ++i) {
+                if (i != 0) hex << ' ';
+                hex << std::setw(2) << static_cast<unsigned int>(data[i]);
+            }
+            SPDLOG_INFO("USBIP DIAG control IN data: seq={} bytes={} data={}",
+                        callback_arg.seqnum, dump_len, hex.str());
+        }
+    }
 
     // Calculate the actual length of the ISO transfer
     std::uint32_t actual_length = trx->actual_length;
